@@ -278,6 +278,16 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
         HashMap::new()
     };
 
+    // 3. Load blacklist.json
+    let blacklist: std::collections::HashSet<String> = if Path::new("blacklist.json").exists() {
+        let raw = fs::read_to_string("blacklist.json")?;
+        let entries: Vec<crate::models::BlacklistEntry> = serde_json::from_str(&raw)
+            .map_err(|e| format!("Failed to parse blacklist.json: {:?}", e))?;
+        entries.into_iter().map(|e| e.slug).collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
     let mut mapped_results = Vec::new();
 
     // Set of base categories to exclude from mapping as "Sets" to avoid trying to sell equipped/crafted gear
@@ -440,6 +450,11 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                 &wfm_by_name, 
                                 &wfcd_by_ref
                             ) {
+                                // Apply blacklist
+                                if blacklist.contains(&mapped.slug) {
+                                    continue;
+                                }
+
                                 // Apply keeplist: subtract reserved copies for this slug+rank
                                 let keep_key = (mapped.slug.clone(), mapped.rank);
                                 if let Some(&reserved) = keep_map.get(&keep_key) {

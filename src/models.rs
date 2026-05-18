@@ -69,6 +69,9 @@ pub struct WfcdItem {
     #[serde(rename = "levelStats")]
     pub level_stats: Option<Vec<serde_json::Value>>,
     pub category: Option<String>,
+    pub rarity: Option<String>,
+    #[serde(rename = "fusionLimit")]
+    pub fusion_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,4 +112,35 @@ pub struct KeepEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlacklistEntry {
     pub slug: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfmStatsResponse {
+    pub payload: WfmStatsPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfmStatsPayload {
+    pub statistics_closed: WfmStatsSubPayload,
+    pub statistics_live: WfmStatsSubPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfmStatsSubPayload {
+    #[serde(rename = "90days")]
+    pub ninety_days: Vec<WfmStatsItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfmStatsItem {
+    pub datetime: String,
+    pub volume: u32,
+    pub min_price: f64,
+    pub max_price: f64,
+    pub avg_price: Option<f64>,
+    pub wa_price: f64,
+    pub median: f64,
+    #[serde(rename = "mod_rank")]
+    pub mod_rank: Option<u32>,
+    pub order_type: Option<String>,
 }
