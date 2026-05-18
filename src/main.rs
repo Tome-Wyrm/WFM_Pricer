@@ -1,27 +1,69 @@
 pub mod models;
 pub mod decryption;
 pub mod ingestion;
+pub mod mapping;
 
-fn main() {
-    println!("Loading inventory.json...");
-    match ingestion::ingest_inventory("inventory.json") {
-        Ok(inventory) => {
-            println!("Successfully parsed inventory!");
-            if let Some(ref raw) = inventory.raw_upgrades {
-                println!("Found {} raw upgrades", raw.len());
+#[tokio::main]
+async fn main() {
+    println!("--- WFM Pricer Mapping Test ---");
+    
+    // 1. Update caches
+    if let Err(e) = mapping::update_caches().await {
+        println!("Error updating caches: {:?}", e);
+        return;
+    }
+    
+    // 2. Ingest inventory
+    println!("Ingesting inventory...");
+    let inventory = match ingestion::ingest_inventory("inventory.json") {
+        Ok(inv) => inv,
+        Err(e) => {
+            println!("Error ingesting inventory: {:?}", e);
+            return;
+        }
+    };
+    
+    // 3. Map inventory
+    println!("Mapping inventory items to Warframe.Market tradeable items...");
+    match mapping::map_inventory(&inventory) {
+        Ok(mapped) => {
+            println!("Successfully mapped {} items!", mapped.len());
+            
+            // Print category counts
+            let mut mods = 0;
+            let mut arcanes = 0;
+            let mut ayatans = 0;
+            
+            for item in &mapped {
+                if item.is_mod {
+                    mods += 1;
+                } else if item.is_arcane {
+                    arcanes += 1;
+                } else if item.is_ayatan {
+                    ayatans += 1;
+                }
             }
-            if let Some(ref upg) = inventory.upgrades {
-                println!("Found {} upgrades", upg.len());
-            }
-            if let Some(ref misc) = inventory.misc_items {
-                println!("Found {} misc items", misc.len());
-            }
-            if let Some(ref fusion) = inventory.fusion_treasures {
-                println!("Found {} fusion treasures (Ayatan sculptures)", fusion.len());
+            
+            println!("Summary of mapped items:");
+            println!("  Mods: {}", mods);
+            println!("  Arcanes: {}", arcanes);
+            println!("  Ayatan Sculptures / Stars: {}", ayatans);
+            
+            println!("\nFirst 20 mapped items:");
+            for (idx, item) in mapped.iter().take(20).enumerate() {
+                println!(
+                    "  {}. Name: {}, Slug: {}, Qty: {}, Rank: {}/{}",
+                    idx + 1,
+                    item.name,
+                    item.slug,
+                    item.quantity,
+                    item.rank,
+                    item.max_rank.map_or("N/A".to_string(), |r| r.to_string())
+                );
             }
         }
         Err(e) => {
-            println!("Error parsing inventory: {:?}", e);
+            println!("Error mapping inventory: {:?}", e);
         }
     }
 }

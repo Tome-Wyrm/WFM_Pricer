@@ -109,3 +109,44 @@ pub struct FusionTreasure {
     #[serde(rename = "Sockets")]
     pub sockets: Option<u32>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfmItemFlat {
+    pub id: String,
+    pub url_name: String,
+    pub item_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfmV1ItemsResponse {
+    pub payload: WfmV1ItemsPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfmV1ItemsPayload {
+    pub items: Vec<WfmItemFlat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfcdItem {
+    #[serde(rename = "uniqueName")]
+    pub unique_name: String,
+    pub name: String,
+    #[serde(rename = "levelStats")]
+    pub level_stats: Option<Vec<serde_json::Value>>,
+    pub category: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MappedItem {
+    pub id: String,
+    pub slug: String,
+    pub name: String,
+    pub quantity: u32,
+    pub rank: u32,
+    pub max_rank: Option<u32>,
+    pub is_mod: bool,
+    pub is_arcane: bool,
+    pub is_ayatan: bool,
+    pub game_ref: String,
+}
