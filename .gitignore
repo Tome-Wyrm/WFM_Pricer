@@ -1,0 +1,8 @@
+/target
+inventory.json
+v2_items.json
+alecaframe-inventory-parser.html
+alecaframe-inventory-parser_files/script.js
+alecaframe-inventory-parser_files/script.pluto
+openspec/*
+WFCD/*
