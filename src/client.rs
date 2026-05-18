@@ -63,7 +63,8 @@ impl WfmClient {
         println!("Authenticating with Warframe.Market...");
         let signin_body = serde_json::json!({
             "email": email,
-            "password": password
+            "password": password,
+            "auth_type": "header"
         });
 
         let response = self.client
@@ -75,7 +76,9 @@ impl WfmClient {
             .await?;
 
         if !response.status().is_success() {
-            return Err(format!("Sign in failed with status: {}", response.status()).into());
+            let status = response.status();
+            let err_text = response.text().await.unwrap_or_default();
+            return Err(format!("Sign in failed with status: {} - {}", status, err_text).into());
         }
 
         // 1. Try to extract JWT from Authorization header
