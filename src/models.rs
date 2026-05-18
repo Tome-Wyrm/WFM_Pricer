@@ -61,72 +61,6 @@ pub struct WfmEn {
     pub name: String,
 }
 
-/// Structure representing the parsed AlecaFrame inventory payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AlecaFrameInventory {
-    #[serde(rename = "RawUpgrades")]
-    pub raw_upgrades: Option<Vec<RawUpgrade>>,
-    #[serde(rename = "Upgrades")]
-    pub upgrades: Option<Vec<Upgrade>>,
-    #[serde(rename = "MiscItems")]
-    pub misc_items: Option<Vec<MiscItem>>,
-    #[serde(rename = "FusionTreasures")]
-    pub fusion_treasures: Option<Vec<FusionTreasure>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawUpgrade {
-    #[serde(rename = "ItemType")]
-    pub item_type: String,
-    #[serde(rename = "ItemCount")]
-    pub item_count: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Upgrade {
-    #[serde(rename = "ItemType")]
-    pub item_type: String,
-    #[serde(rename = "UpgradeFingerprint")]
-    pub upgrade_fingerprint: Option<String>,
-    #[serde(rename = "ItemId")]
-    pub item_id: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MiscItem {
-    #[serde(rename = "ItemType")]
-    pub item_type: String,
-    #[serde(rename = "ItemCount")]
-    pub item_count: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FusionTreasure {
-    #[serde(rename = "ItemType")]
-    pub item_type: String,
-    #[serde(rename = "ItemCount")]
-    pub item_count: u32,
-    #[serde(rename = "Sockets")]
-    pub sockets: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WfmItemFlat {
-    pub id: String,
-    pub url_name: String,
-    pub item_name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WfmV1ItemsResponse {
-    pub payload: WfmV1ItemsPayload,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WfmV1ItemsPayload {
-    pub items: Vec<WfmItemFlat>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WfcdItem {
     #[serde(rename = "uniqueName")]
@@ -149,4 +83,9 @@ pub struct MappedItem {
     pub is_arcane: bool,
     pub is_ayatan: bool,
     pub game_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfmV2Response {
+    pub data: Vec<WfmItem>,
 }

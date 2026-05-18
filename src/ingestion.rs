@@ -2,7 +2,6 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use crate::decryption::decrypt;
-use crate::models::AlecaFrameInventory;
 
 /// Resolves the inventory file path based on command line arguments or environment defaults.
 pub fn get_inventory_path() -> Result<PathBuf, Box<dyn Error>> {
@@ -27,7 +26,7 @@ pub fn get_inventory_path() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 /// Reads, decrypts, and extracts the AlecaFrame inventory JSON.
-pub fn ingest_inventory<P: AsRef<Path>>(path: P) -> Result<AlecaFrameInventory, Box<dyn Error>> {
+pub fn ingest_inventory<P: AsRef<Path>>(path: P) -> Result<serde_json::Value, Box<dyn Error>> {
     let path = path.as_ref();
     if !path.exists() {
         return Err(format!("Inventory file does not exist: {:?}", path).into());
@@ -64,9 +63,5 @@ pub fn ingest_inventory<P: AsRef<Path>>(path: P) -> Result<AlecaFrameInventory, 
         outer_json
     };
     
-    // Deserialize into domain AlecaFrameInventory
-    let inventory: AlecaFrameInventory = serde_json::from_value(inventory_value)
-        .map_err(|e| format!("Failed to deserialize into AlecaFrameInventory structure: {:?}", e))?;
-        
-    Ok(inventory)
+    Ok(inventory_value)
 }

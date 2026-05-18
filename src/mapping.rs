@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use reqwest::header::USER_AGENT;
 
 use crate::models::{
-    AlecaFrameInventory, MappedItem, WfcdItem, WfmItemFlat, WfmV1ItemsResponse
+    MappedItem, WfcdItem, WfmItem, WfmV2Response
 };
 
 pub const CACHE_DIR: &str = "cache";
@@ -170,10 +170,10 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
         fs::write(WFCD_CACHE_FILE, all_json_bytes)?;
         println!("WFCD All.json cached successfully.");
 
-        // Fetch WFM v1 items list
-        println!("Fetching WFM v1 items list...");
+        // Fetch WFM v2 items list
+        println!("Fetching WFM v2 items list...");
         let wfm_resp_result = client
-            .get("https://api.warframe.market/v1/items")
+            .get("https://api.warframe.market/v2/items")
             .header(USER_AGENT, "wfm-pricer-cli")
             .send()
             .await;
@@ -184,45 +184,9 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
                 bytes.to_vec()
             }
             _ => {
-                println!("WFM API request failed or was blocked by Cloudflare. Attempting to use local v2_items.json fallback...");
-                if std::path::Path::new("v2_items.json").exists() {
-                    let v2_str = fs::read_to_string("v2_items.json")?;
-                    
-                    #[derive(Debug, Deserialize)]
-                    struct V2Item {
-                        id: String,
-                        slug: String,
-                        i18n: V2I18n,
-                    }
-                    #[derive(Debug, Deserialize)]
-                    struct V2I18n {
-                        en: V2En,
-                    }
-                    #[derive(Debug, Deserialize)]
-                    struct V2En {
-                        name: String,
-                    }
-                    #[derive(Debug, Deserialize)]
-                    struct V2Root {
-                        data: Vec<V2Item>,
-                    }
-                    
-                    let v2_root: V2Root = serde_json::from_str(&v2_str)
-                        .map_err(|e| format!("Failed to parse local v2_items.json fallback: {:?}", e))?;
-                        
-                    let flat_items: Vec<WfmItemFlat> = v2_root.data.into_iter().map(|item| WfmItemFlat {
-                        id: item.id,
-                        url_name: item.slug,
-                        item_name: item.i18n.en.name,
-                    }).collect();
-                    
-                    let response_payload = WfmV1ItemsResponse {
-                        payload: crate::models::WfmV1ItemsPayload {
-                            items: flat_items,
-                        }
-                    };
-                    
-                    serde_json::to_vec(&response_payload)?
+                println!("WFM v2 API request failed. Attempting to use local v2_items.json fallback...");
+                if Path::new("v2_items.json").exists() {
+                    fs::read("v2_items.json")?
                 } else {
                     return Err("WFM items API request failed, and local v2_items.json fallback file is missing".into());
                 }
@@ -248,8 +212,8 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
 /// Helper function to perform exact and suffix-stripped matching of a name against WFM items.
 fn find_wfm_match<'a>(
     name: &str,
-    wfm_by_name: &'a HashMap<String, &'a WfmItemFlat>
-) -> Option<&'a WfmItemFlat> {
+    wfm_by_name: &'a HashMap<String, &'a WfmItem>
+) -> Option<&'a WfmItem> {
     let lower_name = name.to_lowercase();
     
     // 1. Exact match (case-insensitive)
@@ -269,7 +233,7 @@ fn find_wfm_match<'a>(
 }
 
 /// Performs item intersection and maps raw inventory to WFM tradeable items.
-pub fn map_inventory(inventory: &AlecaFrameInventory) -> Result<Vec<MappedItem>, Box<dyn Error>> {
+pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, Box<dyn Error>> {
     // 1. Load caches
     if !Path::new(WFCD_CACHE_FILE).exists() || !Path::new(WFM_CACHE_FILE).exists() {
         return Err("Cache files missing. Please run update_caches first.".into());
@@ -281,8 +245,8 @@ pub fn map_inventory(inventory: &AlecaFrameInventory) -> Result<Vec<MappedItem>,
         .map_err(|e| format!("Failed to parse cached WFCD All.json: {:?}", e))?;
 
     let wfm_str = fs::read_to_string(WFM_CACHE_FILE)?;
-    let wfm_response: WfmV1ItemsResponse = serde_json::from_str(&wfm_str)
-        .map_err(|e| format!("Failed to parse cached WFM items list: {:?}", e))?;
+    let wfm_response: WfmV2Response = serde_json::from_str(&wfm_str)
+        .map_err(|e| format!("Failed to parse cached WFM v2 items list: {:?}", e))?;
 
     // Create lookup tables
     let mut wfcd_by_ref = HashMap::new();
@@ -290,15 +254,37 @@ pub fn map_inventory(inventory: &AlecaFrameInventory) -> Result<Vec<MappedItem>,
         wfcd_by_ref.insert(item.unique_name.clone(), item);
     }
 
+    let mut wfm_by_ref = HashMap::new();
     let mut wfm_by_name = HashMap::new();
-    for item in &wfm_response.payload.items {
-        wfm_by_name.insert(item.item_name.to_lowercase(), item);
+    for item in &wfm_response.data {
+        if let Some(ref gr) = item.game_ref {
+            wfm_by_ref.insert(gr.clone(), item);
+        }
+        wfm_by_name.insert(item.i18n.en.name.to_lowercase(), item);
     }
 
     let mut mapped_results = Vec::new();
 
+    // Set of base categories to exclude from mapping as "Sets" to avoid trying to sell equipped/crafted gear
+    let excluded_categories = [
+        "Suits", "Melee", "LongGuns", "Pistols", 
+        "Sentinels", "SpaceSuits", "SpaceGuns", 
+        "SpaceMelee", "MechSuits"
+    ];
+
     // Helper closure to map a single game_ref and quantity/rank combination
-    let map_single = |game_ref: &str, qty: u32, rank: u32, sockets: Option<u32>| -> Option<MappedItem> {
+    let map_single = |
+        game_ref: &str, 
+        qty: u32, 
+        rank: u32, 
+        sockets: Option<u32>,
+        category: &str,
+        excluded_categories: &[&str],
+        wfm_by_ref: &HashMap<String, &WfmItem>,
+        wfm_by_name: &HashMap<String, &WfmItem>,
+        wfcd_by_ref: &HashMap<String, &WfcdItem>
+    | -> Option<MappedItem> {
+        
         // A. Check static Ayatans and Stars first
         if game_ref == CYAN_STAR_REF {
             return Some(MappedItem {
@@ -332,16 +318,12 @@ pub fn map_inventory(inventory: &AlecaFrameInventory) -> Result<Vec<MappedItem>,
 
         if let Some(def) = AYATANS.iter().find(|a| a.game_ref == game_ref) {
             let is_filled = sockets.unwrap_or(0) == def.fully_filled_mask;
-            // WFM sells either unfilled or filled, but wait: WFM items list only has "Ayatan Orta Sculpture" slug.
-            // We'll map to the standard sculpture slug and name.
             if let Some(wfm_item) = wfm_by_name.get(&def.name.to_lowercase()) {
                 return Some(MappedItem {
                     id: wfm_item.id.clone(),
-                    slug: wfm_item.url_name.clone(),
-                    name: wfm_item.item_name.clone(),
+                    slug: wfm_item.slug.clone(),
+                    name: wfm_item.i18n.en.name.clone(),
                     quantity: qty,
-                    // If fully filled, we store rank = 1 (or 100) to distinguish it in pricing, or use standard rank 0/1.
-                    // Let's use rank: if filled, rank is 1. If empty, rank is 0. This is very clean and standard!
                     rank: if is_filled { 1 } else { 0 },
                     max_rank: None,
                     is_mod: false,
@@ -352,86 +334,105 @@ pub fn map_inventory(inventory: &AlecaFrameInventory) -> Result<Vec<MappedItem>,
             }
         }
 
-        // B. Standard WFCD -> WFM lookup
-        if let Some(wfcd_item) = wfcd_by_ref.get(game_ref) {
-            if let Some(wfm_item) = find_wfm_match(&wfcd_item.name, &wfm_by_name) {
-                let max_rank = wfcd_item.level_stats.as_ref()
-                    .map(|l| (l.len() as u32).saturating_sub(1));
-                    
-                let is_mod = wfcd_item.category.as_deref() == Some("Mods") || game_ref.contains("/Mods/");
-                let is_arcane = game_ref.contains("/CosmeticEnhancers/");
+        // B. Perform Dual lookup: by gameRef first, then by name matching
+        let wfm_item = wfm_by_ref.get(game_ref)
+            .copied()
+            .or_else(|| {
+                wfcd_by_ref.get(game_ref).and_then(|wfcd_item| {
+                    find_wfm_match(&wfcd_item.name, wfm_by_name)
+                })
+            })?;
 
-                return Some(MappedItem {
-                    id: wfm_item.id.clone(),
-                    slug: wfm_item.url_name.clone(),
-                    name: wfm_item.item_name.clone(),
-                    quantity: qty,
-                    rank,
-                    max_rank,
-                    is_mod,
-                    is_arcane,
-                    is_ayatan: false,
-                    game_ref: game_ref.to_string(),
-                });
-            }
+        // C. Exclude base categories if mapping as a Set (built items are untradeable)
+        if excluded_categories.contains(&category) && wfm_item.tags.contains(&"set".to_string()) {
+            return None;
         }
 
-        None
+        // D. Retrieve metadata from WFCD item if available
+        let wfcd_item = wfcd_by_ref.get(game_ref);
+        let max_rank = wfm_item.max_rank.or_else(|| {
+            wfcd_item.and_then(|item| {
+                item.level_stats.as_ref().map(|l| (l.len() as u32).saturating_sub(1))
+            })
+        });
+
+        let is_mod = wfm_item.tags.contains(&"mod".to_string()) 
+            || game_ref.contains("/Mods/") 
+            || wfcd_item.map_or(false, |item| item.category.as_deref() == Some("Mods"));
+            
+        let is_arcane = wfm_item.tags.contains(&"arcane".to_string()) 
+            || game_ref.contains("/CosmeticEnhancers/");
+
+        Some(MappedItem {
+            id: wfm_item.id.clone(),
+            slug: wfm_item.slug.clone(),
+            name: wfm_item.i18n.en.name.clone(),
+            quantity: qty,
+            rank,
+            max_rank,
+            is_mod,
+            is_arcane,
+            is_ayatan: false,
+            game_ref: game_ref.to_string(),
+        })
     };
 
-    // 1. Process RawUpgrades (unranked mods and arcanes)
-    if let Some(ref raw_list) = inventory.raw_upgrades {
-        for raw in raw_list {
-            if raw.item_count > 0 {
-                if let Some(mapped) = map_single(&raw.item_type, raw.item_count, 0, None) {
-                    mapped_results.push(mapped);
-                }
-            }
-        }
-    }
-
-    // 2. Process Upgrades (ranked mods and arcanes)
-    if let Some(ref upg_list) = inventory.upgrades {
-        for upg in upg_list {
-            // Determine rank from fingerprint JSON: e.g. {"lvl": X}
-            let mut rank = 0;
-            if let Some(ref fp) = upg.upgrade_fingerprint {
-                if let Ok(fp_val) = serde_json::from_str::<serde_json::Value>(fp) {
-                    // Ignore Rivens (contain challenge or compat)
-                    if fp_val.get("compat").is_none() && fp_val.get("challenge").is_none() {
-                        if let Some(lvl) = fp_val.get("lvl").and_then(|v| v.as_u64()) {
-                            rank = lvl as u32;
+    // Generic JSON Traversal of all categories
+    if let Some(obj) = inventory.as_object() {
+        for (category, val) in obj {
+            // Check if value is an array of items
+            if let Some(arr) = val.as_array() {
+                for element in arr {
+                    if let Some(item_obj) = element.as_object() {
+                        // Extract ItemType (game reference)
+                        if let Some(item_type) = item_obj.get("ItemType").and_then(|v| v.as_str()) {
+                            
+                            // Determine raw quantity
+                            let mut qty = item_obj.get("ItemCount")
+                                .and_then(|v| v.as_u64())
+                                .map(|q| q as u32)
+                                .unwrap_or(1);
+                                
+                            // Reserve 1 copy rule: subtract 1 from total quantity
+                            if qty > 0 {
+                                qty = qty.saturating_sub(1);
+                            }
+                            if qty == 0 {
+                                continue; // Skip since we reserve at least 1 copy
+                            }
+                            
+                            // Determine rank (if present in fingerprint)
+                            let mut rank = 0;
+                            if let Some(fp_str) = item_obj.get("UpgradeFingerprint").and_then(|v| v.as_str()) {
+                                if let Ok(fp_val) = serde_json::from_str::<serde_json::Value>(fp_str) {
+                                    // Skip Rivens
+                                    if fp_val.get("compat").is_some() || fp_val.get("challenge").is_some() {
+                                        continue;
+                                    }
+                                    if let Some(lvl) = fp_val.get("lvl").and_then(|v| v.as_u64()) {
+                                        rank = lvl as u32;
+                                    }
+                                }
+                            }
+                            
+                            // Sockets (Ayatan filling)
+                            let sockets = item_obj.get("Sockets").and_then(|v| v.as_u64()).map(|s| s as u32);
+                            
+                            if let Some(mapped) = map_single(
+                                item_type, 
+                                qty, 
+                                rank, 
+                                sockets, 
+                                category, 
+                                &excluded_categories, 
+                                &wfm_by_ref, 
+                                &wfm_by_name, 
+                                &wfcd_by_ref
+                            ) {
+                                mapped_results.push(mapped);
+                            }
                         }
-                    } else {
-                        // Skip Riven mod upgrade
-                        continue;
                     }
-                }
-            }
-
-            if let Some(mapped) = map_single(&upg.item_type, 1, rank, None) {
-                mapped_results.push(mapped);
-            }
-        }
-    }
-
-    // 3. Process MiscItems (e.g. stars can be found here too)
-    if let Some(ref misc_list) = inventory.misc_items {
-        for misc in misc_list {
-            if misc.item_count > 0 {
-                if let Some(mapped) = map_single(&misc.item_type, misc.item_count, 0, None) {
-                    mapped_results.push(mapped);
-                }
-            }
-        }
-    }
-
-    // 4. Process FusionTreasures (Ayatan Sculptures)
-    if let Some(ref ft_list) = inventory.fusion_treasures {
-        for ft in ft_list {
-            if ft.item_count > 0 {
-                if let Some(mapped) = map_single(&ft.item_type, ft.item_count, 0, ft.sockets) {
-                    mapped_results.push(mapped);
                 }
             }
         }

@@ -33,6 +33,7 @@ async fn main() {
             let mut mods = 0;
             let mut arcanes = 0;
             let mut ayatans = 0;
+            let mut others = 0;
             
             for item in &mapped {
                 if item.is_mod {
@@ -41,6 +42,8 @@ async fn main() {
                     arcanes += 1;
                 } else if item.is_ayatan {
                     ayatans += 1;
+                } else {
+                    others += 1;
                 }
             }
             
@@ -48,9 +51,10 @@ async fn main() {
             println!("  Mods: {}", mods);
             println!("  Arcanes: {}", arcanes);
             println!("  Ayatan Sculptures / Stars: {}", ayatans);
+            println!("  Prime parts, weapon parts, other: {}", others);
             
-            println!("\nFirst 20 mapped items:");
-            for (idx, item) in mapped.iter().take(20).enumerate() {
+            println!("\nFirst 30 mapped items:");
+            for (idx, item) in mapped.iter().take(30).enumerate() {
                 println!(
                     "  {}. Name: {}, Slug: {}, Qty: {}, Rank: {}/{}",
                     idx + 1,
