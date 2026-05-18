@@ -46,20 +46,47 @@ pub struct UserListingsResponse {
 pub struct WfmClient {
     client: reqwest::Client,
     jwt: Option<String>,
+    csrf_token: Option<String>,
     pub user: Option<WfmUser>,
 }
 
 impl WfmClient {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .cookie_store(true)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             jwt: None,
+            csrf_token: None,
             user: None,
         }
     }
 
     /// Sign in to Warframe.Market and retrieve user information and JWT.
     pub async fn sign_in(&mut self, email: &str, password: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+        println!("Fetching Warframe.Market session credentials...");
+        
+        // 1. Fetch homepage to populate cookie store and parse CSRF token from HTML
+        let home_response = self.client.get("https://warframe.market")
+            .header(USER_AGENT, "wfm-pricer-cli")
+            .send()
+            .await?;
+            
+        let html = home_response.text().await?;
+        
+        let mut csrf_token = None;
+        if let Some(meta_idx) = html.find("name=\"csrf-token\"") {
+            if let Some(content_sub) = html[meta_idx..].find("content=\"") {
+                let start = meta_idx + content_sub + "content=\"".len();
+                if let Some(end) = html[start..].find("\"") {
+                    csrf_token = Some(html[start..start+end].to_string());
+                }
+            }
+        }
+        
+        self.csrf_token = csrf_token;
+
         println!("Authenticating with Warframe.Market...");
         let signin_body = serde_json::json!({
             "email": email,
@@ -67,13 +94,18 @@ impl WfmClient {
             "auth_type": "header"
         });
 
-        let response = self.client
+        let mut request = self.client
             .post("https://api.warframe.market/v1/auth/signin")
             .header(USER_AGENT, "wfm-pricer-cli")
             .header(CONTENT_TYPE, "application/json")
-            .json(&signin_body)
-            .send()
-            .await?;
+            .header("Referer", "https://warframe.market/")
+            .header("Origin", "https://warframe.market");
+
+        if let Some(ref csrf) = self.csrf_token {
+            request = request.header("X-CSRF-Token", csrf);
+        }
+
+        let response = request.json(&signin_body).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -100,7 +132,6 @@ impl WfmClient {
         }
 
         // If not in header, sometimes WFM returns it in a cookie or we can parse JWT from body if provided.
-        // If the header had it, use that. If not, raise error.
         if jwt_token.is_none() {
             return Err("Did not receive Authorization JWT in response headers.".into());
         }
@@ -118,6 +149,10 @@ impl WfmClient {
         
         if let Some(ref jwt) = self.jwt {
             headers.insert(AUTHORIZATION, HeaderValue::from_str(jwt)?);
+        }
+
+        if let Some(ref csrf) = self.csrf_token {
+            headers.insert("X-CSRF-Token", HeaderValue::from_str(csrf)?);
         }
 
         Ok(headers)
