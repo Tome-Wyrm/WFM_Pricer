@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use reqwest::header::USER_AGENT;
 
 use crate::models::{
-    MappedItem, WfcdItem, WfmItem, WfmV2Response
+    KeepEntry, MappedItem, WfcdItem, WfmItem, WfmV2Response
 };
 
 pub const CACHE_DIR: &str = "cache";
@@ -263,6 +263,21 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
         wfm_by_name.insert(item.i18n.en.name.to_lowercase(), item);
     }
 
+    // 2. Load keeplist.json (user-defined per slug+rank reserves)
+    // Key: (slug, rank) -> copies to keep
+    let keep_map: HashMap<(String, u32), u32> = if Path::new("keeplist.json").exists() {
+        let raw = fs::read_to_string("keeplist.json")?;
+        let entries: Vec<KeepEntry> = serde_json::from_str(&raw)
+            .map_err(|e| format!("Failed to parse keeplist.json: {:?}", e))?;
+        let mut map = HashMap::new();
+        for entry in entries {
+            *map.entry((entry.slug, entry.rank)).or_insert(0) += entry.keep;
+        }
+        map
+    } else {
+        HashMap::new()
+    };
+
     let mut mapped_results = Vec::new();
 
     // Set of base categories to exclude from mapping as "Sets" to avoid trying to sell equipped/crafted gear
@@ -387,18 +402,14 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                         // Extract ItemType (game reference)
                         if let Some(item_type) = item_obj.get("ItemType").and_then(|v| v.as_str()) {
                             
-                            // Determine raw quantity
-                            let mut qty = item_obj.get("ItemCount")
+                            // Use raw quantity as-is; user decides how many to list at prompt time
+                            let qty = item_obj.get("ItemCount")
                                 .and_then(|v| v.as_u64())
                                 .map(|q| q as u32)
                                 .unwrap_or(1);
                                 
-                            // Reserve 1 copy rule: subtract 1 from total quantity
-                            if qty > 0 {
-                                qty = qty.saturating_sub(1);
-                            }
                             if qty == 0 {
-                                continue; // Skip since we reserve at least 1 copy
+                                continue;
                             }
                             
                             // Determine rank (if present in fingerprint)
@@ -418,7 +429,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                             // Sockets (Ayatan filling)
                             let sockets = item_obj.get("Sockets").and_then(|v| v.as_u64()).map(|s| s as u32);
                             
-                            if let Some(mapped) = map_single(
+                            if let Some(mut mapped) = map_single(
                                 item_type, 
                                 qty, 
                                 rank, 
@@ -429,6 +440,14 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                 &wfm_by_name, 
                                 &wfcd_by_ref
                             ) {
+                                // Apply keeplist: subtract reserved copies for this slug+rank
+                                let keep_key = (mapped.slug.clone(), mapped.rank);
+                                if let Some(&reserved) = keep_map.get(&keep_key) {
+                                    if mapped.quantity <= reserved {
+                                        continue; // All copies reserved, skip entirely
+                                    }
+                                    mapped.quantity -= reserved;
+                                }
                                 mapped_results.push(mapped);
                             }
                         }

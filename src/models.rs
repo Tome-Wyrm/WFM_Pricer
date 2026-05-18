@@ -89,3 +89,24 @@ pub struct MappedItem {
 pub struct WfmV2Response {
     pub data: Vec<WfmItem>,
 }
+
+/// One entry in `keeplist.json`. Tells the engine to reserve `keep` copies
+/// of the item identified by `slug` at the given `rank`.
+/// Unranked items should use rank = 0.
+///
+/// Example: { "slug": "fleeting_expertise", "rank": 5, "keep": 1 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeepEntry {
+    pub slug: String,
+    /// The mod/arcane rank. 0 means unranked / rank-0.
+    pub rank: u32,
+    /// Number of copies to reserve from sale.
+    pub keep: u32,
+}
+
+/// One entry in `blacklist.json`. Items matching `slug` are never surfaced
+/// as selling candidates, regardless of rank or quantity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlacklistEntry {
+    pub slug: String,
+}
