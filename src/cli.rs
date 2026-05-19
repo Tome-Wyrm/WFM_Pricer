@@ -96,7 +96,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     // Map existing listings by url_name for quick lookup/budget calculation
     let mut existing_listings_map: HashMap<String, Vec<UserListing>> = HashMap::new();
     for listing in user_listings {
-        existing_listings_map.entry(listing.item.url_name.clone()).or_default().push(listing);
+        existing_listings_map.entry(listing.item_id.clone()).or_default().push(listing);
     }
 
     // 4. Filtering high-value candidates to keep startup and API usage low and focused.

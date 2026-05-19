@@ -2,8 +2,6 @@ use std::error::Error;
 use serde::{Deserialize, Serialize};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT, CONTENT_TYPE};
 
-const API_BASE: &str = "https://api.warframe.market/v2";
-
 // ── Auth / User ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,33 +22,22 @@ pub struct WfmSigninResponse {
 
 // ── Orders / Listings ────────────────────────────────────────────────────────
 
-/// Minimal item info embedded in an order returned by GET /profile/{name}/orders
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserListingItem {
-    pub id: String,
-    pub url_name: String,
-}
-
-/// A single order entry in the user's profile orders list
+/// A single order entry returned by GET /v2/orders/user/{slug}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserListing {
     pub id: String,
-    pub price: f64,
+    pub platinum: f64,
     pub quantity: u32,
     pub visible: bool,
-    pub item: UserListingItem,
-    pub mod_rank: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserListingsPayload {
-    pub buy_orders: Vec<UserListing>,
-    pub sell_orders: Vec<UserListing>,
+    pub rank: Option<u32>,
+    #[serde(rename = "itemId")]
+    pub item_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserListingsResponse {
-    pub payload: Option<UserListingsPayload>,
+    pub data: Option<Vec<UserListing>>,
+    pub error: Option<serde_json::Value>,
 }
 
 // ── Client ───────────────────────────────────────────────────────────────────
@@ -160,26 +147,11 @@ impl WfmClient {
     /// Retrieve all active sell orders for a user.
     /// Uses GET /v2/profile/{username}/orders (mirrors pywmapi get_orders_by_username).
     pub async fn get_sell_listings(&self, ingame_name: &str) -> Result<Vec<UserListing>, Box<dyn Error + Send + Sync>> {
-        let url = format!("https://api.warframe.market/v1/users/{}/listings", ingame_name);
-
-        let response = self.client
-            .get(&url)
-            .headers(self.headers()?)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let err_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to retrieve user listings: {} - {}", status, err_text).into());
-        }
-
-        let res: UserListingsResponse = response.json().await?;
-        if let Some(payload) = res.payload {
-            Ok(payload.sell_orders)
-        } else {
-            Ok(Vec::new())
-        }
+        let url=format!("https://api.warframe.market/v2/orders/user/{}",ingame_name.to_lowercase());
+        let response=self.client.get(&url).headers(self.headers()?).send().await?;
+        if!response.status().is_success(){let status=response.status();let err_text=response.text().await.unwrap_or_default();return Err(format!("Failed to retrieve user listings: {} - {}",status,err_text).into());}
+        let res:UserListingsResponse=response.json().await?;
+        Ok(res.data.unwrap_or_default().into_iter().filter(|l| l.visible || true).collect())
     }
 
     /// Create a new sell order on Warframe.Market.
