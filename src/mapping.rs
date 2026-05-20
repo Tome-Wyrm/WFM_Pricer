@@ -109,7 +109,12 @@ pub const AYATANS: &[AyatanStaticDef] = &[
 pub const CYAN_STAR_REF: &str = "/Lotus/Types/Items/FusionTreasures/OroFusexOrnamentA";
 pub const AMBER_STAR_REF: &str = "/Lotus/Types/Items/FusionTreasures/OroFusexOrnamentB";
 
+#[allow(clippy::too_many_lines)] // This function needs a significant refactor to reduce line count.
 /// Ensures all necessary cache data is fetched, updated, and verified.
+///
+/// # Errors
+/// Returns an error if any network request fails, file operations fail,
+/// or JSON parsing of cache files fails.
 pub async fn update_caches() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(CACHE_DIR)?;
 
@@ -132,22 +137,19 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
         .ok_or("Could not parse commit sha from GitHub response")?
         .to_string();
 
-    println!("Latest WFCD Commit SHA: {}", latest_sha);
+    println!("Latest WFCD Commit SHA: {latest_sha}");
 
     // 2. Check if cache is still valid
     let mut cache_invalidated = true;
     if Path::new(METADATA_FILE).exists()
         && Path::new(WFCD_CACHE_FILE).exists()
         && Path::new(WFM_CACHE_FILE).exists()
+        && let Ok(metadata_str) = fs::read_to_string(METADATA_FILE)
+        && let Ok(metadata) = serde_json::from_str::<CacheMetadata>(&metadata_str)
+        && metadata.wfcd_commit_hash == latest_sha
     {
-        if let Ok(metadata_str) = fs::read_to_string(METADATA_FILE) {
-            if let Ok(metadata) = serde_json::from_str::<CacheMetadata>(&metadata_str) {
-                if metadata.wfcd_commit_hash == latest_sha {
-                    cache_invalidated = false;
-                    println!("Cache is up to date (SHA matches).");
-                }
-            }
-        }
+        cache_invalidated = false;
+        println!("Cache is up to date (SHA matches).");
     }
 
     // 3. If invalidated, re-fetch both
@@ -268,7 +270,12 @@ fn is_relic(game_ref: &str) -> bool {
     game_ref.starts_with("/Lotus/Types/Game/Projections/")
 }
 
+#[allow(clippy::too_many_lines)] // This function needs a significant refactor to reduce line count.
 /// Performs item intersection and maps raw inventory to WFM tradeable items.
+///
+/// # Errors
+/// Returns an error if cache files are missing, cannot be read,
+/// or JSON parsing of cache, keeplist, or blacklist files fails.
 pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, Box<dyn Error>> {
     // 1. Load caches
     if !Path::new(WFCD_CACHE_FILE).exists() || !Path::new(WFM_CACHE_FILE).exists() {
@@ -278,11 +285,11 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
     println!("Loading caches from disk for mapping...");
     let wfcd_str = fs::read_to_string(WFCD_CACHE_FILE)?;
     let wfcd_items: Vec<WfcdItem> = serde_json::from_str(&wfcd_str)
-        .map_err(|e| format!("Failed to parse cached WFCD All.json: {:?}", e))?;
+        .map_err(|e| format!("Failed to parse cached WFCD All.json: {e:?}"))?;
 
     let wfm_str = fs::read_to_string(WFM_CACHE_FILE)?;
     let wfm_response: WfmV2Response = serde_json::from_str(&wfm_str)
-        .map_err(|e| format!("Failed to parse cached WFM v2 items list: {:?}", e))?;
+        .map_err(|e| format!("Failed to parse cached WFM v2 items list: {e:?}"))?;
 
     // Create lookup tables
     let mut wfcd_by_ref = HashMap::new();
@@ -306,7 +313,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
     let keep_map: HashMap<(String, u32), u32> = if Path::new("keeplist.json").exists() {
         let raw = fs::read_to_string("keeplist.json")?;
         let entries: Vec<KeepEntry> = serde_json::from_str(&raw)
-            .map_err(|e| format!("Failed to parse keeplist.json: {:?}", e))?;
+            .map_err(|e| format!("Failed to parse keeplist.json: {e:?}"))?;
         let mut map = HashMap::new();
         for entry in entries {
             *map.entry((entry.slug, entry.rank)).or_insert(0) += entry.keep;
@@ -320,7 +327,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
     let blacklist: std::collections::HashSet<String> = if Path::new("blacklist.json").exists() {
         let raw = fs::read_to_string("blacklist.json")?;
         let entries: Vec<crate::models::BlacklistEntry> = serde_json::from_str(&raw)
-            .map_err(|e| format!("Failed to parse blacklist.json: {:?}", e))?;
+            .map_err(|e| format!("Failed to parse blacklist.json: {e:?}"))?;
         entries.into_iter().map(|e| e.slug).collect()
     } else {
         std::collections::HashSet::new()
@@ -403,13 +410,13 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
         let wfcd_item = wfcd_by_ref.get(game_ref);
         let max_rank = wfm_item.max_rank.or_else(|| {
             wfcd_item.and_then(|item| {
-                item.level_stats.as_ref().map(|l| (l.len() as u32).saturating_sub(1))
+                item.level_stats.as_ref().map(|l| u32::try_from(l.len()).unwrap_or(0).saturating_sub(1))
             })
         });
 
         let is_mod = wfm_item.tags.contains(&"mod".to_string()) 
             || game_ref.contains("/Mods/") 
-            || wfcd_item.map_or(false, |item| item.category.as_deref() == Some("Mods"));
+            || wfcd_item.is_some_and(|item| item.category.as_deref() == Some("Mods"));
             
         let is_arcane = wfm_item.tags.contains(&"arcane".to_string()) 
             || game_ref.contains("/CosmeticEnhancers/");
@@ -436,35 +443,37 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
 
     if let Some(obj) = inventory.as_object() {
         for &category_key in &allowed_inventory_keys {
-            if let Some(val) = obj.get(category_key) {
-                if let Some(arr) = val.as_array() {
+            if let Some(val) = obj.get(category_key)
+                && let Some(arr) = val.as_array()
+            {
                     for element in arr {
-                        if let Some(item_obj) = element.as_object() {
-                            if let Some(item_type) = item_obj.get("ItemType").and_then(|v| v.as_str()) {
+                        if let Some(item_obj) = element.as_object()
+                            && let Some(item_type) = item_obj.get("ItemType").and_then(|v| v.as_str())
+                        {
                                 
                                 let qty = item_obj.get("ItemCount")
-                                    .and_then(|v| v.as_u64())
-                                    .map(|q| q as u32)
-                                    .unwrap_or(1);
+                                    .and_then(serde_json::Value::as_u64)
+                                    .map_or(1, |q| u32::try_from(q).unwrap_or(1));
                                     
                                 if qty == 0 {
                                     continue;
                                 }
                                 
                                 let mut rank = 0;
-                                if let Some(fp_str) = item_obj.get("UpgradeFingerprint").and_then(|v| v.as_str()) {
-                                    if let Ok(fp_val) = serde_json::from_str::<serde_json::Value>(fp_str) {
+                                if let Some(fp_str) = item_obj.get("UpgradeFingerprint").and_then(|v| v.as_str())
+                                    && let Ok(fp_val) = serde_json::from_str::<serde_json::Value>(fp_str)
+                                {
                                         // Skip standard Rivens (non-veiled) - handled later for veiled
                                         if fp_val.get("compat").is_some() || fp_val.get("challenge").is_some() {
                                             continue;
                                         }
-                                        if let Some(lvl) = fp_val.get("lvl").and_then(|v| v.as_u64()) {
-                                            rank = lvl as u32;
+                                        if let Some(lvl) = fp_val.get("lvl").and_then(serde_json::Value::as_u64) {
+                                            rank = u32::try_from(lvl).unwrap_or(0);
                                         }
                                     }
                                 }
                                 
-                                let sockets = item_obj.get("Sockets").and_then(|v| v.as_u64()).map(|s| s as u32);
+                                let sockets = item_obj.get("Sockets").and_then(serde_json::Value::as_u64).map(|s| u32::try_from(s).unwrap_or(0));
                                 
                                 let mut mapped_item: Option<MappedItem> = None;
 
@@ -497,8 +506,9 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                         _ => None, // Unknown riven type, skip
                                     };
 
-                                    if let Some(s) = slug {
-                                        if let Some(wfm_item) = wfm_by_slug.get(s) {
+                                    if let Some(s) = slug
+                                        && let Some(wfm_item) = wfm_by_slug.get(s)
+                                    {
                                             mapped_item = Some(MappedItem {
                                                 id: wfm_item.id.clone(),
                                                 slug: wfm_item.slug.clone(),

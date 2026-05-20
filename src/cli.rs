@@ -69,6 +69,14 @@ fn print_error_ui(msg: &str) {
 }
 
 /// Runs the interactive CLI loop.
+#[allow(clippy::too_many_lines)] // This function needs a significant refactor to reduce line count.
+/// # Errors
+/// Returns an error if CLI input/output operations fail, WFM client operations fail,
+/// or file operations for blacklist/keeplist fail.
+///
+/// # Panics
+/// Panics if `wfm_client.user` is `None` after successful sign-in,
+/// or if a `serde_json::Value` is not an object when expected (e.g., `unwrap()`).
 pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error + Send + Sync>> {
     print_header("Warframe.Market Advisor Session Init");
 
@@ -91,7 +99,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     println!("Fetching your active listings from Warframe.Market...");
     let user_listings = wfm_client.get_sell_listings(&username).await?;
     let current_listing_count = user_listings.len();
-    print_info("Active Listings on WFM", &format!("{}/100 slots used", current_listing_count));
+    print_info("Active Listings on WFM", &format!("{current_listing_count}/100 slots used"));
 
     // Map existing listings by url_name for quick lookup/budget calculation
     let mut existing_listings_map: HashMap<String, Vec<UserListing>> = HashMap::new();
@@ -108,10 +116,10 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                 return true;
             }
             if item.is_mod {
-                if let Some(mr) = item.max_rank {
-                    if mr >= 5 {
-                        return true;
-                    }
+                if let Some(mr) = item.max_rank
+                    && mr >= 5
+                {
+                    return true;
                 }
                 return false;
             }
@@ -153,15 +161,14 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     println!("  --------------------------------------------------------------------------------");
     for slug in all_ayatans {
         if let Some(yield_endo) = get_ayatan_endo_yield(slug) {
-            let est_plat = (yield_endo as f64) * endo_rate;
+            let est_plat = f64::from(yield_endo) * endo_rate;
             if let Ok(stats) = fetch_statistics(slug).await {
                 // Find latest buy orders from statistics_live
                 let avg_buy = stats.payload.statistics_live.ninety_days
                     .iter()
                     .filter(|d| d.order_type.as_deref() == Some("buy"))
-                    .last()
-                    .map(|d| d.wa_price)
-                    .unwrap_or(0.0);
+                    .next_back()
+                    .map_or(0.0, |d| d.wa_price);
 
                 let arbitrage = if avg_buy > 0.0 && avg_buy < est_plat - 1.0 {
                     "\x1B[1;32mYES\x1B[0m"
@@ -193,7 +200,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
 
             match task {
                 ListingTask::Create { item_id, price, quantity, rank, name, slug } => {
-                    println!("\x1B[33m[SYNC] Posting listing: {} (rank: {:?}) for {} plat...\x1B[0m", name, rank, price);
+                    println!("\x1B[33m[SYNC] Posting listing: {name} (rank: {rank:?}) for {price} plat...\x1B[0m");
                     match wfm_client_worker.create_listing(&item_id, price, quantity, rank).await {
                         Ok(_) => {
                             println!("\x1B[32m[SYNC] Successfully listed {} x{}!\x1B[0m", name, quantity);
@@ -213,7 +220,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                     }
                 }
                 ListingTask::Update { order_id, price, quantity, name, slug } => {
-                    println!("\x1B[33m[SYNC] Updating listing: {} to {} plat...\x1B[0m", name, price);
+                    println!("\x1B[33m[SYNC] Updating listing: {name} to {price} plat...\x1B[0m");
                     match wfm_client_worker.update_listing(&order_id, price, quantity).await {
                         Ok(_) => {
                             println!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", name);
@@ -261,7 +268,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                 .map(|d| d.volume)
                 .sum();
 
-            let score = wa_price * (1.0 + (vol_30d as f64)).ln();
+            let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
 
             priced_candidates.push((c, wa_price, saturation, vol_30d, score));
         }
@@ -371,8 +378,9 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
 
             if is_already_listed {
                 // Update listing
-                if let Some(listings) = existing_listings_map.get(&item.slug) {
-                    if let Some(first_listing) = listings.first() {
+                if let Some(listings) = existing_listings_map.get(&item.slug)
+                    && let Some(first_listing) = listings.first()
+                {
                         let _ = tx.send(ListingTask::Update {
                             order_id: first_listing.id.clone(),
                             price,

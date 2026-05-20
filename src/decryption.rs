@@ -11,11 +11,14 @@ pub const IV: &[u8; 16] = &[
 ];
 
 /// Decrypts the given ciphertext using AES-128-CBC with PKCS7 padding.
+///
+/// # Errors
+/// Returns an error if decryption fails due to invalid key, IV, or padding.
 pub fn decrypt(ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
     let decryptor = Aes128CbcDec::new(KEY.into(), IV.into());
     let mut buf = ciphertext.to_vec();
     let decrypted = decryptor
         .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buf)
-        .map_err(|e| format!("Decryption error: {:?}", e))?;
+        .map_err(|e| format!("Decryption error: {e:?}"))?;
     Ok(decrypted.to_vec())
 }

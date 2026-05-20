@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 use crate::decryption::decrypt;
 
 /// Resolves the inventory file path based on command line arguments or environment defaults.
+///
+/// # Errors
+/// Returns an error if the inventory path cannot be determined from arguments or environment,
+/// or if environment variables are not properly configured.
 pub fn get_inventory_path() -> Result<PathBuf, Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
     
@@ -25,7 +29,7 @@ pub fn get_inventory_path() -> Result<PathBuf, Box<dyn Error>> {
     }
 }
 
-/// Reads, decrypts, and extracts the AlecaFrame inventory JSON.
+/// Reads, decrypts, and extracts the `AlecaFrame` inventory JSON.
 pub fn ingest_inventory<P: AsRef<Path>>(path: P) -> Result<serde_json::Value, Box<dyn Error>> {
     let path = path.as_ref();
     if !path.exists() {
@@ -53,12 +57,12 @@ pub fn ingest_inventory<P: AsRef<Path>>(path: P) -> Result<serde_json::Value, Bo
     
     // Parse outer JSON
     let outer_json: serde_json::Value = serde_json::from_slice(&decrypted_bytes)
-        .map_err(|e| format!("Failed to parse outer JSON: {:?}", e))?;
+        .map_err(|e| format!("Failed to parse outer JSON: {e:?}"))?;
         
     // Extract nested InventoryJson string if present
     let inventory_value = if let Some(inventory_str) = outer_json.get("InventoryJson").and_then(|v| v.as_str()) {
         serde_json::from_str(inventory_str)
-            .map_err(|e| format!("Failed to parse inner InventoryJson: {:?}", e))?
+            .map_err(|e| format!("Failed to parse inner InventoryJson: {e:?}"))?
     } else {
         outer_json
     };

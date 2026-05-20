@@ -49,7 +49,14 @@ pub struct WfmClient {
     pub user: Option<WfmUser>,
 }
 
+impl Default for WfmClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WfmClient {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -118,14 +125,14 @@ impl WfmClient {
         if !response.status().is_success() {
             let status = response.status();
             let err_text = response.text().await.unwrap_or_default();
-            return Err(format!("Sign in failed with status: {} - {}", status, err_text).into());
+            return Err(format!("Sign in failed with status: {status} - {err_text}").into());
         }
 
         let mut jwt_token = None;
-        if let Some(auth_val) = response.headers().get("Authorization") {
-            if let Ok(auth_str) = auth_val.to_str() {
-                jwt_token = Some(auth_str.to_string());
-            }
+        if let Some(auth_val) = response.headers().get("Authorization")
+            && let Ok(auth_str) = auth_val.to_str()
+        {
+            jwt_token = Some(auth_str.to_string());
         }
 
         let body_bytes = response.bytes().await?;
@@ -145,17 +152,17 @@ impl WfmClient {
     }
 
     /// Retrieve all active sell orders for a user.
-    /// Uses GET /v2/profile/{username}/orders (mirrors pywmapi get_orders_by_username).
+    /// Uses GET /v2/profile/{username}/orders (mirrors pywmapi `get_orders_by_username`).
     pub async fn get_sell_listings(&self, ingame_name: &str) -> Result<Vec<UserListing>, Box<dyn Error + Send + Sync>> {
         let url=format!("https://api.warframe.market/v2/orders/user/{}",ingame_name.to_lowercase());
         let response=self.client.get(&url).headers(self.headers()?).send().await?;
         if!response.status().is_success(){let status=response.status();let err_text=response.text().await.unwrap_or_default();return Err(format!("Failed to retrieve user listings: {} - {}",status,err_text).into());}
         let res:UserListingsResponse=response.json().await?;
-        Ok(res.data.unwrap_or_default().into_iter().filter(|l| l.visible || true).collect())
+        Ok(res.data.unwrap_or_default().into_iter().filter(|l| l.visible).collect())
     }
 
     /// Create a new sell order on Warframe.Market.
-    /// Uses POST /v2/profile/orders (mirrors pywmapi add_order).
+    /// Uses POST /v2/profile/orders (mirrors pywmapi `add_order`).
     pub async fn create_listing(
         &self,
         item_id: &str,
@@ -175,7 +182,7 @@ impl WfmClient {
             body.as_object_mut().unwrap().insert("rank".to_string(), serde_json::json!(r));
         }
 
-        let url = format!("https://api.warframe.market/v1/profile/orders");
+        let url = "https://api.warframe.market/v1/profile/orders".to_string();
         let response = self.client
             .post(&url)
             .headers(self.headers()?)
@@ -185,14 +192,14 @@ impl WfmClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to create listing: {}", error_text).into());
+            return Err(format!("Failed to create listing: {error_text}").into());
         }
 
         Ok(())
     }
 
     /// Update an existing order's platinum price and quantity.
-    /// Uses PUT /v2/profile/orders/{order_id} (mirrors pywmapi update_order).
+    /// Uses PUT `/v2/profile/orders/{order_id}` (mirrors pywmapi `update_order`).
     pub async fn update_listing(
         &self,
         order_id: &str,
@@ -205,7 +212,7 @@ impl WfmClient {
             "visible": true
         });
 
-        let url = format!("https://api.warframe.market/v1/profile/orders/{}", order_id);
+        let url = format!("https://api.warframe.market/v1/profile/orders/{order_id}");
         let response = self.client
             .put(&url)
             .headers(self.headers()?)
@@ -215,7 +222,7 @@ impl WfmClient {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to update listing {}: {}", order_id, error_text).into());
+            return Err(format!("Failed to update listing {order_id}: {error_text}").into());
         }
 
         Ok(())

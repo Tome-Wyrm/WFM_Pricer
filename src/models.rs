@@ -11,7 +11,7 @@ pub struct Item {
     pub max_rank: Option<u32>,
 }
 
-/// Represents an item owned by the user, parsed from the AlecaFrame inventory.
+/// Represents an item owned by the user, parsed from the `AlecaFrame` inventory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InventoryItem {
     pub game_ref: String,
@@ -38,7 +38,7 @@ pub struct ModRank {
 
 // Below are helpers for deserializing WFM and AlecaFrame API/cache structures.
 
-/// Raw WFM API Item structure as stored in v2_items.json
+/// Raw WFM API Item structure as stored in `v2_items.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WfmItem {
     pub id: String,
@@ -97,7 +97,7 @@ pub struct WfmV2Response {
 /// of the item identified by `slug` at the given `rank`.
 /// Unranked items should use rank = 0.
 ///
-/// Example: { "slug": "fleeting_expertise", "rank": 5, "keep": 1 }
+/// Example: { "slug": "`fleeting_expertise`", "rank": 5, "keep": 1 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeepEntry {
     pub slug: String,
