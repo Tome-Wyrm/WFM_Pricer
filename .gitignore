@@ -13,5 +13,8 @@ alecaframe-inventory-parser.html
 cargo.lock
 context*
 inventory.json
-keeplist.json
 v2_items.json
+Prune_2.ps1
+map_inventory*
+keeplist.json
+blacklist.json
