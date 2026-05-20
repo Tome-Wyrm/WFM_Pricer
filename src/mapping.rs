@@ -373,7 +373,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
         }
 
         if let Some(def) = AYATANS.iter().find(|a| a.game_ref == game_ref) {
-            let is_filled = sockets.unwrap_or(0) == def.fully_filled_mask;
+            let _is_filled = sockets.unwrap_or(0) == def.fully_filled_mask;
             if let Some(wfm_item) = wfm_by_name.get(&def.name.to_lowercase()) {
                 return Some(MappedItem {
                     id: wfm_item.id.clone(),
