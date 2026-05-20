@@ -316,7 +316,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
         if is_already_listed {
             if let Some(listings) = existing_listings_map.get(&item.slug) {
                 for (idx, listing) in listings.iter().enumerate() {
-                    println!("    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}", idx + 1, listing.price, listing.quantity, listing.visible);
+                    println!("    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}", idx + 1, listing.platinum, listing.quantity, listing.visible);
                 }
             }
         }
