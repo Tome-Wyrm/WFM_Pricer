@@ -232,6 +232,42 @@ fn find_wfm_match<'a>(
     None
 }
 
+fn is_flavour_item_allowed(game_ref: &str) -> bool {
+    game_ref.starts_with("/Lotus/Types/Items/Emotes/Syndicate/")
+}
+
+fn is_upgrade_item_allowed(game_ref: &str) -> bool {
+    // Covers both RawUpgrades (unranked mods, legendary core) and Upgrades (ranked mods)
+    game_ref.starts_with("/Lotus/Upgrades/Mods/")
+}
+
+fn is_fusion_treasure_allowed(game_ref: &str) -> bool {
+    crate::mapping::AYATANS.iter().any(|a| a.game_ref == game_ref)
+}
+
+fn is_misc_item_allowed(game_ref: &str) -> bool {
+    game_ref.starts_with("/Lotus/Types/Items/Fish/") ||
+    game_ref.starts_with("/Lotus/Types/Items/Gems/") ||
+    game_ref.starts_with("/Lotus/Types/Items/PhotoBooth/") ||
+    game_ref.starts_with("/Lotus/Types/Items/DangerRoom/") ||
+    game_ref.starts_with("/Lotus/Types/Items/FusionTreasures/OroFusexOrnament") || // Ayatan Stars
+    game_ref.starts_with("/Lotus/Types/Items/Lenses/") ||
+    game_ref.starts_with("/Lotus/Types/Items/Keys/") ||
+    game_ref.starts_with("/Lotus/Types/Recipes/Weapons/WeaponParts/") ||
+    (game_ref.starts_with("/Lotus/Types/Recipes/WarframeRecipes/") && !game_ref.ends_with("Component")) || // Warframe parts, but not the final "Component" for built frames
+    game_ref.starts_with("/Lotus/Types/Items/MiscItems/JuggernautPart") ||
+    game_ref.starts_with("/Lotus/Types/Items/MiscItems/RazorbackCipherPart") ||
+    game_ref.starts_with("/Lotus/Types/Items/MiscItems/SyringeComponent") || // Nav Coordinates
+    game_ref.starts_with("/Lotus/Types/Items/MiscItems/GrnFlameSpearPart") || // Vay Hek beacons
+    game_ref.starts_with("/Lotus/Types/Items/MiscItems/ValenceAdapter") ||
+    game_ref.starts_with("/Lotus/Types/Items/MiscItems/PhotoboothTile") || // Older scene items sometimes appear here
+    game_ref.starts_with("/Lotus/Types/Items/MiscItems/DangerRoomKey")
+}
+
+fn is_relic(game_ref: &str) -> bool {
+    game_ref.starts_with("/Lotus/Types/Game/Projections/")
+}
+
 /// Performs item intersection and maps raw inventory to WFM tradeable items.
 pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, Box<dyn Error>> {
     // 1. Load caches
@@ -256,11 +292,13 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
 
     let mut wfm_by_ref = HashMap::new();
     let mut wfm_by_name = HashMap::new();
+    let mut wfm_by_slug = HashMap::new(); // New map for slug lookup
     for item in &wfm_response.data {
         if let Some(ref gr) = item.game_ref {
             wfm_by_ref.insert(gr.clone(), item);
         }
         wfm_by_name.insert(item.i18n.en.name.to_lowercase(), item);
+        wfm_by_slug.insert(item.slug.clone(), item); // Insert slug for veiled rivens
     }
 
     // 2. Load keeplist.json (user-defined per slug+rank reserves)
@@ -290,34 +328,27 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
 
     let mut mapped_results = Vec::new();
 
-    // Set of base categories to exclude from mapping as "Sets" to avoid trying to sell equipped/crafted gear
-    let excluded_categories = [
-        "Suits", "Melee", "LongGuns", "Pistols", 
-        "Sentinels", "SpaceSuits", "SpaceGuns", 
-        "SpaceMelee", "MechSuits"
-    ];
-
     // Helper closure to map a single game_ref and quantity/rank combination
+    // `category` and `excluded_categories` parameters removed, as filtering happens upstream.
     let map_single = |
         game_ref: &str, 
         qty: u32, 
         rank: u32, 
         sockets: Option<u32>,
-        category: &str,
-        excluded_categories: &[&str],
         wfm_by_ref: &HashMap<String, &WfmItem>,
         wfm_by_name: &HashMap<String, &WfmItem>,
         wfcd_by_ref: &HashMap<String, &WfcdItem>
     | -> Option<MappedItem> {
         
-        // A. Check static Ayatans and Stars first
+        // A. Check static Ayatans and Stars first (these are primarily from MiscItems and FusionTreasures,
+        //    but the `game_ref` based match here is robust).
         if game_ref == CYAN_STAR_REF {
             return Some(MappedItem {
                 id: "58ca59c071d7d022b7405e32".to_string(), // WFM id for Cyan Star
                 slug: "ayatan_cyan_star".to_string(),
                 name: "Ayatan Cyan Star".to_string(),
                 quantity: qty,
-                rank: 0,
+                rank: None, // Stars have no rank
                 max_rank: None,
                 is_mod: false,
                 is_arcane: false,
@@ -332,7 +363,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                 slug: "ayatan_amber_star".to_string(),
                 name: "Ayatan Amber Star".to_string(),
                 quantity: qty,
-                rank: 0,
+                rank: None, // Stars have no rank
                 max_rank: None,
                 is_mod: false,
                 is_arcane: false,
@@ -349,7 +380,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                     slug: wfm_item.slug.clone(),
                     name: wfm_item.i18n.en.name.clone(),
                     quantity: qty,
-                    rank: if is_filled { 1 } else { 0 },
+                    rank: None, // Ayatan sculptures are not mods/arcanes, so rank is None per request
                     max_rank: None,
                     is_mod: false,
                     is_arcane: false,
@@ -359,7 +390,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
             }
         }
 
-        // B. Perform Dual lookup: by gameRef first, then by name matching
+        // Perform Dual lookup: by gameRef first, then by name matching
         let wfm_item = wfm_by_ref.get(game_ref)
             .copied()
             .or_else(|| {
@@ -368,12 +399,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                 })
             })?;
 
-        // C. Exclude base categories if mapping as a Set (built items are untradeable)
-        if excluded_categories.contains(&category) && wfm_item.tags.contains(&"set".to_string()) {
-            return None;
-        }
-
-        // D. Retrieve metadata from WFCD item if available
+        // Retrieve metadata from WFCD item if available
         let wfcd_item = wfcd_by_ref.get(game_ref);
         let max_rank = wfm_item.max_rank.or_else(|| {
             wfcd_item.and_then(|item| {
@@ -393,7 +419,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
             slug: wfm_item.slug.clone(),
             name: wfm_item.i18n.en.name.clone(),
             quantity: qty,
-            rank,
+            rank: if is_mod || is_arcane { Some(rank) } else { None }, // Rank only for mods/arcanes
             max_rank,
             is_mod,
             is_arcane,
@@ -402,68 +428,145 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
         })
     };
 
-    // Generic JSON Traversal of all categories
+    // Iterate through specific allowed inventory categories
+    let allowed_inventory_keys = [
+        "FlavourItems", "RawUpgrades", "Upgrades", 
+        "FusionTreasures", "Recipes", "MiscItems"
+    ];
+
     if let Some(obj) = inventory.as_object() {
-        for (category, val) in obj {
-            // Check if value is an array of items
-            if let Some(arr) = val.as_array() {
-                for element in arr {
-                    if let Some(item_obj) = element.as_object() {
-                        // Extract ItemType (game reference)
-                        if let Some(item_type) = item_obj.get("ItemType").and_then(|v| v.as_str()) {
-                            
-                            // Use raw quantity as-is; user decides how many to list at prompt time
-                            let qty = item_obj.get("ItemCount")
-                                .and_then(|v| v.as_u64())
-                                .map(|q| q as u32)
-                                .unwrap_or(1);
+        for &category_key in &allowed_inventory_keys {
+            if let Some(val) = obj.get(category_key) {
+                if let Some(arr) = val.as_array() {
+                    for element in arr {
+                        if let Some(item_obj) = element.as_object() {
+                            if let Some(item_type) = item_obj.get("ItemType").and_then(|v| v.as_str()) {
                                 
-                            if qty == 0 {
-                                continue;
-                            }
-                            
-                            // Determine rank (if present in fingerprint)
-                            let mut rank = 0;
-                            if let Some(fp_str) = item_obj.get("UpgradeFingerprint").and_then(|v| v.as_str()) {
-                                if let Ok(fp_val) = serde_json::from_str::<serde_json::Value>(fp_str) {
-                                    // Skip Rivens
-                                    if fp_val.get("compat").is_some() || fp_val.get("challenge").is_some() {
-                                        continue;
-                                    }
-                                    if let Some(lvl) = fp_val.get("lvl").and_then(|v| v.as_u64()) {
-                                        rank = lvl as u32;
-                                    }
-                                }
-                            }
-                            
-                            // Sockets (Ayatan filling)
-                            let sockets = item_obj.get("Sockets").and_then(|v| v.as_u64()).map(|s| s as u32);
-                            
-                            if let Some(mut mapped) = map_single(
-                                item_type, 
-                                qty, 
-                                rank, 
-                                sockets, 
-                                category, 
-                                &excluded_categories, 
-                                &wfm_by_ref, 
-                                &wfm_by_name, 
-                                &wfcd_by_ref
-                            ) {
-                                // Apply blacklist
-                                if blacklist.contains(&mapped.slug) {
+                                let qty = item_obj.get("ItemCount")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|q| q as u32)
+                                    .unwrap_or(1);
+                                    
+                                if qty == 0 {
                                     continue;
                                 }
-
-                                // Apply keeplist: subtract reserved copies for this slug+rank
-                                let keep_key = (mapped.slug.clone(), mapped.rank);
-                                if let Some(&reserved) = keep_map.get(&keep_key) {
-                                    if mapped.quantity <= reserved {
-                                        continue; // All copies reserved, skip entirely
+                                
+                                let mut rank = 0;
+                                if let Some(fp_str) = item_obj.get("UpgradeFingerprint").and_then(|v| v.as_str()) {
+                                    if let Ok(fp_val) = serde_json::from_str::<serde_json::Value>(fp_str) {
+                                        // Skip standard Rivens (non-veiled) - handled later for veiled
+                                        if fp_val.get("compat").is_some() || fp_val.get("challenge").is_some() {
+                                            continue;
+                                        }
+                                        if let Some(lvl) = fp_val.get("lvl").and_then(|v| v.as_u64()) {
+                                            rank = lvl as u32;
+                                        }
                                     }
-                                    mapped.quantity -= reserved;
                                 }
-                                mapped_results.push(mapped);
+                                
+                                let sockets = item_obj.get("Sockets").and_then(|v| v.as_u64()).map(|s| s as u32);
+                                
+                                let mut mapped_item: Option<MappedItem> = None;
+
+                                // Special case: Legendary Core
+                                if item_type == "/Lotus/Upgrades/Mods/Fusers/LegendaryModFuser" {
+                                    mapped_item = Some(MappedItem {
+                                        id: "54aaf530e77989710f6b4e41".to_string(), // WFM id for Legendary Fusion Core
+                                        slug: "legendary_fusion_core".to_string(),
+                                        name: "Legendary Fusion Core".to_string(),
+                                        quantity: qty,
+                                        rank: None,
+                                        max_rank: None,
+                                        is_mod: false,
+                                        is_arcane: false,
+                                        is_ayatan: false,
+                                        game_ref: item_type.to_string(),
+                                    });
+                                } 
+                                // Special case: Veiled Rivens
+                                else if item_type.starts_with("/Lotus/Upgrades/Mods/Randomized/") {
+                                    let riven_type_segment = item_type.trim_start_matches("/Lotus/Upgrades/Mods/Randomized/").split('/').next().unwrap_or("");
+                                    let slug = match riven_type_segment {
+                                        "Rifle" => Some("veiled_rifle_riven_mod"),
+                                        "Pistol" => Some("veiled_pistol_riven_mod"),
+                                        "Shotgun" => Some("veiled_shotgun_riven_mod"),
+                                        "Melee" => Some("veiled_melee_riven_mod"),
+                                        "Kitgun" => Some("veiled_kitgun_riven_mod"),
+                                        "Zaw" => Some("veiled_zaw_riven_mod"),
+                                        "CompanionWeapon" => Some("veiled_companion_weapon_riven_mod"),
+                                        _ => None, // Unknown riven type, skip
+                                    };
+
+                                    if let Some(s) = slug {
+                                        if let Some(wfm_item) = wfm_by_slug.get(s) {
+                                            mapped_item = Some(MappedItem {
+                                                id: wfm_item.id.clone(),
+                                                slug: wfm_item.slug.clone(),
+                                                name: wfm_item.i18n.en.name.clone(),
+                                                quantity: qty,
+                                                rank: Some(0), // Veiled rivens are always rank 0
+                                                max_rank: None,
+                                                is_mod: true,
+                                                is_arcane: false,
+                                                is_ayatan: false,
+                                                game_ref: item_type.to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                                // General Allowlist filtering
+                                else {
+                                    let is_allowed = match category_key {
+                                        "FlavourItems" => is_flavour_item_allowed(item_type),
+                                        "RawUpgrades" | "Upgrades" => is_upgrade_item_allowed(item_type),
+                                        "FusionTreasures" => is_fusion_treasure_allowed(item_type),
+                                        "Recipes" => {
+                                            // For "Recipes" category, apply MiscItems filters first
+                                            if is_misc_item_allowed(item_type) {
+                                                true
+                                            } else {
+                                                // Fallback for generic recipes: WFM match acts as gatekeeper
+                                                wfm_by_ref.contains_key(item_type) || 
+                                                wfcd_by_ref.get(item_type).and_then(|wfcd_item| {
+                                                    find_wfm_match(&wfcd_item.name, &wfm_by_name)
+                                                }).is_some()
+                                            }
+                                        },
+                                        "MiscItems" => {
+                                            if is_relic(item_type) {
+                                                // TODO: Relic matching requires a wiki relics.json lookup table mapping
+                                                // projection uniqueName to WFM urlName, with Bronze/Silver/Gold/Platinum
+                                                // suffix -> intact/exceptional/flawless/radiant.
+                                                false // Skip relics for now
+                                            } else {
+                                                is_misc_item_allowed(item_type)
+                                            }
+                                        },
+                                        _ => false, // Should not be reached with predefined `allowed_inventory_keys`
+                                    };
+
+                                    if is_allowed {
+                                        mapped_item = map_single(item_type, qty, rank, sockets, &wfm_by_ref, &wfm_by_name, &wfcd_by_ref);
+                                    }
+                                }
+
+                                if let Some(mut mapped) = mapped_item {
+                                    // Apply blacklist
+                                    if blacklist.contains(&mapped.slug) {
+                                        continue;
+                                    }
+
+                                    // Apply keeplist: subtract reserved copies for this slug+rank
+                                    let keep_rank_for_key = mapped.rank.unwrap_or(0); // Convert Option<u32> to u32 for keep_map key
+                                    let keep_key = (mapped.slug.clone(), keep_rank_for_key);
+                                    if let Some(&reserved) = keep_map.get(&keep_key) {
+                                        if mapped.quantity <= reserved {
+                                            continue; // All copies reserved, skip entirely
+                                        }
+                                        mapped.quantity -= reserved;
+                                    }
+                                    mapped_results.push(mapped);
+                                }
                             }
                         }
                     }
