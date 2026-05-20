@@ -80,7 +80,7 @@ pub struct MappedItem {
     pub slug: String,
     pub name: String,
     pub quantity: u32,
-    pub rank: Option<u32>, // Changed from u32 to Option<u32>
+    pub rank: Option<u32>, 
     pub max_rank: Option<u32>,
     pub is_mod: bool,
     pub is_arcane: bool,
