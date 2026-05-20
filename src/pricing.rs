@@ -80,7 +80,7 @@ pub fn calculate_weighted_average(
         if let Some(latest) = stats.payload.statistics_closed.ninety_days
             .iter()
             .filter(|d| d.mod_rank == target_rank)
-            .last()
+            .next_back()
         {
             (latest.wa_price, latest.volume)
         } else {
@@ -98,12 +98,12 @@ pub fn calculate_saturation_ratio(
     let latest_live_sell = stats.payload.statistics_live.ninety_days
         .iter()
         .filter(|d| d.mod_rank == target_rank && d.order_type.as_deref() == Some("sell"))
-        .last();
+        .next_back();
 
     let latest_closed = stats.payload.statistics_closed.ninety_days
         .iter()
         .filter(|d| d.mod_rank == target_rank)
-        .last();
+        .next_back();
 
     match (latest_live_sell, latest_closed) {
         (Some(live), Some(closed)) => {
@@ -180,7 +180,6 @@ pub fn get_mod_base_endo(rarity: &str) -> u32 {
 pub fn get_mod_trade_tax(rarity: &str) -> u32 {
     match rarity {
         "Legendary" => 1_000_000,
-        "Rare" => 8_000,
         "Uncommon" => 4_000,
         "Common" => 2_000,
         _ => 8_000,

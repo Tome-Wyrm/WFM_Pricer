@@ -15,7 +15,7 @@ async fn main() {
     
     // 1. Update caches
     if let Err(e) = mapping::update_caches().await {
-        println!("Error updating caches: {:?}", e);
+        println!("Error updating caches: {e:?}");
         return;
     }
     
@@ -24,7 +24,7 @@ async fn main() {
     let inventory = match ingestion::ingest_inventory("inventory.json") {
         Ok(inv) => inv,
         Err(e) => {
-            println!("Error ingesting inventory: {:?}", e);
+            println!("Error ingesting inventory: {e:?}");
             return;
         }
     };
@@ -34,7 +34,7 @@ async fn main() {
     let mapped = match mapping::map_inventory(&inventory) {
         Ok(mapped) => mapped,
         Err(e) => {
-            println!("Error mapping inventory: {:?}", e);
+            println!("Error mapping inventory: {e:?}");
             return;
         }
     };
@@ -43,6 +43,6 @@ async fn main() {
     
     // 4. Run interactive CLI
     if let Err(e) = cli::run_cli(mapped).await {
-        println!("CLI execution failed: {:?}", e);
+        println!("CLI execution failed: {e:?}");
     }
 }

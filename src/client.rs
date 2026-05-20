@@ -84,6 +84,13 @@ impl WfmClient {
         Ok(headers)
     }
 
+    /// # Errors
+    /// Returns an error if network requests fail, JSON parsing fails,
+    /// or the sign-in attempt is unsuccessful.
+    ///
+    /// # Panics
+    /// Panics if `self.user` is unexpectedly `None` after a successful sign-in,
+    /// which indicates a severe internal logic error.
     pub async fn sign_in(&mut self, email: &str, password: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         println!("Fetching Warframe.Market session credentials...");
         let home_response = self.client.get("https://warframe.market")
@@ -93,12 +100,12 @@ impl WfmClient {
             
         let html = home_response.text().await?;
         let mut csrf_token = None;
-        if let Some(meta_idx) = html.find("name=\"csrf-token\"") {
-            if let Some(content_sub) = html[meta_idx..].find("content=\"") {
-                let start = meta_idx + content_sub + "content=\"".len();
-                if let Some(end) = html[start..].find("\"") {
-                    csrf_token = Some(html[start..start+end].to_string());
-                }
+        if let Some(meta_idx) = html.find("name=\"csrf-token\"")
+            && let Some(content_sub) = html[meta_idx..].find("content=\"")
+        {
+            let start = meta_idx + content_sub + "content=\"".len();
+            if let Some(end) = html[start..].find('\"') {
+                csrf_token = Some(html[start..start+end].to_string());
             }
         }
         self.csrf_token = csrf_token;
@@ -153,16 +160,33 @@ impl WfmClient {
 
     /// Retrieve all active sell orders for a user.
     /// Uses GET /v2/profile/{username}/orders (mirrors pywmapi `get_orders_by_username`).
+    ///
+    /// # Errors
+    /// Returns an error if the network request fails, the API returns a non-success status,
+    /// or JSON parsing of the response fails.
     pub async fn get_sell_listings(&self, ingame_name: &str) -> Result<Vec<UserListing>, Box<dyn Error + Send + Sync>> {
         let url=format!("https://api.warframe.market/v2/orders/user/{}",ingame_name.to_lowercase());
         let response=self.client.get(&url).headers(self.headers()?).send().await?;
-        if!response.status().is_success(){let status=response.status();let err_text=response.text().await.unwrap_or_default();return Err(format!("Failed to retrieve user listings: {} - {}",status,err_text).into());}
+        if !response.status().is_success() {
+            let status = response.status();
+            let err_text = response.text().await.unwrap_or_default();
+            return Err(format!("Failed to retrieve user listings: {status} - {err_text}").into());
+        }
         let res:UserListingsResponse=response.json().await?;
         Ok(res.data.unwrap_or_default().into_iter().filter(|l| l.visible).collect())
     }
 
     /// Create a new sell order on Warframe.Market.
     /// Uses POST /v2/profile/orders (mirrors pywmapi `add_order`).
+    ///
+    /// # Errors
+    /// Returns an error if `serde_json` fails to convert the request body to JSON,
+    /// network request fails, the API returns a non-success status, or the response
+    /// cannot be parsed.
+    ///
+    /// # Panics
+    /// Panics if `body.as_object_mut().unwrap()` is called on a non-object JSON value,
+    /// which indicates a severe internal logic error.
     pub async fn create_listing(
         &self,
         item_id: &str,
@@ -200,6 +224,11 @@ impl WfmClient {
 
     /// Update an existing order's platinum price and quantity.
     /// Uses PUT `/v2/profile/orders/{order_id}` (mirrors pywmapi `update_order`).
+    ///
+    /// # Errors
+    /// Returns an error if `serde_json` fails to convert the request body to JSON,
+    /// network request fails, the API returns a non-success status, or the response
+    /// cannot be parsed.
     pub async fn update_listing(
         &self,
         order_id: &str,

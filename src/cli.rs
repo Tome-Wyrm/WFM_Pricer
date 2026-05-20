@@ -56,16 +56,16 @@ fn print_header(title: &str) {
 }
 
 fn print_info(label: &str, value: &str) {
-    println!("\x1B[1;34m  {:<25}\x1B[0m : \x1B[32m{}\x1B[0m", label, value);
+    println!("\x1B[1;34m  {label:<25}\x1B[0m : \x1B[32m{value}\x1B[0m");
 }
 
 fn print_warning(msg: &str) {
-    println!("\x1B[1;33m  [WARNING] {}\x1B[0m", msg);
+    println!("\x1B[1;33m  [WARNING] {msg}\x1B[0m");
 }
 
 #[allow(dead_code)]
 fn print_error_ui(msg: &str) {
-    println!("\x1B[1;31m  [ERROR] {}\x1B[0m", msg);
+    println!("\x1B[1;31m  [ERROR] {msg}\x1B[0m");
 }
 
 /// Runs the interactive CLI loop.
@@ -135,12 +135,12 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     println!("Deriving dynamic Endo exchange rate from Ayatan prices...");
     let mut priced_ayatans = HashMap::new();
     for c in &candidates {
-        if c.is_ayatan {
-            if let Ok(stats) = fetch_statistics(&c.slug).await {
-                let (wa_price, _) = calculate_weighted_average(&stats, None);
-                if wa_price > 0.0 {
-                    priced_ayatans.insert(c.slug.clone(), wa_price);
-                }
+        if c.is_ayatan
+            && let Ok(stats) = fetch_statistics(&c.slug).await
+        {
+            let (wa_price, _) = calculate_weighted_average(&stats, None);
+            if wa_price > 0.0 {
+                priced_ayatans.insert(c.slug.clone(), wa_price);
             }
         }
     }
@@ -176,7 +176,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                     "\x1B[31mNO\x1B[0m"
                 };
 
-                println!("  {:<30} | {:<12} | {:<10.2} | {:<12.2} | {:<10}", slug, yield_endo, est_plat, avg_buy, arbitrage);
+                println!("  {slug:<30} | {yield_endo:<12} | {est_plat:<10.2} | {avg_buy:<12.2} | {arbitrage:<10}");
             }
         }
     }
@@ -202,8 +202,8 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                 ListingTask::Create { item_id, price, quantity, rank, name, slug } => {
                     println!("\x1B[33m[SYNC] Posting listing: {name} (rank: {rank:?}) for {price} plat...\x1B[0m");
                     match wfm_client_worker.create_listing(&item_id, price, quantity, rank).await {
-                        Ok(_) => {
-                            println!("\x1B[32m[SYNC] Successfully listed {} x{}!\x1B[0m", name, quantity);
+                        Ok(()) => {
+                            println!("\x1B[32m[SYNC] Successfully listed {name} x{quantity}!\x1B[0m");
                             let mut list = report_items_clone.lock().unwrap();
                             list.push(SessionReportItem {
                                 name,
@@ -215,15 +215,15 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                             });
                         }
                         Err(e) => {
-                            eprintln!("\x1B[31m[SYNC_ERROR] Failed to list {}: {}\x1B[0m", name, e);
+                            eprintln!("\x1B[31m[SYNC_ERROR] Failed to list {name}: {e}\x1B[0m");
                         }
                     }
                 }
                 ListingTask::Update { order_id, price, quantity, name, slug } => {
                     println!("\x1B[33m[SYNC] Updating listing: {name} to {price} plat...\x1B[0m");
                     match wfm_client_worker.update_listing(&order_id, price, quantity).await {
-                        Ok(_) => {
-                            println!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", name);
+                        Ok(()) => {
+                            println!("\x1B[32m[SYNC] Successfully updated listing for {name}!\x1B[0m");
                             let mut list = report_items_clone.lock().unwrap();
                             list.push(SessionReportItem {
                                 name,
@@ -235,7 +235,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                             });
                         }
                         Err(e) => {
-                            eprintln!("\x1B[31m[SYNC_ERROR] Failed to update listing {}: {}\x1B[0m", order_id, e);
+                            eprintln!("\x1B[31m[SYNC_ERROR] Failed to update listing {order_id}: {e}\x1B[0m");
                         }
                     }
                 }
@@ -317,14 +317,14 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
         println!("\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m");
         println!("\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}", item.name, item.slug, item.quantity);
         println!("  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m", item.rank.unwrap_or(0), vol_30d, wa_price);
-        println!("  Saturation Ratio: {:.3} (sell volume vs closed volume)", saturation);
+        println!("  Saturation Ratio: {saturation:.3} (sell volume vs closed volume)");
         println!("  Already Listed on WFM: {}", if is_already_listed { "\x1B[1;32mYES\x1B[0m" } else { "\x1B[31mNO\x1B[0m" });
 
-        if is_already_listed {
-            if let Some(listings) = existing_listings_map.get(&item.slug) {
-                for (idx, listing) in listings.iter().enumerate() {
-                    println!("    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}", idx + 1, listing.platinum, listing.quantity, listing.visible);
-                }
+        if is_already_listed
+            && let Some(listings) = existing_listings_map.get(&item.slug)
+        {
+            for (idx, listing) in listings.iter().enumerate() {
+                println!("    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}", idx + 1, listing.platinum, listing.quantity, listing.visible);
             }
         }
 
@@ -350,7 +350,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             println!("Blacklisting {} permanently...", item.name);
             blacklist_set.insert(item.slug.clone());
             save_blacklist(&blacklist_set)?;
-            continue;
+            break;
         } else if choice == "K" {
             print!("\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m", item.name, item.rank.unwrap_or(0));
             let _ = stdout.flush();
@@ -360,10 +360,10 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                 add_to_keeplist(&item.slug, item.rank.unwrap_or(0), keep_qty)?;
                 println!("Saved to keeplist.json!");
             }
-            continue;
+            break;
         } else if choice == "Y" {
             // Prompt price
-            print!("  Price to list (default {:.1}): ", wa_price);
+            print!("  Price to list (default {wa_price:.1}): ");
             let _ = stdout.flush();
             let mut price_str = String::new();
             io::stdin().read_line(&mut price_str)?;

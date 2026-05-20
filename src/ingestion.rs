@@ -30,10 +30,14 @@ pub fn get_inventory_path() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 /// Reads, decrypts, and extracts the `AlecaFrame` inventory JSON.
+///
+/// # Errors
+/// Returns an error if the file does not exist, cannot be read,
+/// decryption fails, or JSON parsing fails.
 pub fn ingest_inventory<P: AsRef<Path>>(path: P) -> Result<serde_json::Value, Box<dyn Error>> {
     let path = path.as_ref();
     if !path.exists() {
-        return Err(format!("Inventory file does not exist: {:?}", path).into());
+        return Err(format!("Inventory file does not exist: {}", path.display()).into());
     }
 
     let ciphertext = fs::read(path)?;
@@ -50,7 +54,7 @@ pub fn ingest_inventory<P: AsRef<Path>>(path: P) -> Result<serde_json::Value, Bo
             if start_idx < ciphertext.len() && (ciphertext[start_idx] == b'{' || ciphertext[start_idx] == b'[') {
                 ciphertext[start_idx..].to_vec()
             } else {
-                return Err(format!("Decryption failed and file does not look like plain JSON: {:?}", e).into());
+                return Err(format!("Decryption failed and file does not look like plain JSON: {e:?}").into());
             }
         }
     };
