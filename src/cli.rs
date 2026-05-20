@@ -248,7 +248,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
         if let Ok(stats) = fetch_statistics(&c.slug).await {
             // If mod or arcane, statistics has rank-specific entries. 
             // We match the candidate's rank. If it's a prime part, rank is None (0).
-            let target_rank = if c.is_mod || c.is_arcane { Some(c.rank) } else { None };
+            let target_rank = if c.is_mod || c.is_arcane { c.rank } else { None };
             let (wa_price, _vol_90d) = calculate_weighted_average(&stats, target_rank);
             let saturation = calculate_saturation_ratio(&stats, target_rank);
 
@@ -292,7 +292,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
         }
 
         // Apply keeplist check dynamically
-        let keep_copies = get_keep_quantity(&item.slug, item.rank)?;
+        let keep_copies = get_keep_quantity(&item.slug, item.rank.unwrap_or(0))?;
         if keep_copies > 0 {
             if item.quantity <= keep_copies {
                 continue; // Skipped entirely since all copies are kept
@@ -309,7 +309,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
 
         println!("\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m");
         println!("\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}", item.name, item.slug, item.quantity);
-        println!("  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m", item.rank, vol_30d, wa_price);
+        println!("  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m", item.rank.unwrap_or(0), vol_30d, wa_price);
         println!("  Saturation Ratio: {:.3} (sell volume vs closed volume)", saturation);
         println!("  Already Listed on WFM: {}", if is_already_listed { "\x1B[1;32mYES\x1B[0m" } else { "\x1B[31mNO\x1B[0m" });
 
@@ -345,12 +345,12 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             save_blacklist(&blacklist_set)?;
             continue;
         } else if choice == "K" {
-            print!("\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m", item.name, item.rank);
+            print!("\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m", item.name, item.rank.unwrap_or(0));
             let _ = stdout.flush();
             let mut keep_str = String::new();
             io::stdin().read_line(&mut keep_str)?;
             if let Ok(keep_qty) = keep_str.trim().parse::<u32>() {
-                add_to_keeplist(&item.slug, item.rank, keep_qty)?;
+                add_to_keeplist(&item.slug, item.rank.unwrap_or(0), keep_qty)?;
                 println!("Saved to keeplist.json!");
             }
             continue;
@@ -384,7 +384,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                 }
             } else {
                 // Create listing
-                let rank_opt = if item.is_mod || item.is_arcane { Some(item.rank) } else { None };
+                let rank_opt = if item.is_mod || item.is_arcane { item.rank } else { None };
                 let _ = tx.send(ListingTask::Create {
                     item_id: item.id.clone(),
                     price,
