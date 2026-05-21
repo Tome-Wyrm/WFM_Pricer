@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
+use num_traits::ToPrimitive;
 
 use crate::models::{MappedItem, KeepEntry, BlacklistEntry};
 use crate::client::{WfmClient, UserListing};
@@ -164,10 +165,12 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             let est_plat = f64::from(yield_endo) * endo_rate;
             if let Ok(stats) = fetch_statistics(slug).await {
                 // Find latest buy orders from statistics_live
-                let avg_buy = stats.payload.statistics_live.ninety_days
+                let avg_buy = stats
+                    .payload
+                    .statistics_live
+                    .ninety_days
                     .iter()
-                    .filter(|d| d.order_type.as_deref() == Some("buy"))
-                    .next_back()
+                    .rfind(|d| d.order_type.as_deref() == Some("buy"))
                     .map_or(0.0, |d| d.wa_price);
 
                 let arbitrage = if avg_buy > 0.0 && avg_buy < est_plat - 1.0 {
@@ -330,12 +333,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
 
         // Backpressure queue depth check
         // If queue exceeds 5 items, block prompt
-        loop {
-            // A primitive check by using the channel capacity or just direct sync delay:
-            // Since we use a channel of capacity 10, backpressure blocks organically if full.
-            // But we can let the prompt sleep if we want to give the worker a headstart:
-            break;
-        }
+        // Channel backpressure is handled automatically by `mpsc::channel(10)`.
 
         print!("\x1B[1;35m  Action? [Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m");
         let _ = stdout.flush();
@@ -367,7 +365,15 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             let _ = stdout.flush();
             let mut price_str = String::new();
             io::stdin().read_line(&mut price_str)?;
-            let price: u32 = price_str.trim().parse::<u32>().unwrap_or(wa_price.round() as u32);
+            let default_price = wa_price
+                .round()
+                .to_u32()
+                .unwrap_or(0);
+
+            let price: u32 = price_str
+                .trim()
+                .parse::<u32>()
+                .unwrap_or(default_price);
 
             // Prompt quantity
             print!("  Quantity to list (default {}): ", item.quantity);
@@ -388,7 +394,6 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                             name: item.name.clone(),
                             slug: item.slug.clone(),
                         }).await;
-                    }
                 }
             } else {
                 // Create listing

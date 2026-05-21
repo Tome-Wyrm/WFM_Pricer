@@ -126,7 +126,7 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
         .header(USER_AGENT, "wfm-pricer-cli")
         .send()
         .await?;
-        
+
     if !response.status().is_success() {
         return Err(format!("Failed to fetch WFCD commit hash: {}", response.status()).into());
     }
@@ -155,7 +155,7 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
     // 3. If invalidated, re-fetch both
     if cache_invalidated {
         println!("Cache is missing or stale. Re-fetching data...");
-        
+
         // Fetch WFCD All.json
         println!("Fetching WFCD All.json...");
         let wfcd_resp = client
@@ -163,11 +163,11 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
             .header(USER_AGENT, "wfm-pricer-cli")
             .send()
             .await?;
-            
+
         if !wfcd_resp.status().is_success() {
             return Err(format!("Failed to fetch All.json: {}", wfcd_resp.status()).into());
         }
-        
+
         let all_json_bytes = wfcd_resp.bytes().await?;
         fs::write(WFCD_CACHE_FILE, all_json_bytes)?;
         println!("WFCD All.json cached successfully.");
@@ -179,7 +179,7 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
             .header(USER_AGENT, "wfm-pricer-cli")
             .send()
             .await;
-            
+
         let wfm_bytes = match wfm_resp_result {
             Ok(resp) if resp.status().is_success() => {
                 let bytes = resp.bytes().await?;
@@ -194,7 +194,7 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
                 }
             }
         };
-        
+
         fs::write(WFM_CACHE_FILE, wfm_bytes)?;
         println!("WFM items list cached successfully.");
 
@@ -217,12 +217,12 @@ fn find_wfm_match<'a>(
     wfm_by_name: &'a HashMap<String, &'a WfmItem>
 ) -> Option<&'a WfmItem> {
     let lower_name = name.to_lowercase();
-    
+
     // 1. Exact match (case-insensitive)
     if let Some(item) = wfm_by_name.get(&lower_name) {
         return Some(*item);
     }
-    
+
     // 2. Trailing ' Set' fallback
     if lower_name.ends_with(" set") {
         let stripped = &lower_name[..lower_name.len() - 4];
@@ -230,7 +230,7 @@ fn find_wfm_match<'a>(
             return Some(*item);
         }
     }
-    
+
     None
 }
 
@@ -338,15 +338,15 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
     // Helper closure to map a single game_ref and quantity/rank combination
     // `category` and `excluded_categories` parameters removed, as filtering happens upstream.
     let map_single = |
-        game_ref: &str, 
-        qty: u32, 
-        rank: u32, 
+        game_ref: &str,
+        qty: u32,
+        rank: u32,
         sockets: Option<u32>,
         wfm_by_ref: &HashMap<String, &WfmItem>,
         wfm_by_name: &HashMap<String, &WfmItem>,
         wfcd_by_ref: &HashMap<String, &WfcdItem>
     | -> Option<MappedItem> {
-        
+
         // A. Check static Ayatans and Stars first (these are primarily from MiscItems and FusionTreasures,
         //    but the `game_ref` based match here is robust).
         if game_ref == CYAN_STAR_REF {
@@ -363,7 +363,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                 game_ref: game_ref.to_string(),
             });
         }
-        
+
         if game_ref == AMBER_STAR_REF {
             return Some(MappedItem {
                 id: "58ca5a1b71d7d022b7405e35".to_string(), // WFM id for Amber Star
@@ -414,11 +414,11 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
             })
         });
 
-        let is_mod = wfm_item.tags.contains(&"mod".to_string()) 
-            || game_ref.contains("/Mods/") 
+        let is_mod = wfm_item.tags.contains(&"mod".to_string())
+            || game_ref.contains("/Mods/")
             || wfcd_item.is_some_and(|item| item.category.as_deref() == Some("Mods"));
-            
-        let is_arcane = wfm_item.tags.contains(&"arcane".to_string()) 
+
+        let is_arcane = wfm_item.tags.contains(&"arcane".to_string())
             || game_ref.contains("/CosmeticEnhancers/");
 
         Some(MappedItem {
@@ -437,7 +437,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
 
     // Iterate through specific allowed inventory categories
     let allowed_inventory_keys = [
-        "FlavourItems", "RawUpgrades", "Upgrades", 
+        "FlavourItems", "RawUpgrades", "Upgrades",
         "FusionTreasures", "Recipes", "MiscItems"
     ];
 
@@ -450,15 +450,15 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                         if let Some(item_obj) = element.as_object()
                             && let Some(item_type) = item_obj.get("ItemType").and_then(|v| v.as_str())
                         {
-                                
+
                                 let qty = item_obj.get("ItemCount")
                                     .and_then(serde_json::Value::as_u64)
                                     .map_or(1, |q| u32::try_from(q).unwrap_or(1));
-                                    
+
                                 if qty == 0 {
                                     continue;
                                 }
-                                
+
                                 let mut rank = 0;
                                 if let Some(fp_str) = item_obj.get("UpgradeFingerprint").and_then(|v| v.as_str())
                                     && let Ok(fp_val) = serde_json::from_str::<serde_json::Value>(fp_str)
@@ -470,11 +470,10 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                         if let Some(lvl) = fp_val.get("lvl").and_then(serde_json::Value::as_u64) {
                                             rank = u32::try_from(lvl).unwrap_or(0);
                                         }
-                                    }
                                 }
-                                
+
                                 let sockets = item_obj.get("Sockets").and_then(serde_json::Value::as_u64).map(|s| u32::try_from(s).unwrap_or(0));
-                                
+
                                 let mut mapped_item: Option<MappedItem> = None;
 
                                 // Special case: Legendary Core
@@ -491,7 +490,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                         is_ayatan: false,
                                         game_ref: item_type.to_string(),
                                     });
-                                } 
+                                }
                                 // Special case: Veiled Rivens
                                 else if item_type.starts_with("/Lotus/Upgrades/Mods/Randomized/") {
                                     let riven_type_segment = item_type.trim_start_matches("/Lotus/Upgrades/Mods/Randomized/").split('/').next().unwrap_or("");
@@ -521,7 +520,6 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                                 is_ayatan: false,
                                                 game_ref: item_type.to_string(),
                                             });
-                                        }
                                     }
                                 }
                                 // General Allowlist filtering
@@ -536,7 +534,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                                 true
                                             } else {
                                                 // Fallback for generic recipes: WFM match acts as gatekeeper
-                                                wfm_by_ref.contains_key(item_type) || 
+                                                wfm_by_ref.contains_key(item_type) ||
                                                 wfcd_by_ref.get(item_type).and_then(|wfcd_item| {
                                                     find_wfm_match(&wfcd_item.name, &wfm_by_name)
                                                 }).is_some()
@@ -577,10 +575,8 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                     }
                                     mapped_results.push(mapped);
                                 }
-                            }
                         }
                     }
-                }
             }
         }
     }

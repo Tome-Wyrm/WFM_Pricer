@@ -77,10 +77,12 @@ pub fn calculate_weighted_average(
         (weighted_sum / f64::from(total_vol), total_vol)
     } else {
         // Fallback to latest matching day
-        if let Some(latest) = stats.payload.statistics_closed.ninety_days
+        if let Some(latest) = stats
+            .payload
+            .statistics_closed
+            .ninety_days
             .iter()
-            .filter(|d| d.mod_rank == target_rank)
-            .next_back()
+            .rfind(|d| d.mod_rank == target_rank)
         {
             (latest.wa_price, latest.volume)
         } else {
@@ -95,15 +97,22 @@ pub fn calculate_saturation_ratio(
     stats: &WfmStatsResponse,
     target_rank: Option<u32>,
 ) -> f64 {
-    let latest_live_sell = stats.payload.statistics_live.ninety_days
+    let latest_live_sell = stats
+        .payload
+        .statistics_live
+        .ninety_days
         .iter()
-        .filter(|d| d.mod_rank == target_rank && d.order_type.as_deref() == Some("sell"))
-        .next_back();
+        .rfind(|d| {
+            d.mod_rank == target_rank
+                && d.order_type.as_deref() == Some("sell")
+        });
 
-    let latest_closed = stats.payload.statistics_closed.ninety_days
+    let latest_closed = stats
+        .payload
+        .statistics_closed
+        .ninety_days
         .iter()
-        .filter(|d| d.mod_rank == target_rank)
-        .next_back();
+        .rfind(|d| d.mod_rank == target_rank);
 
     match (latest_live_sell, latest_closed) {
         (Some(live), Some(closed)) => {
@@ -147,7 +156,6 @@ pub fn derive_endo_to_plat_rate<S: ::std::hash::BuildHasher>(prices: &HashMap<St
         {
                 sum += price / f64::from(yield_endo);
                 count += 1;
-            }
         }
     }
 
@@ -160,6 +168,7 @@ pub fn derive_endo_to_plat_rate<S: ::std::hash::BuildHasher>(prices: &HashMap<St
 }
 
 /// Helper to get the number of raw copy equivalents for an Arcane rank.
+#[must_use]
 pub fn get_arcane_rank_copies(rank: u32) -> u32 {
     ((rank + 1) * (rank + 2)) / 2
 }
