@@ -12,3 +12,4 @@ dotenvy = "0.15"
 aes = "0.8"
 cbc = { version = "0.1", features = ["block-padding"] }
 chrono = { version = "0.4", features = ["serde"] }
+num-traits = "0.2"
