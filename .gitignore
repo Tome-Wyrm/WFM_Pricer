@@ -10,11 +10,11 @@ WFCD/
 .aider*
 .env
 alecaframe-inventory-parser.html
-cargo.lock
+blacklist.json
+Cargo.lock
 context*
 inventory.json
-v2_items.json
-Prune_2.ps1
-map_inventory*
 keeplist.json
-blacklist.json
+map_inventory*
+Prune_2.ps1
+v2_items.json

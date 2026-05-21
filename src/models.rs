@@ -80,12 +80,33 @@ pub struct MappedItem {
     pub slug: String,
     pub name: String,
     pub quantity: u32,
-    pub rank: Option<u32>, 
-    pub max_rank: Option<u32>,
+    pub rank: Option<u8>,
+    pub max_rank: Option<u8>,
     pub is_mod: bool,
     pub is_arcane: bool,
     pub is_ayatan: bool,
     pub game_ref: String,
+}
+
+impl MappedItem {
+    pub fn category(&self) -> &str {
+        if self.is_mod { return "mod"; }
+        if self.is_arcane { return "arcane"; }
+        if self.is_ayatan { return "ayatan"; }
+        let name_lower = self.name.to_lowercase();
+        if name_lower.contains("prime") { return "prime_part"; }
+        if self.slug.contains("emote") { return "emote"; }
+        if self.slug.contains("scene") { return "scene"; }
+        if self.slug.contains("_fish") || self.slug.ends_with("_fry")
+            || self.slug.ends_with("_morsel") || self.slug.ends_with("_whole") {
+            return "fish";
+        }
+        if self.slug.contains("_gem") || self.slug.contains("_crystal")
+            || self.slug.contains("_shard") {
+            return "gem";
+        }
+        "misc"
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,19 +120,27 @@ pub struct WfmV2Response {
 ///
 /// Example: { "slug": "`fleeting_expertise`", "rank": 5, "keep": 1 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeepEntry {
-    pub slug: String,
-    /// The mod/arcane rank. 0 means unranked / rank-0.
-    pub rank: u32,
+pub struct KeepRule {
     /// Number of copies to reserve from sale.
     pub keep: u32,
+    /// The mod/arcane rank. 0 means unranked / rank-0.
+    pub rank: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeepConfig {
+    #[serde(default)]
+    pub defaults: std::collections::HashMap<String, KeepRule>,
+    #[serde(default)]
+    pub items: std::collections::HashMap<String, Vec<KeepRule>>,
 }
 
 /// One entry in `blacklist.json`. Items matching `slug` are never surfaced
 /// as selling candidates, regardless of rank or quantity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlacklistEntry {
-    pub slug: String,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BlacklistConfig {
+    #[serde(default)]
+    pub slugs: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

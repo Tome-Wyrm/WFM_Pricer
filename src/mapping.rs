@@ -9,10 +9,7 @@ use crate::models::{
     KeepEntry, MappedItem, WfcdItem, WfmItem, WfmV2Response
 };
 
-pub const CACHE_DIR: &str = "cache";
-pub const METADATA_FILE: &str = "cache/cache_metadata.json";
-pub const WFCD_CACHE_FILE: &str = "cache/wfcd_all_cache.json";
-pub const WFM_CACHE_FILE: &str = "cache/wfm_items_cache.json";
+use crate::config::{CACHE_DIR, METADATA_FILE, WFCD_CACHE_FILE, WFM_CACHE_FILE};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMetadata {
@@ -181,19 +178,13 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
             .await;
 
         let wfm_bytes = match wfm_resp_result {
-            Ok(resp) if resp.status().is_success() => {
-                let bytes = resp.bytes().await?;
-                bytes.to_vec()
-            }
-            _ => {
-                println!("WFM v2 API request failed. Attempting to use local v2_items.json fallback...");
-                if Path::new("v2_items.json").exists() {
-                    fs::read("v2_items.json")?
-                } else {
-                    return Err("WFM items API request failed, and local v2_items.json fallback file is missing".into());
-                }
-            }
-        };
+                    Ok(resp) if resp.status().is_success() => {
+                        resp.bytes().await?.to_vec()
+                    }
+                    _ => {
+                        return Err("WFM v2 items API request failed and no cache exists. Check your connection.".into());
+                    }
+                };
 
         fs::write(WFM_CACHE_FILE, wfm_bytes)?;
         println!("WFM items list cached successfully.");
@@ -340,7 +331,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
     let map_single = |
         game_ref: &str,
         qty: u32,
-        rank: u32,
+        rank: u8,
         sockets: Option<u32>,
         wfm_by_ref: &HashMap<String, &WfmItem>,
         wfm_by_name: &HashMap<String, &WfmItem>,

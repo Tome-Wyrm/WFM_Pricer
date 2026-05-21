@@ -7,7 +7,8 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 use num_traits::ToPrimitive;
 
-use crate::models::{MappedItem, KeepEntry, BlacklistEntry};
+use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};
+use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE, SESSION_REPORT_FILE, STATISTICS_DIR};
 use crate::client::{WfmClient, UserListing};
 use crate::pricing::{
     fetch_statistics, calculate_weighted_average, calculate_saturation_ratio,
@@ -430,63 +431,62 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     Ok(())
 }
 
-fn load_blacklist() -> Result<HashSet<String>, Box<dyn Error + Send + Sync>> {
-    if Path::new("blacklist.json").exists() {
-        let raw = fs::read_to_string("blacklist.json")?;
-        let entries: Vec<BlacklistEntry> = serde_json::from_str(&raw).unwrap_or_default();
-        Ok(entries.into_iter().map(|e| e.slug).collect())
-    } else {
-        Ok(HashSet::new())
+fn load_blacklist() -> Result<BlacklistConfig, Box<dyn Error + Send + Sync>> {
+    if !Path::new(BLACKLIST_FILE).exists() {
+        return Ok(BlacklistConfig::default());
     }
+    let raw = fs::read_to_string(BLACKLIST_FILE)?;
+    Ok(toml::from_str(&raw)?)
 }
 
-fn save_blacklist(set: &HashSet<String>) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let entries: Vec<BlacklistEntry> = set.iter().map(|s| BlacklistEntry { slug: s.clone() }).collect();
-    let raw = serde_json::to_string_pretty(&entries)?;
-    fs::write("blacklist.json", raw)?;
+fn save_blacklist(config: &BlacklistConfig) -> Result<(), Box<dyn Error + Send + Sync>> {
+    fs::write(BLACKLIST_FILE, toml::to_string(config)?)?;
     Ok(())
 }
 
-fn get_keep_quantity(slug: &str, rank: u32) -> Result<u32, Box<dyn Error + Send + Sync>> {
-    if Path::new("keeplist.json").exists() {
-        let raw = fs::read_to_string("keeplist.json")?;
-        let entries: Vec<KeepEntry> = serde_json::from_str(&raw).unwrap_or_default();
-        for entry in entries {
-            if entry.slug == slug && entry.rank == rank {
-                return Ok(entry.keep);
-            }
-        }
+fn load_keeplist() -> Result<KeepConfig, Box<dyn Error + Send + Sync>> {
+    if !Path::new(KEEPLIST_FILE).exists() {
+        return Ok(KeepConfig { defaults: Default::default(), items: Default::default() });
     }
-    Ok(0)
+    let raw = fs::read_to_string(KEEPLIST_FILE)?;
+    Ok(toml::from_str(&raw)?)
 }
 
-fn add_to_keeplist(slug: &str, rank: u32, qty: u32) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut entries: Vec<KeepEntry> = if Path::new("keeplist.json").exists() {
-        let raw = fs::read_to_string("keeplist.json")?;
-        serde_json::from_str(&raw).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-
-    // Update if exists, otherwise add
-    let mut found = false;
-    for entry in &mut entries {
-        if entry.slug == slug && entry.rank == rank {
-            entry.keep = qty;
-            found = true;
-            break;
+fn get_keep_quantity(
+    keeplist: &KeepConfig,
+    slug: &str,
+    rank: Option<u8>,
+    category: &str,
+) -> u32 {
+    // 1. Exact slug + exact rank
+    if let Some(rules) = keeplist.items.get(slug) {
+        if let Some(rank_val) = rank {
+            if let Some(rule) = rules.iter().find(|r| r.rank == Some(rank_val)) {
+                return rule.keep;
+            }
+        }
+        // 2. Slug default (rank = None)
+        if let Some(rule) = rules.iter().find(|r| r.rank.is_none()) {
+            return rule.keep;
         }
     }
-
-    if !found {
-        entries.push(KeepEntry {
-            slug: slug.to_string(),
-            rank,
-            keep: qty,
-        });
+    // 3. Category default
+    if let Some(rule) = keeplist.defaults.get(category) {
+        return rule.keep;
     }
+    // 4. Sell everything
+    0
+}
 
-    let raw = serde_json::to_string_pretty(&entries)?;
-    fs::write("keeplist.json", raw)?;
+fn add_to_keeplist(
+    keeplist: &mut KeepConfig,
+    slug: &str,
+    rank: Option<u8>,
+    qty: u32,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let rules = keeplist.items.entry(slug.to_string()).or_default();
+    rules.retain(|r| r.rank != rank);
+    rules.push(KeepRule { keep: qty, rank });
+    fs::write(KEEPLIST_FILE, toml::to_string(keeplist)?)?;
     Ok(())
 }

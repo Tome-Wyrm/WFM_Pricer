@@ -1,15 +1,20 @@
-pub mod models;
+pub mod cli;
+pub mod client;
+pub mod config;
 pub mod decryption;
 pub mod ingestion;
 pub mod mapping;
+pub mod models;
 pub mod pricing;
-pub mod client;
-pub mod cli;
+
 
 #[tokio::main]
 async fn main() {
     // Load .env file
     dotenvy::dotenv().ok();
+        std::fs::create_dir_all(config::CONFIG_DIR)?;
+        std::fs::create_dir_all(config::CACHE_DIR)?;
+        std::fs::create_dir_all(config::STATISTICS_DIR)?;
 
     println!("--- WFM Pricer System Startup ---");
     
