@@ -89,7 +89,8 @@ pub struct MappedItem {
 }
 
 impl MappedItem {
-    pub fn category(&self) -> &str {
+    #[must_use]
+    pub fn category(&self) -> &'static str {
         if self.is_mod { return "mod"; }
         if self.is_arcane { return "arcane"; }
         if self.is_ayatan { return "ayatan"; }
@@ -105,6 +106,7 @@ impl MappedItem {
             || self.slug.contains("_shard") {
             return "gem";
         }
+        if self.slug.contains("_relic") { return "relic"; }
         "misc"
     }
 }
@@ -169,6 +171,10 @@ pub struct WfmStatsItem {
     pub avg_price: Option<f64>,
     pub wa_price: f64,
     pub median: f64,
+    /// Rolling moving average supplied by WFM on some entries.
+    /// Used in outlier detection: if present and non-zero, prefer it over `wa_price`
+    /// and flag days where `wa_price` > `moving_avg` * 5 as outliers.
+    pub moving_avg: Option<f64>,
     #[serde(rename = "mod_rank")]
     pub mod_rank: Option<u32>,
     pub order_type: Option<String>,

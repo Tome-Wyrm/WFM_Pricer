@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::io::{self, Write};
@@ -8,7 +8,7 @@ use tokio::time::{sleep, Duration};
 use num_traits::ToPrimitive;
 
 use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};
-use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE, SESSION_REPORT_FILE, STATISTICS_DIR};
+use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
 use crate::client::{WfmClient, UserListing};
 use crate::pricing::{
     fetch_statistics, calculate_weighted_average, calculate_saturation_ratio,
@@ -99,15 +99,13 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
 
     // 3. Retrieve user listings and track budget slot limit (100)
     println!("Fetching your active listings from Warframe.Market...");
-    let user_listings = wfm_client.get_sell_listings(&username).await?;
+    let user_listings = wfm_client.get_sell_listings().await?;
     let current_listing_count = user_listings.len();
     print_info("Active Listings on WFM", &format!("{current_listing_count}/100 slots used"));
 
     // Map existing listings by url_name for quick lookup/budget calculation
     let mut existing_listings_map: HashMap<String, Vec<UserListing>> = HashMap::new();
-    for listing in user_listings {
-        existing_listings_map.entry(listing.item_id.clone()).or_default().push(listing);
-    }
+    for listing in user_listings {existing_listings_map.entry(listing.item_id.clone()).or_default().push(listing);}
 
     // 4. Filtering high-value candidates to keep startup and API usage low and focused.
     println!("Filtering high-value candidates for trade review...");
@@ -267,7 +265,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             // As a proxy for volume_30d, we'll extract the volume from last 30 daily stats items in closed payload
             let ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
             let vol_30d: u32 = ninety_days_closed.iter()
-                .filter(|d| d.mod_rank == target_rank)
+                .filter(|d| d.mod_rank == target_rank.map(u32::from))
                 .take(30)
                 .map(|d| d.volume)
                 .sum();
@@ -294,16 +292,17 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
 
     // Load blacklist/keeplist local caches for dynamically editing inside loop
     let mut blacklist_set = load_blacklist()?;
+    let mut keeplist = load_keeplist()?;
 
     let mut stdout = io::stdout();
 
     for (mut item, wa_price, saturation, vol_30d, _score) in priced_candidates {
-        if blacklist_set.contains(&item.slug) {
+        if blacklist_set.slugs.contains(&item.slug) {
             continue; // Skip blacklisted slug dynamically
         }
 
         // Apply keeplist check dynamically
-        let keep_copies = get_keep_quantity(&item.slug, item.rank.unwrap_or(0))?;
+        let keep_copies = get_keep_quantity(&keeplist, &item.slug, item.rank, item.category());
         if keep_copies > 0 {
             if item.quantity <= keep_copies {
                 continue; // Skipped entirely since all copies are kept
@@ -347,19 +346,17 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             break;
         } else if choice == "B" {
             println!("Blacklisting {} permanently...", item.name);
-            blacklist_set.insert(item.slug.clone());
+            blacklist_set.slugs.insert(item.slug.clone());
             save_blacklist(&blacklist_set)?;
-            break;
         } else if choice == "K" {
             print!("\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m", item.name, item.rank.unwrap_or(0));
             let _ = stdout.flush();
             let mut keep_str = String::new();
             io::stdin().read_line(&mut keep_str)?;
             if let Ok(keep_qty) = keep_str.trim().parse::<u32>() {
-                add_to_keeplist(&item.slug, item.rank.unwrap_or(0), keep_qty)?;
+                add_to_keeplist(&mut keeplist, &item.slug, item.rank, keep_qty)?;
                 println!("Saved to keeplist.json!");
             }
-            break;
         } else if choice == "Y" {
             // Prompt price
             print!("  Price to list (default {wa_price:.1}): ");
@@ -403,7 +400,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                     item_id: item.id.clone(),
                     price,
                     quantity,
-                    rank: rank_opt,
+                    rank: rank_opt.map(u32::from),
                     name: item.name.clone(),
                     slug: item.slug.clone(),
                 }).await;
@@ -446,7 +443,7 @@ fn save_blacklist(config: &BlacklistConfig) -> Result<(), Box<dyn Error + Send +
 
 fn load_keeplist() -> Result<KeepConfig, Box<dyn Error + Send + Sync>> {
     if !Path::new(KEEPLIST_FILE).exists() {
-        return Ok(KeepConfig { defaults: Default::default(), items: Default::default() });
+        return Ok(KeepConfig { defaults: HashMap::default(), items: HashMap::default() });
     }
     let raw = fs::read_to_string(KEEPLIST_FILE)?;
     Ok(toml::from_str(&raw)?)
@@ -460,10 +457,10 @@ fn get_keep_quantity(
 ) -> u32 {
     // 1. Exact slug + exact rank
     if let Some(rules) = keeplist.items.get(slug) {
-        if let Some(rank_val) = rank {
-            if let Some(rule) = rules.iter().find(|r| r.rank == Some(rank_val)) {
-                return rule.keep;
-            }
+        if let Some(rank_val) = rank
+            && let Some(rule) = rules.iter().find(|r| r.rank == Some(rank_val))
+        {
+            return rule.keep;
         }
         // 2. Slug default (rank = None)
         if let Some(rule) = rules.iter().find(|r| r.rank.is_none()) {

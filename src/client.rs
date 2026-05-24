@@ -1,51 +1,51 @@
-use std::error::Error;
+use reqwest::header::{
+    HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT,
+};
 use serde::{Deserialize, Serialize};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT, CONTENT_TYPE};
-
-// ── Auth / User ──────────────────────────────────────────────────────────────
+use serde_json::Value;
+use std::error::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WfmUser {
     pub id: String,
     pub ingame_name: String,
+    pub slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WfmSigninPayload {
-    pub user: WfmUser,
+pub struct ListingItem {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrdersResponse {
+    data: Vec<UserListing>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WfmSigninResponse {
-    pub payload: Option<WfmSigninPayload>,
-}
-
-// ── Orders / Listings ────────────────────────────────────────────────────────
-
-/// A single order entry returned by GET /v2/orders/user/{slug}
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserListing {
     pub id: String,
-    pub platinum: f64,
+
+    pub item_id: String,
+
+    pub platinum: u32,
     pub quantity: u32,
     pub visible: bool,
+
+    #[serde(default)]
     pub rank: Option<u32>,
-    #[serde(rename = "itemId")]
-    pub item_id: String,
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserListingsResponse {
-    pub data: Option<Vec<UserListing>>,
-    pub error: Option<serde_json::Value>,
-}
+    #[serde(default)]
+    pub per_trade: Option<u32>,
 
-// ── Client ───────────────────────────────────────────────────────────────────
+    #[serde(rename = "type", default)]
+    pub order_type: Option<String>,
+}
 
 pub struct WfmClient {
     client: reqwest::Client,
     jwt: Option<String>,
-    csrf_token: Option<String>,
     pub user: Option<WfmUser>,
 }
 
@@ -64,129 +64,182 @@ impl WfmClient {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             jwt: None,
-            csrf_token: None,
             user: None,
         }
     }
 
     fn headers(&self) -> Result<HeaderMap, Box<dyn Error + Send + Sync>> {
         let mut headers = HeaderMap::new();
+
         headers.insert(USER_AGENT, HeaderValue::from_static("wfm-pricer-cli"));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert("Platform", HeaderValue::from_static("pc"));
-        headers.insert("Language", HeaderValue::from_static("en"));
-        if let Some(ref jwt) = self.jwt {
-            headers.insert(AUTHORIZATION, HeaderValue::from_str(jwt)?);
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert("platform", HeaderValue::from_static("pc"));
+        headers.insert("language", HeaderValue::from_static("en"));
+        headers.insert("auth_type", HeaderValue::from_static("header"));
+
+        if let Some(jwt) = &self.jwt {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {jwt}"))?,
+            );
         }
-        if let Some(ref csrf) = self.csrf_token {
-            headers.insert("X-CSRF-Token", HeaderValue::from_str(csrf)?);
-        }
+
         Ok(headers)
     }
 
-    /// # Errors
-    /// Returns an error if network requests fail, JSON parsing fails,
-    /// or the sign-in attempt is unsuccessful.
+    /// Authenticates with Warframe.Market using email and password.
     ///
-    /// # Panics
-    /// Panics if `self.user` is unexpectedly `None` after a successful sign-in,
-    /// which indicates a severe internal logic error.
-    pub async fn sign_in(&mut self, email: &str, password: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
-        println!("Fetching Warframe.Market session credentials...");
-        let home_response = self.client.get("https://warframe.market")
-            .header(USER_AGENT, "wfm-pricer-cli")
-            .send()
-            .await?;
-            
-        let html = home_response.text().await?;
-        let mut csrf_token = None;
-        if let Some(meta_idx) = html.find("name=\"csrf-token\"")
-            && let Some(content_sub) = html[meta_idx..].find("content=\"")
-        {
-            let start = meta_idx + content_sub + "content=\"".len();
-            if let Some(end) = html[start..].find('\"') {
-                csrf_token = Some(html[start..start+end].to_string());
-            }
-        }
-        self.csrf_token = csrf_token;
-
+    /// # Errors
+    /// Returns an error if the HTTP request fails, the response status is not success,
+    /// the Authorization header is missing or invalid, or the profile fetch fails.
+    pub async fn sign_in(
+        &mut self,
+        email: &str,
+        password: &str,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         println!("Authenticating with Warframe.Market...");
+
         let signin_body = serde_json::json!({
             "email": email,
             "password": password,
             "auth_type": "header"
         });
 
-        let mut request = self.client
+        let response = self
+            .client
             .post("https://api.warframe.market/v1/auth/signin")
             .header(USER_AGENT, "wfm-pricer-cli")
             .header(CONTENT_TYPE, "application/json")
-            .header("Referer", "https://warframe.market/")
-            .header("Origin", "https://warframe.market");
+            .header("Authorization", "JWT")
+            .header("platform", "pc")
+            .header("language", "en")
+            .header("auth_type", "header")
+            .json(&signin_body)
+            .send()
+            .await?;
 
-        if let Some(ref csrf) = self.csrf_token {
-            request = request.header("X-CSRF-Token", csrf);
-        }
-
-        let response = request.json(&signin_body).send().await?;
         if !response.status().is_success() {
             let status = response.status();
-            let err_text = response.text().await.unwrap_or_default();
-            return Err(format!("Sign in failed with status: {status} - {err_text}").into());
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("Signin failed ({status}): {text}").into());
         }
 
-        let mut jwt_token = None;
-        if let Some(auth_val) = response.headers().get("Authorization")
-            && let Ok(auth_str) = auth_val.to_str()
-        {
-            jwt_token = Some(auth_str.to_string());
+        // AlecaFrame extracts token from Authorization response header
+        let auth_header = response
+            .headers()
+            .get(AUTHORIZATION)
+            .ok_or("Missing Authorization response header")?
+            .to_str()?;
+
+        let jwt = auth_header
+            .strip_prefix("JWT ")
+            .unwrap_or(auth_header)
+            .trim()
+            .to_string();
+
+        self.jwt = Some(jwt);
+
+        // Fetch profile using v2/me
+        let me = self
+            .client
+            .get("https://api.warframe.market/v2/me")
+            .headers(self.headers()?)
+            .send()
+            .await?;
+
+        if !me.status().is_success() {
+            let text = me.text().await.unwrap_or_default();
+            return Err(format!("Failed to fetch profile: {text}").into());
         }
 
-        let body_bytes = response.bytes().await?;
-        let signin_res: WfmSigninResponse = serde_json::from_slice(&body_bytes)?;
-        if let Some(payload) = signin_res.payload {
-            self.user = Some(payload.user);
-        } else {
-            return Err("Invalid credentials or missing user payload from signin response.".into());
+        // Fetch profile using v2/me
+        let me_response = self
+            .client
+            .get("https://api.warframe.market/v2/me")
+            .headers(self.headers()?)
+            .send()
+            .await?;
+
+        if !me_response.status().is_success() {
+            let text = me_response.text().await.unwrap_or_default();
+            return Err(format!("Failed to fetch profile: {text}").into());
         }
 
-        if jwt_token.is_none() {
-            return Err("Did not receive Authorization JWT in response headers.".into());
-        }
-        self.jwt = jwt_token;
-        println!("Successfully authenticated as: {}", self.user.as_ref().unwrap().ingame_name);
+        // Parse loosely because WFM response shapes drift
+        let me_json: Value = me_response.json().await?;
+
+        let user_obj = me_json
+            .get("data")
+            .or_else(|| me_json.get("payload"))
+            .or_else(|| me_json.get("user"))
+            .unwrap_or(&me_json);
+
+        let id = user_obj
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+
+        let ingame_name = user_obj
+            .get("ingame_name")
+            .or_else(|| user_obj.get("ingameName"))
+            .or_else(|| user_obj.get("username"))
+            .or_else(|| user_obj.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+
+        let slug = user_obj
+            .get("slug")
+            .and_then(Value::as_str)
+            .map(String::from);
+
+        self.user = Some(WfmUser {
+            id,
+            ingame_name,
+            slug,
+        });
+
         Ok(())
     }
 
-    /// Retrieve all active sell orders for a user.
-    /// Uses GET /v2/profile/{username}/orders (mirrors pywmapi `get_orders_by_username`).
+    /// Retrieves the user's active sell listings from Warframe.Market.
     ///
     /// # Errors
-    /// Returns an error if the network request fails, the API returns a non-success status,
-    /// or JSON parsing of the response fails.
-    pub async fn get_sell_listings(&self, ingame_name: &str) -> Result<Vec<UserListing>, Box<dyn Error + Send + Sync>> {
-        let url=format!("https://api.warframe.market/v2/orders/user/{}",ingame_name.to_lowercase());
-        let response=self.client.get(&url).headers(self.headers()?).send().await?;
+    /// Returns an error if the HTTP request fails, the response status is not success,
+    /// or the JSON response cannot be parsed.
+    pub async fn get_sell_listings(
+        &self,
+    ) -> Result<Vec<UserListing>, Box<dyn Error + Send + Sync>> {
+        let response = self
+            .client
+            .get("https://api.warframe.market/v2/orders/my")
+            .headers(self.headers()?)
+            .send()
+            .await?;
+
         if !response.status().is_success() {
-            let status = response.status();
-            let err_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to retrieve user listings: {status} - {err_text}").into());
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("Failed to get listings: {text}").into());
         }
-        let res:UserListingsResponse=response.json().await?;
-        Ok(res.data.unwrap_or_default().into_iter().filter(|l| l.visible).collect())
+
+        let data: OrdersResponse = response.json().await?;
+        // ---------------------------
+
+        // only sell orders
+        Ok(data
+            .data
+            .into_iter()
+            .filter(|o| o.order_type.as_deref() == Some("sell"))
+            .collect())
     }
 
-    /// Create a new sell order on Warframe.Market.
-    /// Uses POST /v2/profile/orders (mirrors pywmapi `add_order`).
+    /// Creates a new sell listing for the specified item.
     ///
     /// # Errors
-    /// Returns an error if `serde_json` fails to convert the request body to JSON,
-    /// network request fails, the API returns a non-success status, or the response
-    /// cannot be parsed.
-    ///
-    /// # Panics
-    /// Panics if `body.as_object_mut().unwrap()` is called on a non-object JSON value,
-    /// which indicates a severe internal logic error.
+    /// Returns an error if the HTTP request fails, the response status is not success,
+    /// or the API returns an error message.
     pub async fn create_listing(
         &self,
         item_id: &str,
@@ -195,40 +248,43 @@ impl WfmClient {
         rank: Option<u32>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut body = serde_json::json!({
-            "item_id": item_id,
-            "order_type": "sell",
-            "price": price,
+            "itemId": item_id,
+            "type": "sell",
+            "platinum": price,
             "quantity": quantity,
             "visible": true
         });
 
         if let Some(r) = rank {
-            body.as_object_mut().unwrap().insert("rank".to_string(), serde_json::json!(r));
+            body["rank"] = serde_json::json!(r);
         }
 
-        let url = "https://api.warframe.market/v1/profile/orders".to_string();
-        let response = self.client
-            .post(&url)
+        println!(
+            "[DEBUG] create listing payload:\n{}",
+            serde_json::to_string_pretty(&body)?
+        );
+
+        let response = self
+            .client
+            .post("https://api.warframe.market/v2/order")
             .headers(self.headers()?)
             .json(&body)
             .send()
             .await?;
 
         if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to create listing: {error_text}").into());
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("Create listing failed: {text}").into());
         }
 
         Ok(())
     }
 
-    /// Update an existing order's platinum price and quantity.
-    /// Uses PUT `/v2/profile/orders/{order_id}` (mirrors pywmapi `update_order`).
+    /// Updates an existing sell listing's price and quantity.
     ///
     /// # Errors
-    /// Returns an error if `serde_json` fails to convert the request body to JSON,
-    /// network request fails, the API returns a non-success status, or the response
-    /// cannot be parsed.
+    /// Returns an error if the HTTP request fails, the response status is not success,
+    /// or the API returns an error message.
     pub async fn update_listing(
         &self,
         order_id: &str,
@@ -236,22 +292,22 @@ impl WfmClient {
         quantity: u32,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let body = serde_json::json!({
-            "price": price,
+            "platinum": price,
             "quantity": quantity,
             "visible": true
         });
 
-        let url = format!("https://api.warframe.market/v1/profile/orders/{order_id}");
-        let response = self.client
-            .put(&url)
+        let response = self
+            .client
+            .patch(format!("https://api.warframe.market/v2/order/{order_id}"))
             .headers(self.headers()?)
             .json(&body)
             .send()
             .await?;
 
         if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Failed to update listing {order_id}: {error_text}").into());
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("Update listing failed: {text}").into());
         }
 
         Ok(())
