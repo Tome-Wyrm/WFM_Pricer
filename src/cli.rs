@@ -279,8 +279,8 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     // Sort descending by score
     // Items already listed are prioritized first as update candidates (per interactive-cli spec)
     priced_candidates.sort_by(|a, b| {
-        let a_listed = existing_listings_map.contains_key(&a.0.slug);
-        let b_listed = existing_listings_map.contains_key(&b.0.slug);
+        let a_listed = existing_listings_map.contains_key(&a.0.id);
+        let b_listed = existing_listings_map.contains_key(&b.0.id);
         if a_listed && !b_listed {
             std::cmp::Ordering::Less
         } else if !a_listed && b_listed {
@@ -311,7 +311,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
         }
 
         // Check budget limits
-        let is_already_listed = existing_listings_map.contains_key(&item.slug);
+        let is_already_listed = existing_listings_map.contains_key(&item.id);
         if active_slots_count >= 100 && !is_already_listed {
             print_warning(&format!("Budget limit reached (100/100 slots). Skipping listing creation candidate: {}", item.name));
             continue;
@@ -323,12 +323,16 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
         println!("  Saturation Ratio: {saturation:.3} (sell volume vs closed volume)");
         println!("  Already Listed on WFM: {}", if is_already_listed { "\x1B[1;32mYES\x1B[0m" } else { "\x1B[31mNO\x1B[0m" });
 
-        if is_already_listed
-            && let Some(listings) = existing_listings_map.get(&item.slug)
-        {
-            for (idx, listing) in listings.iter().enumerate() {
-                println!("    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}", idx + 1, listing.platinum, listing.quantity, listing.visible);
-            }
+        if is_already_listed && let Some(listings) = existing_listings_map.get(&item.id) {
+                    for (idx, listing) in listings.iter().enumerate() {
+                        println!(
+                            "    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}",
+                            idx + 1,
+                            listing.platinum,
+                            listing.quantity,
+                            listing.visible
+                        );
+                    }
         }
 
         // Backpressure queue depth check
@@ -381,19 +385,21 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             let quantity: u32 = qty_str.trim().parse::<u32>().unwrap_or(item.quantity);
 
             if is_already_listed {
-                // Update listing
-                if let Some(listings) = existing_listings_map.get(&item.slug)
-                    && let Some(first_listing) = listings.first()
-                {
-                        let _ = tx.send(ListingTask::Update {
-                            order_id: first_listing.id.clone(),
-                            price,
-                            quantity,
-                            name: item.name.clone(),
-                            slug: item.slug.clone(),
-                        }).await;
-                }
-            } else {
+                    // FIX: Use .id instead of .slug
+                    if let Some(listings) = existing_listings_map.get(&item.id)
+                        && let Some(first_listing) = listings.first()
+                    {
+                        let _ = tx
+                            .send(ListingTask::Update {
+                                order_id: first_listing.id.clone(),
+                                price,
+                                quantity,
+                                name: item.name.clone(),
+                                slug: item.slug.clone(),
+                            })
+                            .await;
+                    }
+                } else {
                 // Create listing
                 let rank_opt = if item.is_mod || item.is_arcane { item.rank } else { None };
                 let _ = tx.send(ListingTask::Create {

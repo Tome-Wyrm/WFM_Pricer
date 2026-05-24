@@ -3,6 +3,8 @@
 .git/
 alecaframe-inventory-parser_files/*
 cache/
+config/cache
+config/statistics
 openspec/
 pywmapi/
 target/
@@ -12,9 +14,12 @@ WFCD/
 alecaframe-inventory-parser.html
 blacklist.json
 Cargo.lock
+clippy_output.txt
 context*
 inventory.json
 keeplist.json
 map_inventory*
+prompt.txt
 Prune_2.ps1
+session_report.json
 v2_items.json
