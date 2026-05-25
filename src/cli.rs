@@ -32,6 +32,24 @@ pub struct SessionReport {
     pub items_processed: Vec<SessionReportItem>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ListingKey {
+    item_id: String,
+    rank: Option<u8>,
+}
+
+fn arcane_rank_cost(rank: u8) -> u32 {
+    match rank {
+        0 => 1,
+        1 => 3,
+        2 => 6,
+        3 => 10,
+        4 => 15,
+        5 => 21,
+        _ => 1,
+    }
+}
+
 enum ListingTask {
     Create {
         item_id: String,
@@ -104,8 +122,17 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     print_info("Active Listings on WFM", &format!("{current_listing_count}/100 slots used"));
 
     // Map existing listings by url_name for quick lookup/budget calculation
-    let mut existing_listings_map: HashMap<String, Vec<UserListing>> = HashMap::new();
-    for listing in user_listings {existing_listings_map.entry(listing.item_id.clone()).or_default().push(listing);}
+    let mut existing_listings_map: HashMap<ListingKey, Vec<UserListing>> = HashMap::new();
+
+    for listing in user_listings {
+      existing_listings_map
+            .entry(ListingKey {
+                item_id: listing.item_id.clone(),
+                rank: listing.rank.map(|r| r as u8),
+            })
+            .or_default()
+            .push(listing);
+    }
 
     // 4. Filtering high-value candidates to keep startup and API usage low and focused.
     println!("Filtering high-value candidates for trade review...");
@@ -190,7 +217,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     // Spawn the background listing queue processor
     // Shares the WFM client logic synchronously using rate limits (1 req/400ms)
     let wfm_client_worker = wfm_client; // transfer ownership to the background worker
-    
+
     // Track successfully listed items to output in our session report
     let report_items_arc = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let report_items_clone = report_items_arc.clone();
@@ -255,7 +282,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     for c in candidates {
         // Fetch stats dynamically
         if let Ok(stats) = fetch_statistics(&c.slug).await {
-            // If mod or arcane, statistics has rank-specific entries. 
+            // If mod or arcane, statistics has rank-specific entries.
             // We match the candidate's rank. If it's a prime part, rank is None (0).
             let target_rank = if c.is_mod || c.is_arcane { c.rank } else { None };
             let (wa_price, _vol_90d) = calculate_weighted_average(&stats, target_rank);
@@ -279,14 +306,34 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     // Sort descending by score
     // Items already listed are prioritized first as update candidates (per interactive-cli spec)
     priced_candidates.sort_by(|a, b| {
-        let a_listed = existing_listings_map.contains_key(&a.0.id);
-        let b_listed = existing_listings_map.contains_key(&b.0.id);
+        let a_key = ListingKey {
+            item_id: a.0.id.clone(),
+            rank: if a.0.is_mod || a.0.is_arcane {
+                a.0.rank
+            } else {
+                None
+            },
+        };
+
+        let b_key = ListingKey {
+            item_id: b.0.id.clone(),
+            rank: if b.0.is_mod || b.0.is_arcane {
+                b.0.rank
+            } else {
+                None
+            },
+        };
+
+        let a_listed = existing_listings_map.contains_key(&a_key);
+        let b_listed = existing_listings_map.contains_key(&b_key);
+
         if a_listed && !b_listed {
             std::cmp::Ordering::Less
         } else if !a_listed && b_listed {
             std::cmp::Ordering::Greater
         } else {
-            b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal)
+            b.4.partial_cmp(&a.4)
+                .unwrap_or(std::cmp::Ordering::Equal)
         }
     });
 
@@ -311,19 +358,59 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
         }
 
         // Check budget limits
-        let is_already_listed = existing_listings_map.contains_key(&item.id);
+        let listing_key = ListingKey {
+            item_id: item.id.clone(),
+            rank: if item.is_mod || item.is_arcane {
+                item.rank
+            } else {
+                None
+            },
+        };
+
+        let matching_listings =
+            existing_listings_map.get(&listing_key);
+
+        println!("[DEBUG_MATCH] {} | id={} rank={:?} | matched={}", item.name, item.id, item.rank, matching_listings.map(std::vec::Vec::len).unwrap_or(0));
+
+        let listed_qty: u32 = matching_listings.map(|listings| {
+            listings.iter().map(|l| {
+                if item.is_arcane {
+                    arcane_rank_cost(l.rank.unwrap_or(0) as u8) * l.quantity
+                } else {
+                    l.quantity
+                }
+            }).sum()
+        }).unwrap_or(0);
+
+        let available_qty =
+            item.quantity.saturating_sub(listed_qty);
+
+        let is_already_listed =
+            matching_listings.is_some();
+
+        if available_qty == 0 {
+            println!(
+                "[SYNC] {} already fully listed.",
+                item.name
+            );
+            continue;
+        }
+
         if active_slots_count >= 100 && !is_already_listed {
-            print_warning(&format!("Budget limit reached (100/100 slots). Skipping listing creation candidate: {}", item.name));
+            print_warning(&format!(
+                "Budget limit reached (100/100 slots). Skipping listing creation candidate: {}",
+                item.name
+            ));
             continue;
         }
 
         println!("\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m");
-        println!("\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}", item.name, item.slug, item.quantity);
+        println!("\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}", item.name, item.slug, available_qty);
         println!("  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m", item.rank.unwrap_or(0), vol_30d, wa_price);
         println!("  Saturation Ratio: {saturation:.3} (sell volume vs closed volume)");
         println!("  Already Listed on WFM: {}", if is_already_listed { "\x1B[1;32mYES\x1B[0m" } else { "\x1B[31mNO\x1B[0m" });
 
-        if is_already_listed && let Some(listings) = existing_listings_map.get(&item.id) {
+        if is_already_listed && let Some(listings) = existing_listings_map.get(&listing_key) {
                     for (idx, listing) in listings.iter().enumerate() {
                         println!(
                             "    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}",
@@ -378,29 +465,27 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                 .unwrap_or(default_price);
 
             // Prompt quantity
-            print!("  Quantity to list (default {}): ", item.quantity);
+            print!("  Quantity to list (default {}): ", available_qty);
             let _ = stdout.flush();
             let mut qty_str = String::new();
             io::stdin().read_line(&mut qty_str)?;
-            let quantity: u32 = qty_str.trim().parse::<u32>().unwrap_or(item.quantity);
+            let quantity: u32 = qty_str.trim().parse::<u32>().unwrap_or(available_qty);
 
             if is_already_listed {
-                    // FIX: Use .id instead of .slug
-                    if let Some(listings) = existing_listings_map.get(&item.id)
-                        && let Some(first_listing) = listings.first()
-                    {
-                        let _ = tx
-                            .send(ListingTask::Update {
-                                order_id: first_listing.id.clone(),
-                                price,
-                                quantity,
-                                name: item.name.clone(),
-                                slug: item.slug.clone(),
-                            })
-                            .await;
-                    }
-                } else {
-                // Create listing
+                if let Some(listings) = existing_listings_map.get(&listing_key) && let Some(first_listing) = listings.first()
+                {
+                    let _ = tx
+                        .send(ListingTask::Update {
+                            order_id: first_listing.id.clone(),
+                            price,
+                            quantity,
+                            name: item.name.clone(),
+                            slug: item.slug.clone(),
+                        })
+                        .await;
+                }
+            } else {
+            // Create listing
                 let rank_opt = if item.is_mod || item.is_arcane { item.rank } else { None };
                 let _ = tx.send(ListingTask::Create {
                     item_id: item.id.clone(),
