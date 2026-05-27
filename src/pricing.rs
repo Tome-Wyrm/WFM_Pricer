@@ -240,6 +240,7 @@ pub fn calculate_saturation_ratio(
 // ── Endo helpers ───────────────────────────────────────────────────────────
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub async fn derive_endo_to_plat_from_mods() -> f64 {
     // Load cached WFM items to get correct slugs
     let wfm_cache_path = crate::config::WFM_CACHE_FILE;
@@ -316,19 +317,19 @@ pub async fn derive_endo_to_plat_from_mods() -> f64 {
         for (display_name, rarity, target_rank) in calibration_mods {
             let name_lower = display_name.to_lowercase();
             let Some((slug, max_rank, _tags)) = name_to_slug.get(&name_lower) else {
-                println!("[ENDO] Skipping {}: not found in WFM cache", display_name);
+                println!("[ENDO] Skipping {display_name}: not found in WFM cache");
                 continue;
             };
             // Ensure the item supports the requested rank (most max_rank is 10)
-            if max_rank.map_or(false, |mr| mr < target_rank.into()) {
-                println!("[ENDO] Skipping {}: max_rank {} < required {}", display_name, max_rank.unwrap_or(0), target_rank);
+            if max_rank.is_some_and(|mr| mr < target_rank.into()) {
+                println!("[ENDO] Skipping {display_name}: max_rank {} < required {target_rank}", max_rank.unwrap_or(0));
                 continue;
             }
 
             let stats = match fetch_statistics(slug).await {
                 Ok(s) => s,
                 Err(e) => {
-                    println!("[ENDO] Skipping {} ({}): fetch failed: {}", display_name, slug, e);
+                    println!("[ENDO] Skipping {display_name} ({slug}): fetch failed: {e}");
                     continue;
                 }
             };
@@ -362,13 +363,11 @@ pub async fn derive_endo_to_plat_from_mods() -> f64 {
 
         values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mid = values.len() / 2;
-        let median = if values.len() % 2 == 0 {
-            (values[mid - 1] + values[mid]) / 2.0
+        if values.len() % 2 == 0 {
+            f64::midpoint(values[mid - 1], values[mid])
         } else {
             values[mid]
-        };
-
-        median
+        }
     }
 
 /// Dynamic Endo yield for Ayatan items.

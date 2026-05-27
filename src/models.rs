@@ -146,6 +146,11 @@ pub struct BlacklistConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfmStatsResponse {
+    pub payload: WfmStatsPayload,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WfmStatsPayload {
     pub statistics_closed: WfmStatsSubPayload,
     pub statistics_live: WfmStatsSubPayload,
