@@ -1,15 +1,15 @@
+// use tokio::sync::mpsc;
+use num_traits::ToPrimitive;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use num_traits::ToPrimitive;
 
-use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};
-use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
 use crate::client::{WfmClient, UserListing};
+use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
+use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};
 use crate::pricing::{
     fetch_statistics, calculate_weighted_average, calculate_saturation_ratio,
     get_ayatan_endo_yield, derive_endo_to_plat_from_mods
@@ -50,23 +50,23 @@ fn arcane_rank_cost(rank: u8) -> u32 {
     }
 }
 
-enum ListingTask {
-    Create {
-        item_id: String,
-        price: u32,
-        quantity: u32,
-        rank: Option<u32>,
-        name: String,
-        slug: String,
-    },
-    Update {
-        order_id: String,
-        price: u32,
-        quantity: u32,
-        name: String,
-        slug: String,
-    },
-}
+// enum ListingTask {
+//     Create {
+//         item_id: String,
+//         price: u32,
+//         quantity: u32,
+//         rank: Option<u32>,
+//         name: String,
+//         slug: String,
+//     },
+//     Update {
+//         order_id: String,
+//         price: u32,
+//         quantity: u32,
+//         name: String,
+//         slug: String,
+//     },
+// }
 
 /// The CLI UI dashboard printer. Uses ANSI colors for high visual premium appeal.
 fn print_header(title: &str) {
@@ -199,309 +199,219 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     }
     println!();
 
-    // 6. Async channel listing tasks with backpressure
-    let (tx, mut rx) = mpsc::channel::<ListingTask>(10);
+    // 6. Setup Session Report Tracking (Queue Removed)
+        let mut session_report_items = Vec::new();
 
-    // Spawn the background listing queue processor
-    // Shares the WFM client logic synchronously using rate limits (1 req/400ms)
-    let wfm_client_worker = wfm_client; // transfer ownership to the background worker
+        // 7. Interactive loop and candidate evaluation
+        print_header("Trade Candidate Evaluation");
+        println!("Fetching WFM pricing and volume stats dynamically for candidates...");
 
-    // Track successfully listed items to output in our session report
-    let report_items_arc = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let report_items_clone = report_items_arc.clone();
+        let mut priced_candidates = Vec::new();
+        let mut active_slots_count = current_listing_count;
 
-    let bg_handle = tokio::spawn(async move {
-        while let Some(task) = rx.recv().await {
-            // Rate limit: Sleep 400ms before each listing action
-            sleep(Duration::from_millis(400)).await;
+        for c in candidates {
+            // Fetch stats dynamically
+            if let Ok(stats) = fetch_statistics(&c.slug).await {
+                let target_rank = if c.is_mod || c.is_arcane { c.rank } else { None };
+                let (wa_price, _vol_90d) = calculate_weighted_average(&stats, target_rank);
+                let saturation = calculate_saturation_ratio(&stats, target_rank);
 
-            match task {
-                ListingTask::Create { item_id, price, quantity, rank, name, slug } => {
-                    println!("\x1B[33m[SYNC] Posting listing: {name} (rank: {rank:?}) for {price} plat...\x1B[0m");
-                    match wfm_client_worker.create_listing(&item_id, price, quantity, rank).await {
+                let ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
+                let vol_30d: u32 = ninety_days_closed.iter()
+                    .filter(|d| d.mod_rank == target_rank.map(u32::from))
+                    .take(30)
+                    .map(|d| d.volume)
+                    .sum();
+
+                let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
+                priced_candidates.push((c, wa_price, saturation, vol_30d, score));
+            }
+        }
+
+        // Sort descending by score (Items already listed are prioritized first)
+        priced_candidates.sort_by(|a, b| {
+            let a_key = ListingKey { item_id: a.0.id.clone(), rank: if a.0.is_mod || a.0.is_arcane { a.0.rank } else { None } };
+            let b_key = ListingKey { item_id: b.0.id.clone(), rank: if b.0.is_mod || b.0.is_arcane { b.0.rank } else { None } };
+
+            let a_listed = existing_listings_map.contains_key(&a_key);
+            let b_listed = existing_listings_map.contains_key(&b_key);
+
+            if a_listed && !b_listed { std::cmp::Ordering::Less }
+            else if !a_listed && b_listed { std::cmp::Ordering::Greater }
+            else { b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal) }
+        });
+
+        let mut blacklist_set = load_blacklist()?;
+        let mut keeplist = load_keeplist()?;
+        let mut stdout = io::stdout();
+
+        for (mut item, wa_price, saturation, vol_30d, _score) in priced_candidates {
+            if blacklist_set.slugs.contains(&item.slug) { continue; }
+
+            let keep_copies = get_keep_quantity(&keeplist, &item.slug, item.rank, item.category());
+            if keep_copies > 0 {
+                if item.quantity <= keep_copies { continue; }
+                item.quantity -= keep_copies;
+            }
+
+            if item.is_ayatan {
+                if let Some(endo_yield) = get_ayatan_endo_yield(&item.slug) {
+                    let endo_value = f64::from(endo_yield) * endo_rate;
+                    if wa_price < endo_value * 1.15 {
+                        println!("[SKIP] {} worth {:.1}p as Endo (vs {:.1}p market)", item.name, endo_value, wa_price);
+                        continue;
+                    }
+                }
+            }
+
+            let listing_key = ListingKey {
+                item_id: item.id.clone(),
+                rank: if item.is_mod || item.is_arcane { item.rank } else { None },
+            };
+
+            let matching_listings = existing_listings_map.get(&listing_key);
+            let listed_qty: u32 = matching_listings.map(|listings| {
+                listings.iter().map(|l| {
+                    if item.is_arcane { arcane_rank_cost(l.rank.unwrap_or(0) as u8) * l.quantity }
+                    else { l.quantity }
+                }).sum()
+            }).unwrap_or(0);
+
+            let available_qty = item.quantity.saturating_sub(listed_qty);
+            let is_already_listed = matching_listings.is_some();
+
+            if available_qty == 0 { continue; }
+
+            if active_slots_count >= 100 && !is_already_listed {
+                print_warning(&format!("Budget limit reached (100/100 slots). Skipping listing creation candidate: {}", item.name));
+                continue;
+            }
+
+            println!("\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m");
+            println!("\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}", item.name, item.slug, available_qty);
+            println!("  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m", item.rank.unwrap_or(0), vol_30d, wa_price);
+            println!("  Saturation Ratio: {saturation:.3} (sell volume vs closed volume)");
+            println!("  Already Listed on WFM: {}", if is_already_listed { "\x1B[1;32mYES\x1B[0m" } else { "\x1B[31mNO\x1B[0m" });
+
+            if is_already_listed && let Some(listings) = existing_listings_map.get(&listing_key) {
+                for (idx, listing) in listings.iter().enumerate() {
+                    println!("    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}", idx + 1, listing.platinum, listing.quantity, listing.visible);
+                }
+            }
+
+            print!("\x1B[1;35m  Action? [Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m");
+            let _ = stdout.flush();
+            let mut choice = String::new();
+            io::stdin().read_line(&mut choice)?;
+            let choice = choice.trim().to_uppercase();
+
+            if choice == "X" {
+                println!("Exiting interactive session...");
+                break;
+            } else if choice == "B" {
+                println!("Blacklisting {} permanently...", item.name);
+                blacklist_set.slugs.insert(item.slug.clone());
+                save_blacklist(&blacklist_set)?;
+            } else if choice == "K" {
+                print!("\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m", item.name, item.rank.unwrap_or(0));
+                let _ = stdout.flush();
+                let mut keep_str = String::new();
+                io::stdin().read_line(&mut keep_str)?;
+                if let Ok(keep_qty) = keep_str.trim().parse::<u32>() {
+                    add_to_keeplist(&mut keeplist, &item.slug, item.rank, keep_qty)?;
+                    println!("Saved to keeplist.json!");
+                }
+            } else if choice == "Y" {
+                // Prompt price
+                print!("  Price to list (default {wa_price:.1}): ");
+                let _ = stdout.flush();
+                let mut price_str = String::new();
+                io::stdin().read_line(&mut price_str)?;
+                let default_price = wa_price.round().to_u32().unwrap_or(0);
+                let price: u32 = price_str.trim().parse::<u32>().unwrap_or(default_price);
+
+                // Prompt quantity
+                print!("  Quantity to list (default {}): ", available_qty);
+                let _ = stdout.flush();
+                let mut qty_str = String::new();
+                io::stdin().read_line(&mut qty_str)?;
+                let quantity: u32 = qty_str.trim().parse::<u32>().unwrap_or(available_qty);
+
+                let mut cyan_stars = None;
+                let mut amber_stars = None;
+                let mut per_trade = None;
+
+                // Prompt for missing requirements on Ayatans
+                if item.is_ayatan {
+                    per_trade = Some(1); // Usually required for stackable/Ayatan items
+                    if item.slug.ends_with("_sculpture") {
+                        print!("  Cyan Stars installed (default 0): ");
+                        let _ = stdout.flush();
+                        let mut c_str = String::new();
+                        io::stdin().read_line(&mut c_str)?;
+                        cyan_stars = Some(c_str.trim().parse::<u32>().unwrap_or(0));
+
+                        print!("  Amber Stars installed (default 0): ");
+                        let _ = stdout.flush();
+                        let mut a_str = String::new();
+                        io::stdin().read_line(&mut a_str)?;
+                        amber_stars = Some(a_str.trim().parse::<u32>().unwrap_or(0));
+                    }
+                }
+
+                if is_already_listed {
+                    if let Some(listings) = existing_listings_map.get(&listing_key) {
+                        if let Some(first_listing) = listings.first() {
+                            println!("\x1B[33m[SYNC] Updating listing: {} to {} plat...\x1B[0m", item.name, price);
+                            sleep(Duration::from_millis(400)).await; // Respect rate limit
+                            match wfm_client.update_listing(&first_listing.id, price, quantity).await {
+                                Ok(()) => {
+                                    println!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", item.name);
+                                    session_report_items.push(SessionReportItem {
+                                        name: item.name.clone(),
+                                        slug: item.slug.clone(),
+                                        price,
+                                        quantity,
+                                        rank: None,
+                                        action: "Updated".to_string(),
+                                    });
+                                }
+                                Err(e) => {
+                                    eprintln!("\x1B[31m[SYNC_ERROR] Failed to update listing {}: {}\x1B[0m", first_listing.id, e);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let rank_opt = if item.is_mod || item.is_arcane { item.rank } else { None };
+                    println!("\x1B[33m[SYNC] Posting listing: {} (rank: {:?}) for {} plat...\x1B[0m", item.name, rank_opt, price);
+                    sleep(Duration::from_millis(400)).await; // Respect rate limit
+                    match wfm_client.create_listing(&item.id, price, quantity, rank_opt.map(u32::from), cyan_stars, amber_stars, per_trade).await {
                         Ok(()) => {
-                            println!("\x1B[32m[SYNC] Successfully listed {name} x{quantity}!\x1B[0m");
-                            let mut list = report_items_clone.lock().unwrap();
-                            list.push(SessionReportItem {
-                                name,
-                                slug,
+                            println!("\x1B[32m[SYNC] Successfully listed {} x{}!\x1B[0m", item.name, quantity);
+                            session_report_items.push(SessionReportItem {
+                                name: item.name.clone(),
+                                slug: item.slug.clone(),
                                 price,
                                 quantity,
-                                rank,
+                                rank: rank_opt.map(u32::from),
                                 action: "Created".to_string(),
                             });
+                            active_slots_count += 1;
                         }
                         Err(e) => {
-                            eprintln!("\x1B[31m[SYNC_ERROR] Failed to list {name}: {e}\x1B[0m");
-                        }
-                    }
-                }
-                ListingTask::Update { order_id, price, quantity, name, slug } => {
-                    println!("\x1B[33m[SYNC] Updating listing: {name} to {price} plat...\x1B[0m");
-                    match wfm_client_worker.update_listing(&order_id, price, quantity).await {
-                        Ok(()) => {
-                            println!("\x1B[32m[SYNC] Successfully updated listing for {name}!\x1B[0m");
-                            let mut list = report_items_clone.lock().unwrap();
-                            list.push(SessionReportItem {
-                                name,
-                                slug,
-                                price,
-                                quantity,
-                                rank: None,
-                                action: "Updated".to_string(),
-                            });
-                        }
-                        Err(e) => {
-                            eprintln!("\x1B[31m[SYNC_ERROR] Failed to update listing {order_id}: {e}\x1B[0m");
+                            eprintln!("\x1B[31m[SYNC_ERROR] Failed to list {}: {}\x1B[0m", item.name, e);
                         }
                     }
                 }
             }
         }
-    });
-
-    // 7. Interactive loop and candidate evaluation
-    print_header("Trade Candidate Evaluation");
-    println!("Fetching WFM pricing and volume stats dynamically for candidates...");
-
-    let mut priced_candidates = Vec::new();
-    let mut active_slots_count = current_listing_count;
-
-    for c in candidates {
-        // Fetch stats dynamically
-        if let Ok(stats) = fetch_statistics(&c.slug).await {
-            // If mod or arcane, statistics has rank-specific entries.
-            // We match the candidate's rank. If it's a prime part, rank is None (0).
-            let target_rank = if c.is_mod || c.is_arcane { c.rank } else { None };
-            let (wa_price, _vol_90d) = calculate_weighted_average(&stats, target_rank);
-            let saturation = calculate_saturation_ratio(&stats, target_rank);
-
-            // Compute score: wa_price * log(1 + volume_30d)
-            // As a proxy for volume_30d, we'll extract the volume from last 30 daily stats items in closed payload
-            let ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
-            let vol_30d: u32 = ninety_days_closed.iter()
-                .filter(|d| d.mod_rank == target_rank.map(u32::from))
-                .take(30)
-                .map(|d| d.volume)
-                .sum();
-
-            let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
-
-            priced_candidates.push((c, wa_price, saturation, vol_30d, score));
-        }
-    }
-
-    // Sort descending by score
-    // Items already listed are prioritized first as update candidates (per interactive-cli spec)
-    priced_candidates.sort_by(|a, b| {
-        let a_key = ListingKey {
-            item_id: a.0.id.clone(),
-            rank: if a.0.is_mod || a.0.is_arcane {
-                a.0.rank
-            } else {
-                None
-            },
-        };
-
-        let b_key = ListingKey {
-            item_id: b.0.id.clone(),
-            rank: if b.0.is_mod || b.0.is_arcane {
-                b.0.rank
-            } else {
-                None
-            },
-        };
-
-        let a_listed = existing_listings_map.contains_key(&a_key);
-        let b_listed = existing_listings_map.contains_key(&b_key);
-
-        if a_listed && !b_listed {
-            std::cmp::Ordering::Less
-        } else if !a_listed && b_listed {
-            std::cmp::Ordering::Greater
-        } else {
-            b.4.partial_cmp(&a.4)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }
-    });
-
-    // Load blacklist/keeplist local caches for dynamically editing inside loop
-    let mut blacklist_set = load_blacklist()?;
-    let mut keeplist = load_keeplist()?;
-
-    let mut stdout = io::stdout();
-
-    for (mut item, wa_price, saturation, vol_30d, _score) in priced_candidates {
-        if blacklist_set.slugs.contains(&item.slug) {
-            continue; // Skip blacklisted slug dynamically
-        }
-
-        // Apply keeplist check dynamically
-        let keep_copies = get_keep_quantity(&keeplist, &item.slug, item.rank, item.category());
-        if keep_copies > 0 {
-            if item.quantity <= keep_copies {
-                continue; // Skipped entirely since all copies are kept
-            }
-            item.quantity -= keep_copies;
-        }
-
-        if item.is_ayatan {
-            if let Some(endo_yield) =
-                get_ayatan_endo_yield(&item.slug)
-            {
-                let endo_value =
-                    f64::from(endo_yield) * endo_rate;
-                // Require at least ~15% profit over consuming as Endo
-                if wa_price < endo_value * 1.15 {println!("[SKIP] {} worth {:.1}p as Endo (vs {:.1}p market)", item.name, endo_value, wa_price);continue;}
-            }
-        }
-
-        // Check budget limits
-        let listing_key = ListingKey {
-            item_id: item.id.clone(),
-            rank: if item.is_mod || item.is_arcane {
-                item.rank
-            } else {
-                None
-            },
-        };
-
-        let matching_listings =
-            existing_listings_map.get(&listing_key);
-
-        let listed_qty: u32 = matching_listings.map(|listings| {
-            listings.iter().map(|l| {
-                if item.is_arcane {
-                    arcane_rank_cost(l.rank.unwrap_or(0) as u8) * l.quantity
-                } else {
-                    l.quantity
-                }
-            }).sum()
-        }).unwrap_or(0);
-
-        let available_qty =
-            item.quantity.saturating_sub(listed_qty);
-
-        let is_already_listed =
-            matching_listings.is_some();
-
-        if available_qty == 0 {
-            continue;
-        }
-
-        if active_slots_count >= 100 && !is_already_listed {
-            print_warning(&format!(
-                "Budget limit reached (100/100 slots). Skipping listing creation candidate: {}",
-                item.name
-            ));
-            continue;
-        }
-
-        println!("\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m");
-        println!("\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}", item.name, item.slug, available_qty);
-        println!("  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m", item.rank.unwrap_or(0), vol_30d, wa_price);
-        println!("  Saturation Ratio: {saturation:.3} (sell volume vs closed volume)");
-        println!("  Already Listed on WFM: {}", if is_already_listed { "\x1B[1;32mYES\x1B[0m" } else { "\x1B[31mNO\x1B[0m" });
-
-        if is_already_listed && let Some(listings) = existing_listings_map.get(&listing_key) {
-                    for (idx, listing) in listings.iter().enumerate() {
-                        println!(
-                            "    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}",
-                            idx + 1,
-                            listing.platinum,
-                            listing.quantity,
-                            listing.visible
-                        );
-                    }
-        }
-
-        // Backpressure queue depth check
-        // If queue exceeds 5 items, block prompt
-        // Channel backpressure is handled automatically by `mpsc::channel(10)`.
-
-        print!("\x1B[1;35m  Action? [Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m");
-        let _ = stdout.flush();
-        let mut choice = String::new();
-        io::stdin().read_line(&mut choice)?;
-        let choice = choice.trim().to_uppercase();
-
-        if choice == "X" {
-            println!("Exiting interactive session...");
-            break;
-        } else if choice == "B" {
-            println!("Blacklisting {} permanently...", item.name);
-            blacklist_set.slugs.insert(item.slug.clone());
-            save_blacklist(&blacklist_set)?;
-        } else if choice == "K" {
-            print!("\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m", item.name, item.rank.unwrap_or(0));
-            let _ = stdout.flush();
-            let mut keep_str = String::new();
-            io::stdin().read_line(&mut keep_str)?;
-            if let Ok(keep_qty) = keep_str.trim().parse::<u32>() {
-                add_to_keeplist(&mut keeplist, &item.slug, item.rank, keep_qty)?;
-                println!("Saved to keeplist.json!");
-            }
-        } else if choice == "Y" {
-            // Prompt price
-            print!("  Price to list (default {wa_price:.1}): ");
-            let _ = stdout.flush();
-            let mut price_str = String::new();
-            io::stdin().read_line(&mut price_str)?;
-            let default_price = wa_price
-                .round()
-                .to_u32()
-                .unwrap_or(0);
-
-            let price: u32 = price_str
-                .trim()
-                .parse::<u32>()
-                .unwrap_or(default_price);
-
-            // Prompt quantity
-            print!("  Quantity to list (default {}): ", available_qty);
-            let _ = stdout.flush();
-            let mut qty_str = String::new();
-            io::stdin().read_line(&mut qty_str)?;
-            let quantity: u32 = qty_str.trim().parse::<u32>().unwrap_or(available_qty);
-
-            if is_already_listed {
-                if let Some(listings) = existing_listings_map.get(&listing_key) && let Some(first_listing) = listings.first()
-                {
-                    let _ = tx
-                        .send(ListingTask::Update {
-                            order_id: first_listing.id.clone(),
-                            price,
-                            quantity,
-                            name: item.name.clone(),
-                            slug: item.slug.clone(),
-                        })
-                        .await;
-                }
-            } else {
-            // Create listing
-                let rank_opt = if item.is_mod || item.is_arcane { item.rank } else { None };
-                let _ = tx.send(ListingTask::Create {
-                    item_id: item.id.clone(),
-                    price,
-                    quantity,
-                    rank: rank_opt.map(u32::from),
-                    name: item.name.clone(),
-                    slug: item.slug.clone(),
-                }).await;
-                active_slots_count += 1;
-            }
-        }
-    }
-
-    // Drop the sender to signal worker to finish
-    drop(tx);
-    let _ = bg_handle.await;
 
     // 8. Session Report Persistence
     let final_report = SessionReport {
         timestamp: chrono::Utc::now().to_rfc3339(),
         username,
-        items_processed: report_items_arc.lock().unwrap().clone(),
+        items_processed: session_report_items,
     };
 
     let report_content = serde_json::to_string_pretty(&final_report)?;

@@ -234,12 +234,15 @@ impl WfmClient {
     /// Creates a new sell order on `POST /v2/order`.
     ///
     /// Body fields (from `WFMarketPostListingRequest` in AlecaFrame):
-    ///   `itemId`   — WFM item UUID
-    ///   `type`     — "sell"
-    ///   `platinum` — price in plat
-    ///   `quantity` — quantity to list
-    ///   `visible`  — true
-    ///   `rank`     — optional mod/arcane rank (omitted when `None`)
+    ///   `itemId`     — WFM item UUID
+    ///   `type`       — "sell"
+    ///   `platinum`   — price in plat
+    ///   `quantity`   — quantity to list
+    ///   `visible`    — true
+    ///   `rank`       — optional mod/arcane rank (omitted when `None`)
+    ///   `cyanStars`  — optional cyan stars (omitted when `None`)
+    ///   `amberStars` — optional amber stars (omitted when `None`)
+    ///   `perTrade`   — optional per-trade value (omitted when `None`)
     ///
     /// # Errors
     /// Returns an error if the request fails or the server returns an error.
@@ -249,6 +252,9 @@ impl WfmClient {
         price: u32,
         quantity: u32,
         rank: Option<u32>,
+        cyan_stars: Option<u32>,
+        amber_stars: Option<u32>,
+        per_trade: Option<u32>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut body = serde_json::json!({
             "itemId":   item_id,
@@ -257,9 +263,17 @@ impl WfmClient {
             "quantity": quantity,
             "visible":  true
         });
-
         if let Some(r) = rank {
             body["rank"] = serde_json::json!(r);
+        }
+        if let Some(c) = cyan_stars {
+            body["cyanStars"] = serde_json::json!(c);
+        }
+        if let Some(a) = amber_stars {
+            body["amberStars"] = serde_json::json!(a);
+        }
+        if let Some(pt) = per_trade {
+            body["perTrade"] = serde_json::json!(pt);
         }
 
         let response = self.client
@@ -281,10 +295,8 @@ impl WfmClient {
             if text.contains("app.form.field_required") {
                 return Err(format!("field_required — payload was: {body}").into());
             }
-            return Err(format!("Create listing failed: {text}").into());
+            Ok(())
         }
-        Ok(())
-    }
 
     /// Updates price/quantity on an existing order via `PATCH /v2/order/{id}`.
     ///
