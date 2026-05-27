@@ -237,7 +237,139 @@ pub fn calculate_saturation_ratio(
     }
 }
 
-// ── Ayatan helpers ───────────────────────────────────────────────────────────
+// ── Endo helpers ───────────────────────────────────────────────────────────
+
+#[must_use]
+pub async fn derive_endo_to_plat_from_mods() -> f64 {
+    // Load cached WFM items to get correct slugs
+    let wfm_cache_path = crate::config::WFM_CACHE_FILE;
+    let Ok(wfm_str) = fs::read_to_string(wfm_cache_path) else {
+        eprintln!("[ENDO] Could not read WFM cache, using fallback rate 0.0035");
+        return 0.0035;
+    };
+    let Ok(wfm_response) = serde_json::from_str::<crate::models::WfmV2Response>(&wfm_str) else {
+        eprintln!("[ENDO] Failed to parse WFM cache, using fallback rate 0.0035");
+        return 0.0035;
+    };
+
+    // Build lookup: lowercased display name -> (slug, max_rank, tags)
+    let mut name_to_slug: std::collections::HashMap<String, (String, Option<u32>, Vec<String>)> = std::collections::HashMap::new();
+    for item in wfm_response.data {
+        let name_lower = item.i18n.en.name.to_lowercase();
+        name_to_slug.insert(name_lower, (item.slug, item.max_rank, item.tags));
+    }
+
+    // Calibration candidates: (display_name, rarity, target_rank)
+    // Use the same list as before, but we'll look up the slug dynamically.
+    let calibration_mods = [
+        ("Archon Continuity", "Legendary", 10u8,),
+        ("Archon Flow", "Legendary", 10u8,),
+        ("Archon Intensify", "Legendary", 10u8,),
+        ("Archon Stretch", "Legendary", 10u8,),
+        ("Archon Vitality", "Legendary", 10u8,),
+        ("Primed Animal Instinct", "Legendary", 10u8,),
+        ("Primed Charged Shell", "Legendary", 10u8,),
+        ("Primed Chilling Grasp", "Legendary", 10u8,),
+        ("Primed Continuity", "Legendary", 10u8,),
+        ("Primed Convulsion", "Legendary", 10u8,),
+        ("Primed Cryo Rounds", "Legendary", 10u8,),
+        ("Primed Dual Rounds", "Legendary", 10u8,),
+        ("Primed Fever Strike", "Legendary", 10u8,),
+        ("Primed Firestorm", "Legendary", 10u8,),
+        ("Primed Flow", "Legendary", 10u8,),
+        ("Primed Fulmination", "Legendary", 10u8,),
+        ("Primed Heated Charge", "Legendary", 10u8,),
+        ("Primed Pistol Gambit", "Legendary", 10u8,),
+        ("Primed Point Blank", "Legendary", 10u8,),
+        ("Primed Pressure Point", "Legendary", 10u8,),
+        ("Primed Ravage", "Legendary", 10u8,),
+        ("Primed Reach", "Legendary", 10u8,),
+        ("Primed Redirection", "Legendary", 10u8,),
+        ("Primed Regen", "Legendary", 10u8,),
+        ("Primed Target Cracker", "Legendary", 10u8,),
+        ("Adaptation", "Rare", 10u8,),
+        ("Bite", "Rare", 10u8,),
+        ("Blind Rage", "Rare", 10u8,),
+        ("Blood Rush", "Uncommon", 10u8,),
+        ("Equilibrium", "Uncommon", 10u8,),
+        ("Heavy Caliber", "Rare", 10u8,),
+        ("Narrow Minded", "Rare", 10u8,),
+        ("Preparation", "Rare", 10u8,),
+        ("Rolling Guard", "Rare", 10u8,),
+        ("Transient Fortitude", "Rare", 10u8,),
+        ("Galvanized Acceleration", "Rare", 10u8,),
+        ("Galvanized Aptitude", "Rare", 10u8,),
+        ("Galvanized Chamber", "Rare", 10u8,),
+        ("Galvanized Crosshairs", "Rare", 10u8,),
+        ("Galvanized Diffusion", "Rare", 10u8,),
+        ("Galvanized Elementalist", "Rare", 10u8,),
+        ("Galvanized Hell", "Rare", 10u8,),
+        ("Galvanized Reflex", "Rare", 10u8,),
+        ("Galvanized Savvy", "Rare", 10u8,),
+        ("Galvanized Scope", "Rare", 10u8,),
+        ("Galvanized Shot", "Rare", 10u8,),
+        ("Galvanized Steel", "Rare", 10u8,),
+    ];
+
+        let mut values = Vec::new();
+
+        for (display_name, rarity, target_rank) in calibration_mods {
+            let name_lower = display_name.to_lowercase();
+            let Some((slug, max_rank, _tags)) = name_to_slug.get(&name_lower) else {
+                println!("[ENDO] Skipping {}: not found in WFM cache", display_name);
+                continue;
+            };
+            // Ensure the item supports the requested rank (most max_rank is 10)
+            if max_rank.map_or(false, |mr| mr < target_rank.into()) {
+                println!("[ENDO] Skipping {}: max_rank {} < required {}", display_name, max_rank.unwrap_or(0), target_rank);
+                continue;
+            }
+
+            let stats = match fetch_statistics(slug).await {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("[ENDO] Skipping {} ({}): fetch failed: {}", display_name, slug, e);
+                    continue;
+                }
+            };
+
+            let (rank0_price, _vol_0) = calculate_weighted_average(&stats, Some(0));
+            let (ranked_price, _vol_r) = calculate_weighted_average(&stats, Some(target_rank));
+
+            let endo_cost = calculate_mod_upgrade_endo(rarity, target_rank.into());
+            if endo_cost == 0 {
+                continue;
+            }
+
+            if ranked_price <= rank0_price {
+                // No price increase – skip
+                continue;
+            }
+
+            let delta = ranked_price - rank0_price;
+            let rate = delta / f64::from(endo_cost);
+
+            // Optional: keep a single line for debugging (comment out for production)
+            // println!("[ENDO] {}: Δ={:.2}p, endo={}, rate={:.6}", display_name, delta, endo_cost, rate);
+
+            values.push(rate);
+        }
+
+        if values.is_empty() {
+            eprintln!("[ENDO] No valid calibration mods, using fallback rate 0.0035");
+            return 0.0035;
+        }
+
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = values.len() / 2;
+        let median = if values.len() % 2 == 0 {
+            (values[mid - 1] + values[mid]) / 2.0
+        } else {
+            values[mid]
+        };
+
+        median
+    }
 
 /// Dynamic Endo yield for Ayatan items.
 #[must_use]

@@ -18,13 +18,13 @@ async fn main() {
         std::fs::create_dir_all(config::STATISTICS_DIR).expect("Failed to create statistics dir");
 
     println!("--- WFM Pricer System Startup ---");
-    
+
     // 1. Update caches
     if let Err(e) = mapping::update_caches().await {
         println!("Error updating caches: {e:?}");
         return;
     }
-    
+
     // 2. Ingest inventory
     println!("Ingesting inventory...");
 
@@ -50,7 +50,7 @@ async fn main() {
             return;
         }
     };
-    
+
     // 3. Map inventory
     println!("Mapping inventory items to Warframe.Market tradeable items...");
     let mapped = match mapping::map_inventory(&inventory) {
@@ -62,13 +62,6 @@ async fn main() {
     };
 
     println!("Successfully mapped {} items!", mapped.len());
-    
-    // 3.1 - Temporary debug print
-    let mut cat_counts = std::collections::HashMap::new();
-    for item in &mapped {
-        *cat_counts.entry(item.category()).or_insert(0) += 1;
-    }
-    println!("Mapped item categories: {cat_counts:?}");
 
     // 4. Run interactive CLI
     if let Err(e) = cli::run_cli(mapped).await {

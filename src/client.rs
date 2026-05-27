@@ -191,11 +191,6 @@ impl WfmClient {
             return Err(format!("Failed to get listings ({status}): {body_text}").into());
         }
 
-        // ── DEBUG: print the raw response so we can verify the field layout ──
-        // Remove this block once the shape is confirmed.
-        println!("[DEBUG] GET /v2/orders/my status: {status}");
-        println!("[DEBUG] GET /v2/orders/my raw response:\n{}\n", body_text);
-
         let raw: Value = serde_json::from_str(&body_text)
             .map_err(|e| format!("Failed to parse listings JSON: {e}\nBody was: {body_text}"))?;
 

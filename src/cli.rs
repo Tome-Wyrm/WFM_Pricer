@@ -12,7 +12,7 @@ use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
 use crate::client::{WfmClient, UserListing};
 use crate::pricing::{
     fetch_statistics, calculate_weighted_average, calculate_saturation_ratio,
-    derive_endo_to_plat_rate, get_ayatan_endo_yield
+    get_ayatan_endo_yield, derive_endo_to_plat_from_mods
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -160,19 +160,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
 
     // 5. Pre-fetch JIT statistics for Ayatan arbitrage report (First 15 Ayatans/Stars or general candidates)
     println!("Deriving dynamic Endo exchange rate from Ayatan prices...");
-    let mut priced_ayatans = HashMap::new();
-    for c in &candidates {
-        if c.is_ayatan
-            && let Ok(stats) = fetch_statistics(&c.slug).await
-        {
-            let (wa_price, _) = calculate_weighted_average(&stats, None);
-            if wa_price > 0.0 {
-                priced_ayatans.insert(c.slug.clone(), wa_price);
-            }
-        }
-    }
-
-    let endo_rate = derive_endo_to_plat_rate(&priced_ayatans);
+    let endo_rate =derive_endo_to_plat_from_mods().await;
     print_info("Derived Endo Rate", &format!("{:.5} plat/endo (or {:.1} plat per 1000 endo)", endo_rate, endo_rate * 1000.0));
 
     // Build the Ayatan arbitrage report
@@ -357,6 +345,17 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             item.quantity -= keep_copies;
         }
 
+        if item.is_ayatan {
+            if let Some(endo_yield) =
+                get_ayatan_endo_yield(&item.slug)
+            {
+                let endo_value =
+                    f64::from(endo_yield) * endo_rate;
+                // Require at least ~15% profit over consuming as Endo
+                if wa_price < endo_value * 1.15 {println!("[SKIP] {} worth {:.1}p as Endo (vs {:.1}p market)", item.name, endo_value, wa_price);continue;}
+            }
+        }
+
         // Check budget limits
         let listing_key = ListingKey {
             item_id: item.id.clone(),
@@ -369,8 +368,6 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
 
         let matching_listings =
             existing_listings_map.get(&listing_key);
-
-        println!("[DEBUG_MATCH] {} | id={} rank={:?} | matched={}", item.name, item.id, item.rank, matching_listings.map(std::vec::Vec::len).unwrap_or(0));
 
         let listed_qty: u32 = matching_listings.map(|listings| {
             listings.iter().map(|l| {
@@ -389,10 +386,6 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             matching_listings.is_some();
 
         if available_qty == 0 {
-            println!(
-                "[SYNC] {} already fully listed.",
-                item.name
-            );
             continue;
         }
 
