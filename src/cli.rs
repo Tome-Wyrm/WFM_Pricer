@@ -269,9 +269,10 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             priced_candidates.push((c.clone(), wa_price, calculate_saturation_ratio(&stats, target_rank), vol_30d, score));
 
             // 4. Print recommendations
-            let in_keeplist = get_keep_quantity(&keeplist, &c.slug, c.rank, c.category()) > 0;
+            let keep_copies = get_keep_quantity(&keeplist, &c.slug, c.rank, c.category());
+            let has_sell_copies = c.quantity > keep_copies;
             let is_maxed = c.rank.zip(c.max_rank).is_some_and(|(r, mr)| r >= mr);
-            if endo_cost > 0 && ppe > endo_rate * 1000.0 && in_keeplist && !is_maxed {
+            if endo_cost > 0 && ppe > endo_rate * 1000.0 && has_sell_copies && !is_maxed {
                 println!("\x1B[1;32m[!] PROFITABLE UPGRADE\x1B[0m: {} (PPE: {:.2})", c.name, ppe);
             }
         }
