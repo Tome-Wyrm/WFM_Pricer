@@ -82,6 +82,7 @@ pub struct MappedItem {
     pub quantity: u32,
     pub rank: Option<u8>,
     pub max_rank: Option<u8>,
+    pub rarity: String,
     pub is_mod: bool,
     pub is_arcane: bool,
     pub is_ayatan: bool,

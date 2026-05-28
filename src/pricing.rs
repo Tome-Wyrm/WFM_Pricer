@@ -419,6 +419,36 @@ pub fn get_arcane_rank_copies(rank: u32) -> u32 {
     ((rank + 1) * (rank + 2)) / 2
 }
 
+
+#[must_use]
+// API data confirms Antiques contain "/Antiques/" in gameRef
+pub fn is_antique(_slug: &str, game_ref: &str) -> bool {
+    game_ref.contains("/Antiques/")
+}
+
+#[must_use]
+pub fn get_rarity_multiplier(rarity: &str) -> u32 {
+    match rarity.to_lowercase().as_str() {
+        "common"    => 1,
+        "uncommon"  => 2,
+        "peculiar"  => 2, // Peculiar uses Uncommon costs
+        "rare"      => 3,
+        "legendary" => 4,
+        _           => 3, // Default to Rare
+    }
+}
+
+#[must_use]
+pub fn get_fusion_cost_from_zero(rarity: &str, target_rank: u32, is_antique: bool) -> u32 {
+    if target_rank == 0 { return 0; }
+
+    let base_multiplier = if is_antique { 160 } else { 10 };
+    let rarity_num = get_rarity_multiplier(rarity);
+
+    // Formula: 10/160 * RarityNum * (2^Rank - 1)
+    base_multiplier * rarity_num * (2u32.pow(target_rank) - 1)
+}
+
 /// Mod rank helpers to calculate upgrade endo cost.
 #[must_use]
 pub fn get_mod_base_endo(rarity: &str) -> u32 {

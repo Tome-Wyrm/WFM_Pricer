@@ -11,8 +11,8 @@ use wf_market::models::OwnedOrder;
 use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
 use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};
 use crate::pricing::{
-    fetch_statistics, calculate_weighted_average, calculate_saturation_ratio,
-    get_ayatan_endo_yield, derive_endo_to_plat_from_mods
+    calculate_saturation_ratio, calculate_weighted_average, derive_endo_to_plat_from_mods,
+    fetch_statistics, get_ayatan_endo_yield, is_antique, get_fusion_cost_from_zero,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -52,14 +52,16 @@ fn arcane_rank_cost(rank: u8) -> u32 {
 fn ayatan_max_stars(slug: &str) -> (u8, u8) {
     match slug {
         "ayatan_anasa_sculpture"    => (2, 2),
-        "ayatan_ayr_sculpture"      => (2, 1),
+        "ayatan_ayr_sculpture"      => (3, 0),
+        "ayatan_chattraka_sculpture"=> (2, 1),
         "ayatan_hemakara_sculpture" => (2, 1),
+        "ayatan_kitha_sculpture"    => (4, 1),
         "ayatan_orta_sculpture"     => (3, 1),
-        "ayatan_piv_sculpture"      => (3, 2),
+        "ayatan_piv_sculpture"      => (2, 1),
         "ayatan_sah_sculpture"      => (2, 1),
         "ayatan_valana_sculpture"   => (2, 1),
         "ayatan_vaya_sculpture"     => (2, 1),
-        "ayatan_zambuka_sculpture"  => (3, 2),
+        "ayatan_zambuka_sculpture"  => (2, 1),
         _                           => (0, 0),
     }
 }
@@ -226,15 +228,31 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     println!("Fetching WFM pricing and volume stats dynamically for candidates...");
 
     let mut priced_candidates = Vec::new();
-    let mut active_slots_count = current_listing_count;
+    // Fetch benchmark once outside the loop to save time
+    let endo_rate = derive_endo_to_plat_from_mods().await;
+    let mut blacklist_set = load_blacklist()?;
+    let mut keeplist = load_keeplist()?;
+    let mut stdout = io::stdout();
 
     for c in candidates {
-        // Fetch stats dynamically
         if let Ok(stats) = fetch_statistics(&c.slug).await {
+            // 1. Get Market Prices
+            // Consolidate calls: use the target rank logic to get prices
             let target_rank = if c.is_mod || c.is_arcane { c.rank } else { None };
-            let (wa_price, _vol_90d) = calculate_weighted_average(&stats, target_rank);
-            let saturation = calculate_saturation_ratio(&stats, target_rank);
 
+            let (wa_price, _) = calculate_weighted_average(&stats, target_rank);
+            let (r0_price, _) = calculate_weighted_average(&stats, Some(0));
+
+            // 2. Calculate Costs
+            let is_antique = is_antique(&c.slug, &c.game_ref);
+            let target_rank_u32 = u32::from(c.max_rank.unwrap_or(0));
+            let endo_cost = get_fusion_cost_from_zero(
+                &c.rarity,
+                target_rank_u32,
+                is_antique
+            );
+
+            // 3. Calculate metrics
             let ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
             let vol_30d: u32 = ninety_days_closed.iter()
                 .filter(|d| d.mod_rank == target_rank.map(u32::from))
@@ -243,7 +261,19 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                 .sum();
 
             let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
-            priced_candidates.push((c, wa_price, saturation, vol_30d, score));
+
+            // Calculate PPE (Profit Per Endo)
+            let profit = wa_price - r0_price;
+            let ppe = if endo_cost > 0 { (profit / f64::from(endo_cost)) * 1000.0 } else { 0.0 };
+
+            priced_candidates.push((c.clone(), wa_price, calculate_saturation_ratio(&stats, target_rank), vol_30d, score));
+
+            // 4. Print recommendations
+            let in_keeplist = get_keep_quantity(&keeplist, &c.slug, c.rank, c.category()) > 0;
+            let is_maxed = c.rank.zip(c.max_rank).is_some_and(|(r, mr)| r >= mr);
+            if endo_cost > 0 && ppe > endo_rate * 1000.0 && in_keeplist && !is_maxed {
+                println!("\x1B[1;32m[!] PROFITABLE UPGRADE\x1B[0m: {} (PPE: {:.2})", c.name, ppe);
+            }
         }
     }
 
@@ -260,9 +290,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
         else { b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal) }
     });
 
-    let mut blacklist_set = load_blacklist()?;
-    let mut keeplist = load_keeplist()?;
-    let mut stdout = io::stdout();
+    let mut active_slots_count = current_listing_count;
 
     for (mut item, wa_price, saturation, vol_30d, _score) in priced_candidates {
         if blacklist_set.slugs.contains(&item.slug) { continue; }
@@ -412,12 +440,25 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
                 if let Some(r) = rank_opt {
                     order = order.with_mod_rank(r);
                 }
-                if let (Some(a), Some(c)) = (amber_stars, cyan_stars) {
+                // Clamp Ayatan star counts to legal maxes
+                let (max_cyan, max_amber) = ayatan_max_stars(&item.slug);
+
+                cyan_stars = Some(cyan_stars.unwrap_or(max_cyan).min(max_cyan));
+                amber_stars = Some(amber_stars.unwrap_or(max_amber).min(max_amber));
+
+                // Apply sculpture stars in crate order: (amber, cyan)
+                if let (Some(c), Some(a)) = (cyan_stars, amber_stars)
+                  // Only send non-zero star counts
+                  && (c > 0 || a > 0)
+                {
                     order = order.with_sculpture_stars(a, c);
                 }
+
                 if let Some(pt) = per_trade {
                     order = order.with_per_trade(pt);
                 }
+
+                let mut _active_slots_count = 0;
 
                 match wfm_client.create_order(order).await {
                     Ok(_) => {

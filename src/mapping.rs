@@ -454,35 +454,23 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
 
         // A. Check static Ayatans and Stars first (these are primarily from MiscItems and FusionTreasures,
         //    but the `game_ref` based match here is robust).
-        if game_ref == CYAN_STAR_REF {
-            return Some(MappedItem {
-                id: "58ca59c071d7d022b7405e32".to_string(), // WFM id for Cyan Star
-                slug: "ayatan_cyan_star".to_string(),
-                name: "Ayatan Cyan Star".to_string(),
-                quantity: qty,
-                rank: None, // Stars have no rank
-                max_rank: None,
-                is_mod: false,
-                is_arcane: false,
-                is_ayatan: true,
-                game_ref: game_ref.to_string(),
-            });
-        }
-
-        if game_ref == AMBER_STAR_REF {
-            return Some(MappedItem {
-                id: "58ca5a1b71d7d022b7405e35".to_string(), // WFM id for Amber Star
-                slug: "ayatan_amber_star".to_string(),
-                name: "Ayatan Amber Star".to_string(),
-                quantity: qty,
-                rank: None, // Stars have no rank
-                max_rank: None,
-                is_mod: false,
-                is_arcane: false,
-                is_ayatan: true,
-                game_ref: game_ref.to_string(),
-            });
-        }
+        if game_ref == CYAN_STAR_REF || game_ref == AMBER_STAR_REF {
+                    if let Some(wfm_item) = wfm_by_ref.get(game_ref) {
+                        return Some(MappedItem {
+                            id: wfm_item.id.clone(),
+                            slug: wfm_item.slug.clone(),
+                            name: wfm_item.i18n.en.name.clone(),
+                            quantity: qty,
+                            rank: None,
+                            max_rank: None,
+                            rarity: "".to_string(),
+                            is_mod: false,
+                            is_arcane: false,
+                            is_ayatan: true,
+                            game_ref: game_ref.to_string(),
+                        });
+                    }
+                }
 
         if let Some(def) = AYATANS.iter().find(|a| a.game_ref == game_ref) {
             let _is_filled = sockets.unwrap_or(0) == def.fully_filled_mask;
@@ -494,6 +482,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                     quantity: qty,
                     rank: None, // Ayatan sculptures are not mods/arcanes, so rank is None per request
                     max_rank: None,
+                    rarity: "".to_string(),
                     is_mod: false,
                     is_arcane: false,
                     is_ayatan: true,
@@ -537,6 +526,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
             quantity: qty,
             rank: if is_mod || is_arcane { Some(rank) } else { None }, // Rank only for mods/arcanes
             max_rank,
+            rarity: "".to_string(),
             is_mod,
             is_arcane,
             is_ayatan: false,
@@ -593,6 +583,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                 quantity: qty,
                                 rank: None,
                                 max_rank: None,
+                                rarity: "".to_string(),
                                 is_mod: false,
                                 is_arcane: false,
                                 is_ayatan: false,
@@ -623,6 +614,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                     quantity: qty,
                                     rank: Some(0), // Veiled rivens are always rank 0
                                     max_rank: None,
+                                    rarity: "Rare".to_string(),
                                     is_mod: true,
                                     is_arcane: false,
                                     is_ayatan: false,
@@ -645,6 +637,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                                     // Refinement is already encoded in the slug; rank is not applicable
                                     rank: None,
                                     max_rank: None,
+                                    rarity: "".to_string(),
                                     is_mod: false,
                                     is_arcane: false,
                                     is_ayatan: false,
