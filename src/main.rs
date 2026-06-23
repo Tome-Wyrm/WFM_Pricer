@@ -5,6 +5,8 @@ pub mod ingestion;
 pub mod mapping;
 pub mod models;
 pub mod pricing;
+pub mod wfm_client;
+
 
 use std::path::{Path, PathBuf};
 
