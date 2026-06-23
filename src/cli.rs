@@ -117,7 +117,7 @@ async fn fetch_user_listings(wfm_client: &WfmClient) -> Result<(Vec<OwnedOrder>,
     for listing in &user_listings {
         map.entry(ListingKey {
             item_id: listing.item_id().to_string(),
-            rank: listing.order.rank,
+            rank: listing.rank,
         })
         .or_default()
         .push(listing.clone());
@@ -266,7 +266,7 @@ async fn handle_single_candidate(
     let listed_qty: u32 = matching_listings.map_or(0, |listings| {
         listings.iter()
             .map(|l| if item.is_arcane {
-                arcane_rank_cost(l.order.rank.unwrap_or(0)) * l.quantity()
+                arcane_rank_cost(l.rank.unwrap_or(0)) * l.quantity()
             } else {
                 l.quantity()
             })

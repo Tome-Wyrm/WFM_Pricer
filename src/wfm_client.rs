@@ -18,13 +18,15 @@ struct SignInRequest<'a> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Order {
     pub id: String,
-    pub item: OrderItem,
-    pub quantity: u32,
-    pub platinum: u32,
-    pub visible: bool,
+    #[serde(rename = "type")]
     pub order_type: String,
-    #[serde(flatten)]
-    pub order: InnerOrder,
+    pub platinum: u32,
+    pub quantity: u32,
+    #[serde(rename = "itemId")]
+    pub item_id: String,
+    pub visible: bool,
+    #[serde(rename = "mod_rank")]
+    pub rank: Option<u8>,
 }
 
 impl Order {
@@ -34,7 +36,7 @@ impl Order {
     }
     #[must_use]
     pub fn item_id(&self) -> &str {
-        &self.item.id
+        &self.item_id
     }
     #[must_use]
     pub fn quantity(&self) -> u32 {
@@ -52,18 +54,6 @@ impl Order {
     pub fn is_sell(&self) -> bool {
         self.order_type == "sell"
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct OrderItem {
-    pub id: String,
-    pub url_name: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct InnerOrder {
-    #[serde(rename = "mod_rank")]
-    pub rank: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -148,17 +138,10 @@ impl UpdateOrder {
     }
 }
 
+// V2 API response wrapper
 #[derive(Debug, Clone, Deserialize)]
-struct OrdersResponse {
-    payload: OrdersResponsePayload,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OrdersResponsePayload {
-    #[serde(default)]
-    sell_orders: Vec<Order>,
-    #[serde(default)]
-    buy_orders: Vec<Order>,
+struct ApiResponse<T> {
+    data: T,
 }
 
 #[derive(Debug, Clone)]
@@ -190,13 +173,6 @@ impl WfmClient {
         &self.token
     }
 
-    /// Authenticates with the Warframe.Market API and returns a client.
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The network request fails.
-    /// - The API returns a non‑200 status.
-    /// - The response does not contain a valid JWT token.
     pub async fn from_credentials(creds: Credentials) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let client = reqwest::Client::builder()
             .cookie_store(true)
@@ -210,7 +186,9 @@ impl WfmClient {
             device_id: &creds.device_id,
         };
 
-        let resp = client.post(signin_url)
+        let resp = client
+            .post(signin_url)
+            .header("Authorization", "JWT")
             .header("Language", "en")
             .header("Platform", "pc")
             .header("Crossplay", "true")
@@ -225,67 +203,47 @@ impl WfmClient {
             return Err(format!("Signin failed with status {status}: {body_text}").into());
         }
 
-        // Try extracting token from Authorization header (or authorization)
-        let mut token_opt = None;
-        if let Some(auth_str) = resp.headers()
-            .get("authorization")
-            .or_else(|| resp.headers().get("Authorization"))
-            .and_then(|val| val.to_str().ok())
-        {
-            if let Some(t) = auth_str.strip_prefix("Bearer ") {
-                token_opt = Some(t.to_string());
-            } else {
-                token_opt = Some(auth_str.to_string());
-            }
-        }
+        // Extract token from Authorization header
+        let auth_header = resp
+            .headers()
+            .get("Authorization")
+            .or_else(|| resp.headers().get("authorization"))
+            .ok_or_else(|| {
+                format!(
+                    "No Authorization header in response. Headers: {:#?}",
+                    resp.headers()
+                )
+            })?
+            .to_str()
+            .map_err(|_| "Invalid Authorization header encoding")?;
 
-        // Try Set-Cookie JWT
-        if token_opt.is_none() {
-            for cookie_val in resp.headers().get_all("set-cookie").iter().chain(resp.headers().get_all("Set-Cookie").iter()) {
-                if let Ok(cookie_str) = cookie_val.to_str() {
-                    for part in cookie_str.split(';') {
-                        let part = part.trim();
-                        if let Some(val) = part.strip_prefix("JWT=") {
-                            token_opt = Some(val.to_string());
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        let token = if let Some(t) = auth_header.strip_prefix("JWT ") {
+            t.to_string()
+        } else if let Some(t) = auth_header.strip_prefix("Bearer ") {
+            t.to_string()
+        } else {
+            return Err(format!("Unexpected Authorization header format: {}", auth_header).into());
+        };
 
-        let headers_debug = format!("{:#?}", resp.headers());
-
-        // Try JSON body
-        let body_val: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
-        if token_opt.is_none() {
+        // Fallback: if token empty, try body (safety net)
+        let token = if token.is_empty() {
+            let body_val: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
             if let Some(t) = body_val.get("token").and_then(|v| v.as_str()) {
-                token_opt = Some(t.to_string());
+                t.to_string()
             } else if let Some(t) = body_val.pointer("/payload/token").and_then(|v| v.as_str()) {
-                token_opt = Some(t.to_string());
+                t.to_string()
             } else if let Some(t) = body_val.pointer("/payload/jwt").and_then(|v| v.as_str()) {
-                token_opt = Some(t.to_string());
+                t.to_string()
+            } else {
+                return Err("Could not find JWT token in response body".into());
             }
-        }
+        } else {
+            token
+        };
 
-        let token = token_opt.ok_or_else(|| {
-            format!("Could not find JWT token in signin response. Headers: {headers_debug}, Body: {body_val:#?}")
-        })?;
-
-        Ok(Self {
-            client,
-            token,
-        })
+        Ok(Self { client, token })
     }
 
-    
-    /// Retrieves the in‑game name of the authenticated user.
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The request fails.
-    /// - The API returns a non‑200 status.
-    /// - The response is missing the `ingameName` field.
     pub async fn get_username(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
         let resp = self.client
             .get("https://api.warframe.market/v2/me")
@@ -310,16 +268,9 @@ impl WfmClient {
         Ok(username)
     }
 
-    /// Fetches all orders (sell and buy) for the authenticated user.
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The request fails.
-    /// - The API returns a non‑200 status.
-    /// - The response cannot be parsed as `OrdersResponse`.
     pub async fn my_orders(&self) -> Result<Vec<Order>, Box<dyn Error + Send + Sync>> {
         let resp = self.client
-            .get("https://api.warframe.market/v1/profile/orders")
+            .get("https://api.warframe.market/v2/orders/my")
             .header("Authorization", format!("Bearer {}", self.token))
             .header("Platform", "pc")
             .header("Language", "en")
@@ -332,21 +283,13 @@ impl WfmClient {
             return Err(format!("Failed to fetch profile orders: {}", resp.status()).into());
         }
 
-        let body: OrdersResponse = resp.json().await?;
-        let mut orders = body.payload.sell_orders;
-        orders.extend(body.payload.buy_orders);
-        Ok(orders)
+        let body: ApiResponse<Vec<Order>> = resp.json().await?;
+        Ok(body.data)
     }
 
-    /// Posts a new sell order to the authenticated user's profile.
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The request fails.
-    /// - The API returns a non‑200 status.
     pub async fn create_order(&self, order: CreateOrder) -> Result<(), Box<dyn Error + Send + Sync>> {
         let resp = self.client
-            .post("https://api.warframe.market/v1/profile/orders")
+            .post("https://api.warframe.market/v2/order")
             .header("Authorization", format!("Bearer {}", self.token))
             .header("Platform", "pc")
             .header("Language", "en")
@@ -365,17 +308,10 @@ impl WfmClient {
         Ok(())
     }
 
-    /// Updates an existing order (price, quantity, visibility).
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The request fails.
-    /// - The API returns a non‑200 status.
-    /// - The order ID is invalid or does not belong to the user.
     pub async fn update_order(&self, order_id: &str, update: UpdateOrder) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let url = format!("https://api.warframe.market/v1/profile/orders/{order_id}");
+        let url = format!("https://api.warframe.market/v2/order/{}", order_id);
         let resp = self.client
-            .put(&url)
+            .patch(&url)
             .header("Authorization", format!("Bearer {}", self.token))
             .header("Platform", "pc")
             .header("Language", "en")
