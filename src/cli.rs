@@ -184,42 +184,6 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     let endo_rate = derive_endo_to_plat_from_mods().await;
     print_info("Derived Endo Rate", &format!("{:.5} plat/endo (or {:.1} plat per 1000 endo)", endo_rate, endo_rate * 1000.0));
 
-    // Build the Ayatan arbitrage report
-    print_header("Ayatan Arbitrage Report");
-    let all_ayatans = vec![
-        "ayatan_cyan_star", "ayatan_amber_star", "ayatan_anasa_sculpture",
-        "ayatan_ayr_sculpture", "ayatan_orta_sculpture", "ayatan_sah_sculpture",
-        "ayatan_valana_sculpture", "ayatan_vaya_sculpture", "ayatan_piv_sculpture",
-        "ayatan_hemakara_sculpture"
-    ];
-
-    println!("\x1B[1m  {:<30} | {:<12} | {:<10} | {:<12} | {:<10}\x1B[0m", "Ayatan / Star Slug", "Endo Yield", "Est Plat", "Avg Buy Ord", "Arbitrage?");
-    println!("  --------------------------------------------------------------------------------");
-    for slug in all_ayatans {
-        if let Some(yield_endo) = get_ayatan_endo_yield(slug) {
-            let est_plat = f64::from(yield_endo) * endo_rate;
-            if let Ok(stats) = fetch_statistics(slug).await {
-                // Find latest buy orders from statistics_live
-                let avg_buy = stats
-                    .payload
-                    .statistics_live
-                    .ninety_days
-                    .iter()
-                    .rfind(|d| d.order_type.as_deref() == Some("buy"))
-                    .map_or(0.0, |d| d.wa_price);
-
-                let arbitrage = if avg_buy > 0.0 && avg_buy < est_plat - 1.0 {
-                    "\x1B[1;32mYES\x1B[0m"
-                } else {
-                    "\x1B[31mNO\x1B[0m"
-                };
-
-                println!("  {slug:<30} | {yield_endo:<12} | {est_plat:<10.2} | {avg_buy:<12.2} | {arbitrage:<10}");
-            }
-        }
-    }
-    println!();
-
     // 6. Setup Session Report Tracking
     let mut session_report_items = Vec::new();
 
@@ -233,6 +197,7 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
     let mut blacklist_set = load_blacklist()?;
     let mut keeplist = load_keeplist()?;
     let mut stdout = io::stdout();
+    let mut upgrade_suggestions: Vec<(String, f64, u32, u32, f64)> = Vec::new();
 
     for c in candidates {
         if let Ok(stats) = fetch_statistics(&c.slug).await {
@@ -269,14 +234,48 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
             priced_candidates.push((c.clone(), wa_price, calculate_saturation_ratio(&stats, target_rank), vol_30d, score));
 
             // 4. Print recommendations
-            let keep_copies = get_keep_quantity(&keeplist, &c.slug, c.rank, c.category());
-            let has_sell_copies = c.quantity > keep_copies;
             let is_maxed = c.rank.zip(c.max_rank).is_some_and(|(r, mr)| r >= mr);
-            if endo_cost > 0 && ppe > endo_rate * 1000.0 && has_sell_copies && !is_maxed {
+            if endo_cost > 0 && ppe > endo_rate * 1000.0 && c.quantity > 0 && !is_maxed {
                 println!("\x1B[1;32m[!] PROFITABLE UPGRADE\x1B[0m: {} (PPE: {:.2})", c.name, ppe);
+            }
+            // Collect mod upgrade candidates for the report
+            if c.is_mod && !is_maxed {
+                if let Some(mr) = c.max_rank {
+                    let (max_rank_price, _) = calculate_weighted_average(&stats, Some(mr));
+                    let delta = max_rank_price - wa_price; // current rank → max rank
+                    let endo_to_max = get_fusion_cost_from_zero(
+                        &c.rarity,
+                        u32::from(mr),
+                        is_antique,
+                    ).saturating_sub(endo_cost); // endo remaining from current rank
+                    if delta > 0.0 && endo_to_max > 0 {
+                        let upgrade_score = (delta / f64::from(endo_to_max)) * (1.0 + f64::from(vol_30d)).ln();
+                        upgrade_suggestions.push((
+                            c.name.clone(),
+                            delta,
+                            endo_to_max,
+                            vol_30d,
+                            upgrade_score,
+                        ));
+                    }
+                }
             }
         }
     }
+
+    // Mod Upgrade Suggestions Report
+    upgrade_suggestions.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
+    upgrade_suggestions.truncate(15);
+
+    print_header("Mod Upgrade Suggestions (Best Endo Value × Volume)");
+    println!("\x1B[1m  {:<35} | {:<14} | {:<12} | {:<10} | {}\x1B[0m",
+        "Mod", "Δ Plat (→max)", "Endo Cost", "30d Vol", "Score");
+    println!("  {}", "-".repeat(82));
+    for (name, delta, endo, vol, score) in &upgrade_suggestions {
+        println!("  {:<35} | {:<14.1} | {:<12} | {:<10} | {:.4}",
+            name, delta, endo, vol, score);
+    }
+    println!();
 
     // Sort descending by score (Items already listed are prioritized first)
     priced_candidates.sort_by(|a, b| {
