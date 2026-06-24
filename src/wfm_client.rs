@@ -27,6 +27,8 @@ pub struct Order {
     pub visible: bool,
     #[serde(rename = "mod_rank")]
     pub rank: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtype: Option<String>,
 }
 
 impl Order {
@@ -57,8 +59,10 @@ impl Order {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateOrder {
     pub item_id: String,
+    #[serde(rename = "type")]
     pub order_type: String,
     pub platinum: u32,
     pub quantity: u32,
@@ -71,6 +75,8 @@ pub struct CreateOrder {
     pub amber_stars: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_trade: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtype: Option<String>,   // <-- add this
 }
 
 impl CreateOrder {
@@ -86,6 +92,7 @@ impl CreateOrder {
             cyan_stars: None,
             amber_stars: None,
             per_trade: None,
+            subtype: None,
         }
     }
     #[must_use]
@@ -108,9 +115,15 @@ impl CreateOrder {
         self.per_trade = Some(per_trade);
         self
     }
+    #[must_use]
+    pub fn with_subtype(mut self, subtype: &str) -> Self {
+        self.subtype = Some(subtype.to_string());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateOrder {
     pub platinum: u32,
     pub quantity: u32,

@@ -7,16 +7,15 @@ pub mod models;
 pub mod pricing;
 pub mod wfm_client;
 
-
 use std::path::{Path, PathBuf};
 
 #[tokio::main]
 async fn main() {
     // Load .env file
     dotenvy::dotenv().ok();
-        std::fs::create_dir_all(config::CONFIG_DIR).expect("Failed to create config dir");
-        std::fs::create_dir_all(config::CACHE_DIR).expect("Failed to create cache dir");
-        std::fs::create_dir_all(config::STATISTICS_DIR).expect("Failed to create statistics dir");
+    std::fs::create_dir_all(config::CONFIG_DIR).expect("Failed to create config dir");
+    std::fs::create_dir_all(config::CACHE_DIR).expect("Failed to create cache dir");
+    std::fs::create_dir_all(config::STATISTICS_DIR).expect("Failed to create statistics dir");
 
     println!("--- WFM Pricer System Startup ---");
 
@@ -52,9 +51,10 @@ async fn main() {
         }
     };
 
-    // 3. Map inventory
+    // 3. Map inventory – create a reqwest client and pass it
     println!("Mapping inventory items to Warframe.Market tradeable items...");
-    let mapped = match mapping::map_inventory(&inventory) {
+    let client = reqwest::Client::new();
+    let mapped = match mapping::map_inventory(&inventory, &client).await {
         Ok(mapped) => mapped,
         Err(e) => {
             println!("Error mapping inventory: {e:?}");

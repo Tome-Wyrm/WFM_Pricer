@@ -49,6 +49,20 @@ pub struct WfmItem {
     #[serde(rename = "maxRank")]
     pub max_rank: Option<u32>,
     pub i18n: WfmI18n,
+    #[serde(default)]
+    pub subtypes: Vec<String>,
+    #[serde(rename = "setRoot")]
+    #[serde(default)]
+    pub set_root: bool,
+    #[serde(rename = "bulkTradable")]
+    #[serde(default)]
+    pub bulk_tradable: bool,
+    #[serde(rename = "maxAmberStars")]
+    #[serde(default)]
+    pub max_amber_stars: Option<u32>,
+    #[serde(rename = "maxCyanStars")]
+    #[serde(default)]
+    pub max_cyan_stars: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +101,7 @@ pub struct MappedItem {
     pub is_arcane: bool,
     pub is_ayatan: bool,
     pub game_ref: String,
+    pub subtypes: Vec<String>,
 }
 
 impl MappedItem {

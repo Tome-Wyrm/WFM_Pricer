@@ -211,14 +211,8 @@ fn sort_candidates(
     existing: &HashMap<ListingKey, Vec<OwnedOrder>>,
 ) -> Vec<(MappedItem, f64, f64, u32, f64)> {
     priced.sort_by(|a, b| {
-        let a_key = ListingKey {
-            item_id: a.0.id.clone(),
-            rank: if a.0.is_mod || a.0.is_arcane { a.0.rank } else { None },
-        };
-        let b_key = ListingKey {
-            item_id: b.0.id.clone(),
-            rank: if b.0.is_mod || b.0.is_arcane { b.0.rank } else { None },
-        };
+        let a_key = ListingKey { item_id: a.0.id.clone(), rank: if a.0.is_mod || a.0.is_arcane { a.0.rank } else { None } };
+        let b_key = ListingKey { item_id: b.0.id.clone(), rank: if b.0.is_mod || b.0.is_arcane { b.0.rank } else { None } };
         let a_listed = existing.contains_key(&a_key);
         let b_listed = existing.contains_key(&b_key);
         if a_listed && !b_listed {
@@ -366,6 +360,41 @@ async fn handle_list_or_update(
     let mut amber_stars: Option<u8> = None;
     let mut per_trade: Option<u32> = None;
 
+    // ── Price‑conflict detection ──────────────────────────────────────────────
+    let mut existing_same_price_order: Option<&OwnedOrder> = None;
+    for (key, orders) in ctx.existing_listings_map.iter() {
+        if key.item_id == item.id {
+            if let Some(order) = orders.iter().find(|o| o.platinum() == price) {
+                existing_same_price_order = Some(order);
+                break;
+            }
+        }
+    }
+
+    if let Some(order) = existing_same_price_order {
+        println!("\x1B[33m[SYNC] Found an existing order for {} at the same price ({} plat). Updating its quantity to {}...\x1B[0m",
+            item.name, price, quantity);
+        let update = UpdateOrder::new().platinum(price).quantity(quantity);
+        match ctx.wfm_client.update_order(order.id(), update).await {
+            Ok(()) => {
+                println!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", item.name);
+                return Ok(Some(SessionReportItem {
+                    name: item.name.clone(),
+                    slug: item.slug.clone(),
+                    price,
+                    quantity,
+                    rank: item.rank.map(u32::from),
+                    action: "Updated (price conflict)".to_string(),
+                }));
+            }
+            Err(e) => {
+                eprintln!("\x1B[31m[SYNC_ERROR] Failed to update existing order: {}\x1B[0m", e);
+                return Ok(None);
+            }
+        }
+    }
+
+    // ── Ayatan star prompts ───────────────────────────────────────────────────
     if item.is_ayatan {
         per_trade = Some(1);
         if item.slug.ends_with("_sculpture") {
@@ -384,6 +413,7 @@ async fn handle_list_or_update(
         }
     }
 
+    // ── Handle update or create ──────────────────────────────────────────────
     if is_already_listed {
         if let Some(listings) = ctx.existing_listings_map.get(listing_key)
             && let Some(first_listing) = listings.first()
@@ -414,23 +444,46 @@ async fn handle_list_or_update(
         println!("\x1B[33m[SYNC] Posting listing: {} (rank: {:?}) for {} plat...\x1B[0m", item.name, rank_opt, price);
         sleep(Duration::from_millis(400)).await;
 
+        // ── Build order using item ID ──────────────────────────────────────
         let mut order = CreateOrder::sell(&item.id, price, quantity);
         if let Some(r) = rank_opt {
             order = order.with_mod_rank(r);
         }
 
-        let (max_cyan, max_amber) = ayatan_max_stars(&item.slug);
-        cyan_stars = Some(cyan_stars.unwrap_or(max_cyan).min(max_cyan));
-        amber_stars = Some(amber_stars.unwrap_or(max_amber).min(max_amber));
-
-        if let (Some(c), Some(a)) = (cyan_stars, amber_stars)
-            && (c > 0 || a > 0)
-        {
-            order = order.with_sculpture_stars(a, c);
+        // ── Subtype handling (data‑driven) ──────────────────────────────────
+        if !item.subtypes.is_empty() {
+            // Default to the first subtype. Uncomment the block below to prompt the user.
+            order = order.with_subtype(&item.subtypes[0]);
+            /*
+            println!("This item supports subtypes: {:?}", item.subtypes);
+            print!("Choose subtype (default {}): ", item.subtypes[0]);
+            let _ = ctx.stdout.flush();
+            let mut choice = String::new();
+            io::stdin().read_line(&mut choice)?;
+            let selected = choice.trim();
+            let subtype = if selected.is_empty() || !item.subtypes.contains(&selected.to_string()) {
+                &item.subtypes[0]
+            } else {
+                selected
+            };
+            order = order.with_subtype(subtype);
+            */
         }
 
-        if let Some(pt) = per_trade {
-            order = order.with_per_trade(pt);
+        // ── Ayatan stars ──────────────────────────────────────────────────────
+        if item.is_ayatan {
+            let (max_cyan, max_amber) = ayatan_max_stars(&item.slug);
+            cyan_stars = Some(cyan_stars.unwrap_or(max_cyan).min(max_cyan));
+            amber_stars = Some(amber_stars.unwrap_or(max_amber).min(max_amber));
+
+            if let (Some(c), Some(a)) = (cyan_stars, amber_stars)
+                && (c > 0 || a > 0)
+            {
+                order = order.with_sculpture_stars(a, c);
+            }
+            if let Some(pt) = per_trade {
+                order = order.with_per_trade(pt);
+            }
         }
 
         match ctx.wfm_client.create_order(order).await {
@@ -486,7 +539,7 @@ async fn process_candidates(
             &mut ctx,
         ).await {
             Ok(Some(report_item)) => session_items.push(report_item),
-            Ok(None) => {}, // no `continue` needed
+            Ok(None) => {},
             Err(e) if e.to_string() == "EXIT_REQUESTED" => break,
             Err(e) => return Err(e),
         }

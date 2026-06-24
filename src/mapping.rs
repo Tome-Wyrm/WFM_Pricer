@@ -4,9 +4,13 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
+use tokio::time::sleep;
 use toml;
 
-use crate::config::{CACHE_DIR, METADATA_FILE, RELICS_CACHE_FILE, WFCD_CACHE_FILE, WFM_CACHE_FILE};
+use crate::config::{
+    CACHE_DIR, METADATA_FILE, RELICS_CACHE_FILE, WFCD_CACHE_FILE, WFM_CACHE_FILE, FULL_ITEMS_CACHE_FILE,
+};
 use crate::models::{MappedItem, WfcdItem, WfmItem, WfmV2Response, KeepConfig, BlacklistConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +249,48 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
 
 // ── WFM item lookup helpers ───────────────────────────────────────────────────
 
+fn load_full_items_cache() -> Result<HashMap<String, WfmItem>, Box<dyn Error>> {
+    if !Path::new(FULL_ITEMS_CACHE_FILE).exists() {
+        return Ok(HashMap::new());
+    }
+    let content = fs::read_to_string(FULL_ITEMS_CACHE_FILE)?;
+    Ok(serde_json::from_str(&content)?)
+}
+
+fn save_full_items_cache(cache: &HashMap<String, WfmItem>) -> Result<(), Box<dyn Error>> {
+    let content = serde_json::to_string_pretty(cache)?;
+    fs::write(FULL_ITEMS_CACHE_FILE, content)?;
+    Ok(())
+}
+
+async fn fetch_full_item(
+    slug: &str,
+    client: &reqwest::Client,
+    cache: &mut HashMap<String, WfmItem>,
+) -> Result<WfmItem, Box<dyn Error>> {
+    if let Some(item) = cache.get(slug) {
+        return Ok(item.clone());
+    }
+    // Respect rate limit
+    sleep(Duration::from_millis(400)).await;
+    let url = format!("https://api.warframe.market/v2/item/{}", slug);
+    let resp = client
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, "wfm-pricer-cli")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(format!("Failed to fetch full item for {}: {}", slug, resp.status()).into());
+    }
+    #[derive(Deserialize)]
+    struct ApiResponse {
+        data: WfmItem,
+    }
+    let parsed: ApiResponse = resp.json().await?;
+    cache.insert(slug.to_string(), parsed.data.clone());
+    Ok(parsed.data)
+}
+
 fn find_wfm_match<'a>(
     name: &str,
     wfm_by_name: &'a HashMap<String, WfmItem>,
@@ -278,22 +324,22 @@ fn is_fusion_treasure_allowed(game_ref: &str) -> bool {
 }
 
 fn is_misc_item_allowed(game_ref: &str) -> bool {
-    game_ref.starts_with("/Lotus/Types/Items/Fish/") ||
-    game_ref.starts_with("/Lotus/Types/Items/Gems/") ||
-    game_ref.starts_with("/Lotus/Types/Items/PhotoBooth/") ||
-    game_ref.starts_with("/Lotus/Types/Items/DangerRoom/") ||
-    game_ref.starts_with("/Lotus/Types/Items/FusionTreasures/OroFusexOrnament") ||
-    game_ref.starts_with("/Lotus/Types/Items/Lenses/") ||
-    game_ref.starts_with("/Lotus/Types/Items/Keys/") ||
-    game_ref.starts_with("/Lotus/Types/Recipes/Weapons/WeaponParts/") ||
-    (game_ref.starts_with("/Lotus/Types/Recipes/WarframeRecipes/") && !game_ref.ends_with("Component")) ||
-    game_ref.starts_with("/Lotus/Types/Items/MiscItems/JuggernautPart") ||
-    game_ref.starts_with("/Lotus/Types/Items/MiscItems/RazorbackCipherPart") ||
-    game_ref.starts_with("/Lotus/Types/Items/MiscItems/SyringeComponent") ||
-    game_ref.starts_with("/Lotus/Types/Items/MiscItems/GrnFlameSpearPart") ||
-    game_ref.starts_with("/Lotus/Types/Items/MiscItems/ValenceAdapter") ||
-    game_ref.starts_with("/Lotus/Types/Items/MiscItems/PhotoboothTile") ||
-    game_ref.starts_with("/Lotus/Types/Items/MiscItems/DangerRoomKey")
+    game_ref.starts_with("/Lotus/Types/Items/Fish/")
+        || game_ref.starts_with("/Lotus/Types/Items/Gems/")
+        || game_ref.starts_with("/Lotus/Types/Items/PhotoBooth/")
+        || game_ref.starts_with("/Lotus/Types/Items/DangerRoom/")
+        || game_ref.starts_with("/Lotus/Types/Items/FusionTreasures/OroFusexOrnament")
+        || game_ref.starts_with("/Lotus/Types/Items/Lenses/")
+        || game_ref.starts_with("/Lotus/Types/Items/Keys/")
+        || game_ref.starts_with("/Lotus/Types/Recipes/Weapons/WeaponParts/")
+        || (game_ref.starts_with("/Lotus/Types/Recipes/WarframeRecipes/") && !game_ref.ends_with("Component"))
+        || game_ref.starts_with("/Lotus/Types/Items/MiscItems/JuggernautPart")
+        || game_ref.starts_with("/Lotus/Types/Items/MiscItems/RazorbackCipherPart")
+        || game_ref.starts_with("/Lotus/Types/Items/MiscItems/SyringeComponent")
+        || game_ref.starts_with("/Lotus/Types/Items/MiscItems/GrnFlameSpearPart")
+        || game_ref.starts_with("/Lotus/Types/Items/MiscItems/ValenceAdapter")
+        || game_ref.starts_with("/Lotus/Types/Items/MiscItems/PhotoboothTile")
+        || game_ref.starts_with("/Lotus/Types/Items/MiscItems/DangerRoomKey")
 }
 
 fn is_relic(game_ref: &str) -> bool {
@@ -419,6 +465,7 @@ fn map_single(
             is_arcane: false,
             is_ayatan: true,
             game_ref: game_ref.to_string(),
+            subtypes: Vec::new(),
         });
     }
 
@@ -437,6 +484,7 @@ fn map_single(
                 is_arcane: false,
                 is_ayatan: true,
                 game_ref: game_ref.to_string(),
+                subtypes: Vec::new(),
             });
         }
     }
@@ -478,6 +526,7 @@ fn map_single(
         is_arcane,
         is_ayatan: false,
         game_ref: game_ref.to_string(),
+        subtypes: Vec::new(),
     })
 }
 
@@ -495,6 +544,7 @@ fn process_legendary_core(item_type: &str, qty: u32) -> Option<MappedItem> {
             is_arcane: false,
             is_ayatan: false,
             game_ref: item_type.to_string(),
+            subtypes: Vec::new(),
         })
     } else {
         None
@@ -533,6 +583,7 @@ fn process_veiled_riven(
             is_arcane: false,
             is_ayatan: false,
             game_ref: item_type.to_string(),
+            subtypes: Vec::new(),
         });
     }
     None
@@ -560,12 +611,19 @@ fn process_relic(
             is_arcane: false,
             is_ayatan: false,
             game_ref: item_type.to_string(),
+            subtypes: Vec::new(),
         });
     }
     None
 }
 
-fn check_allowlist(item_type: &str, category_key: &str, wfm_by_ref: &HashMap<String, WfmItem>, wfcd_by_ref: &HashMap<String, WfcdItem>, wfm_by_name: &HashMap<String, WfmItem>) -> bool {
+fn check_allowlist(
+    item_type: &str,
+    category_key: &str,
+    wfm_by_ref: &HashMap<String, WfmItem>,
+    wfcd_by_ref: &HashMap<String, WfcdItem>,
+    wfm_by_name: &HashMap<String, WfmItem>,
+) -> bool {
     match category_key {
         "FlavourItems"              => is_flavour_item_allowed(item_type),
         "RawUpgrades" | "Upgrades"  => is_upgrade_item_allowed(item_type),
@@ -574,10 +632,10 @@ fn check_allowlist(item_type: &str, category_key: &str, wfm_by_ref: &HashMap<Str
             if is_misc_item_allowed(item_type) {
                 true
             } else {
-                wfm_by_ref.contains_key(item_type) ||
-                wfcd_by_ref.get(item_type).and_then(|wfcd_item| {
-                    find_wfm_match(&wfcd_item.name, wfm_by_name)
-                }).is_some()
+                wfm_by_ref.contains_key(item_type)
+                    || wfcd_by_ref.get(item_type).and_then(|wfcd_item| {
+                        find_wfm_match(&wfcd_item.name, wfm_by_name)
+                    }).is_some()
             }
         },
         "MiscItems" => is_misc_item_allowed(item_type),
@@ -688,12 +746,16 @@ fn apply_keep_blacklist(
 /// - Cache files are missing.
 /// - File I/O or JSON parsing fails.
 /// - TOML parsing of keeplist or blacklist fails.
-pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, Box<dyn Error>> {
+pub async fn map_inventory(
+    inventory: &serde_json::Value,
+    client: &reqwest::Client,
+) -> Result<Vec<MappedItem>, Box<dyn Error>> {
     if !Path::new(WFCD_CACHE_FILE).exists() || !Path::new(WFM_CACHE_FILE).exists() {
         return Err("Cache files missing. Please run update_caches first.".into());
     }
 
     println!("Loading caches from disk for mapping...");
+    let mut full_cache = load_full_items_cache()?;
     let (wfcd_by_ref, wfm_by_ref, wfm_by_name, wfm_by_slug) = load_lookup_tables()?;
     let (keep_map, blacklist) = load_keep_blacklist()?;
     let relic_map = load_relic_map();
@@ -708,7 +770,7 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
         for &category_key in &allowed_keys {
             if let Some(arr) = obj.get(category_key).and_then(serde_json::Value::as_array) {
                 for element in arr {
-                    if let Some(mapped) = process_item(
+                    if let Some(mut mapped) = process_item(
                         element,
                         category_key,
                         &wfm_by_ref,
@@ -716,14 +778,33 @@ pub fn map_inventory(inventory: &serde_json::Value) -> Result<Vec<MappedItem>, B
                         &wfcd_by_ref,
                         &wfm_by_slug,
                         &relic_map,
-                    ) && let Some(final_item) = apply_keep_blacklist(mapped, &keep_map, &blacklist)
-                    {
-                        results.push(final_item);
+                    ) {
+                        // Fetch full item for this slug to get subtypes
+                        match fetch_full_item(&mapped.slug, client, &mut full_cache).await {
+                            Ok(full) => {
+                                mapped.subtypes = full.subtypes;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: Could not fetch full item for {}: {}",
+                                    mapped.slug, e
+                                );
+                                mapped.subtypes = Vec::new();
+                            }
+                        }
+
+                        // Apply keeplist / blacklist
+                        if let Some(final_item) = apply_keep_blacklist(mapped, &keep_map, &blacklist) {
+                            results.push(final_item);
+                        }
                     }
                 }
             }
         }
     }
+
+    // Save full items cache
+    save_full_items_cache(&full_cache)?;
 
     Ok(results)
 }
