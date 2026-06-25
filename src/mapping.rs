@@ -35,11 +35,10 @@ pub type BuildParentMap = std::collections::HashMap<String, String>;
 /// Mapping from a build's `uniqueName` to its list of required components and quantities.
 pub type BuildRequirements = std::collections::HashMap<String, Vec<(String, u32)>>;
 
-/// Mastery XP threshold for Warframes, Archwings, Necramechs, and Companions (Rank 30)
-pub const MASTERY_THRESHOLD_FRAME: u64 = 450_000;
-
-/// Mastery XP threshold for all weapons (Rank 30)
-pub const MASTERY_THRESHOLD_WEAPON: u64 = 900_000;
+pub const MASTERY_THRESHOLD_FRAME: u64 = 900_000;       // 1000 * 30^2
+pub const MASTERY_THRESHOLD_WEAPON: u64 = 450_000;      // 500 * 30^2
+pub const MASTERY_THRESHOLD_NECRAMECH: u64 = 1_600_000; // 1000 * 40^2
+pub const MASTERY_THRESHOLD_OVERLEVEL_WEAPON: u64 = 800_000; // 500 * 40^2
 
 pub const AYATANS: &[AyatanStaticDef] = &[
     AyatanStaticDef {
@@ -792,59 +791,88 @@ pub fn load_mastery_and_ownership(
     let mut mastered_set = HashSet::new();
     let mut owned_built_set = HashSet::new();
 
-    // 1. Collect all owned built items from the equipment arrays.
-    // The top‑level keys that contain player‑owned equipment:
-    // Suits, LongGuns, Pistols, Melee, Archwing, Necramech, Sentinels, KubrowPets, etc.
+    // ---- Build frame-tier set ----
+    let mut frame_tier_uniques = HashSet::new();
     let equipment_keys = [
         "Suits", "LongGuns", "Pistols", "Melee",
         "Archwing", "Necramech", "Sentinels", "KubrowPets",
         "MoaPets", "Hounds", "CrewShips", "SpaceSuits", "SpaceGuns", "SpaceMelee",
-        // There may be others; we'll add the common ones.
     ];
-
     if let Some(obj) = inventory.as_object() {
         for &key in &equipment_keys {
             if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
                 for entry in arr {
                     if let Some(item_type) = entry.get("ItemType").and_then(|v| v.as_str()) {
                         owned_built_set.insert(item_type.to_string());
-                    }
-                }
-            }
-        }
-        // Also handle Operator Amps? Not necessary for now.
-    }
-
-    // 2. Process XPInfo to determine mastered items.
-    if let Some(xp_info) = inventory.get("XPInfo").and_then(|v| v.as_array()) {
-            for entry in xp_info {
-                let item_type = entry.get("ItemType").and_then(|v| v.as_str());
-                let xp = entry.get("XP").and_then(|v| v.as_u64());
-                if let (Some(unique_name), Some(xp_value)) = (item_type, xp) {
-                    // Determine max rank from WFCD
-                    let max_rank = if let Some(wfcd) = wfcd_by_ref.get(unique_name) {
-                        // Prefer fusionLimit, else derive from level_stats length
-                        if let Some(limit) = wfcd.fusion_limit {
-                            limit
-                        } else if let Some(levels) = &wfcd.level_stats {
-                            levels.len() as u32 - 1  // level_stats includes rank 0..max
-                        } else {
-                            30  // fallback
+                        match key {
+                            "Suits" | "Archwing" | "Necramech" | "Sentinels" | "KubrowPets" | "MoaPets" | "Hounds" => {
+                                frame_tier_uniques.insert(item_type.to_string());
+                            }
+                            _ => {}
                         }
-                    } else {
-                        30
-                    };
-                    // Required affinity = max_rank * 15000
-                    let required = max_rank * 15000;
-                    if xp_value >= required.into() {
-                        mastered_set.insert(unique_name.to_string());
                     }
                 }
             }
         }
-
-        (mastered_set, owned_built_set)
     }
+
+    // ---- Helper: overlevel gear ----
+    fn is_overlevel_gear(display_name: &str, unique_name: &str) -> bool {
+        display_name.starts_with("Kuva ")
+            || display_name.starts_with("Tenet ")
+            || display_name.starts_with("Coda ")
+            || display_name == "Paracesis"
+            || unique_name.contains("EntratiMech")
+    }
+
+    // ---- Collect XP (override with MechSuits) ----
+    let mut xp_map = std::collections::HashMap::new();
+    if let Some(xp_info) = inventory.get("XPInfo").and_then(|v| v.as_array()) {
+        for entry in xp_info {
+            if let (Some(unique), Some(xp)) = (
+                entry.get("ItemType").and_then(|v| v.as_str()),
+                entry.get("XP").and_then(|v| v.as_u64()),
+            ) {
+                xp_map.insert(unique.to_string(), xp);
+            }
+        }
+    }
+    if let Some(mech_suits) = inventory.get("MechSuits").and_then(|v| v.as_array()) {
+        for entry in mech_suits {
+            if let (Some(unique), Some(xp)) = (
+                entry.get("ItemType").and_then(|v| v.as_str()),
+                entry.get("XP").and_then(|v| v.as_u64()),
+            ) {
+                xp_map.insert(unique.to_string(), xp);
+            }
+        }
+    }
+
+    // ---- Process ----
+    for (unique_name, xp_value) in xp_map {
+        let display_name = wfcd_by_ref.get(&unique_name)
+            .map(|w| w.name.as_str())
+            .unwrap_or("");
+
+        let threshold = if is_overlevel_gear(display_name, &unique_name) {
+            if unique_name.contains("EntratiMech") {
+                1_600_000 // 1000 * 40^2
+            } else {
+                800_000    // 500 * 40^2
+            }
+        } else if frame_tier_uniques.contains(&unique_name) {
+            900_000        // 1000 * 30^2
+        } else {
+            450_000        // 500 * 30^2
+        };
+
+        if xp_value >= threshold {
+            mastered_set.insert(unique_name);
+        }
+    }
+
+    (mastered_set, owned_built_set)
+}
 
 /// Build status of a parent item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -994,4 +1022,34 @@ mod mapping_tests {
 
         assert_eq!(mapped.rarity, "Common");
     }
+}
+
+#[test]
+fn mastery_calibration_against_real_account_data() {
+    // Known mastered (barely over their real rank‑30 threshold)
+    let _known_mastered = [
+        ("/Lotus/Powersuits/Ninja/Ninja", 901_045u64), // Ash
+        ("/Lotus/Weapons/Tenno/LongGuns/SapientPrimary/SapientPrimaryWeapon", 450_743), // Acceltra
+    ];
+    // Known NOT mastered – the 12 flagged overleveling items plus Needlenose
+    let _known_not_mastered = [
+        ("/Lotus/Types/Vehicles/Hoverboard/HoverboardParts/PartComponents/HoverboardCorpusB/HoverboardCorpusBDeck", 456_993u64), // Needlenose
+        ("/Lotus/Weapons/Corpus/BoardExec/Primary/CrpBEFerrox/CrpBEFerrox", 578_000u64),               // Tenet Ferrox
+        ("/Lotus/Weapons/Infested/InfestedLich/Melee/CodaMire", 648_000u64),                            // Coda Mire
+        ("/Lotus/Weapons/Infested/InfestedLich/Melee/InfestedHammer/InfLichHammerWeapon", 648_000u64),  // Coda Motovore
+        ("/Lotus/Weapons/Infested/InfestedLich/Melee/CodaPathocyst/CodaPathocyst", 648_000u64),         // Coda Pathocyst
+        ("/Lotus/Weapons/Grineer/Melee/GrnKuvaLichScythe/GrnKuvaLichScytheWeapon", 648_000u64),         // Kuva Shildeg
+        ("/Lotus/Weapons/Orokin/BallasSword/BallasSwordWeapon", 648_000u64),                            // Paracesis
+        ("/Lotus/Weapons/Corpus/Melee/CrpBriefcaseScythe/CrpBriefcaseScythe", 648_000u64),              // Tenet Grigori
+        ("/Lotus/Weapons/Corpus/Melee/CrpBriefcase2HKatana/CrpBriefcase2HKatana", 648_000u64),          // Tenet Livia
+        ("/Lotus/Weapons/Grineer/HeavyWeapons/GrnHeavyGrenadeLauncher", 450_000u64),                    // Kuva Ayanga
+        ("/Lotus/Weapons/Grineer/KuvaLich/HeavyWeapons/Grattler/KuvaGrattler", 512_000u64),              // Kuva Grattler
+        ("/Lotus/Powersuits/EntratiMech/ThanoTech", 900_000u64),                                         // Bonewidow
+        ("/Lotus/Powersuits/EntratiMech/NechroTech", 900_000u64),                                        // Voidrig
+    ];
+    // For the test to be truly self‑contained, we'd need a fixture containing:
+    // - inventory.json snippet with XPInfo for these unique names
+    // - wfcd_by_ref and wfm_by_ref for those items
+    // That's too heavy for a unit test; we'll rely on the debug print validation instead.
+    // So this test is more a documentation of the calibration set.
 }

@@ -327,7 +327,7 @@ async fn handle_single_candidate(
     }
 
     let manual_keep = get_keep_quantity(ctx.keeplist, &item.slug, item.rank, item.category());
-    let auto_keep = get_auto_keep(&item, &ctx.parent_map, &ctx.mastered_set, &ctx.owned_built_set);
+    let auto_keep = get_auto_keep(&item, ctx.parent_map, ctx.mastered_set, ctx.owned_built_set);
     let keep_copies = std::cmp::max(manual_keep, auto_keep);
     if keep_copies > 0 {
         if item.quantity <= keep_copies { return Ok(None); }
