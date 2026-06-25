@@ -104,6 +104,47 @@ fn filter_live_outliers<'a>(
 
 // ── Public pricing functions ─────────────────────────────────────────────────
 
+/// Total volume and number of distinct trading days within the most recent `window_days`
+/// *calendar* days, anchored to the latest matching entry's own date — not array position,
+/// and not wall‑clock "now" (so this is reproducible against cached/fixture data).
+#[must_use]
+pub fn recent_volume(
+    stats: &WfmStatsResponse,
+    target_rank: Option<u8>,
+    window_days: i64,
+) -> (u32, u32) {
+    use chrono::{DateTime, Duration, Utc};
+    let days_for_rank: Vec<&WfmStatsItem> = stats
+        .payload
+        .statistics_closed
+        .ninety_days
+        .iter()
+        .filter(|d| d.mod_rank == target_rank.map(u32::from))
+        .collect();
+
+    let Some(latest_dt) = days_for_rank
+        .iter()
+        .filter_map(|d| DateTime::parse_from_rfc3339(&d.datetime).ok())
+        .max()
+    else {
+        return (0, 0);
+    };
+
+    let cutoff = latest_dt - Duration::days(window_days.saturating_sub(1));
+
+    let mut volume = 0u32;
+    let mut trading_days = 0u32;
+    for d in &days_for_rank {
+        if let Ok(dt) = DateTime::parse_from_rfc3339(&d.datetime)
+            && dt >= cutoff
+        {
+            volume += d.volume;
+            trading_days += 1;
+        }
+    }
+    (volume, trading_days)
+}
+
 /// Calculates the 90-day volume-weighted average price for a target rank,
 /// using outlier filtering to suppress wash-trade spikes.
 #[must_use]
