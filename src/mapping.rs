@@ -817,53 +817,34 @@ pub fn load_mastery_and_ownership(
 
     // 2. Process XPInfo to determine mastered items.
     if let Some(xp_info) = inventory.get("XPInfo").and_then(|v| v.as_array()) {
-        for entry in xp_info {
-            let item_type = entry.get("ItemType").and_then(|v| v.as_str());
-            let xp = entry.get("XP").and_then(|v| v.as_u64());
-            if let (Some(unique_name), Some(xp_value)) = (item_type, xp) {
-                // Determine threshold based on WFCD category if available.
-                let threshold = if let Some(wfcd) = wfcd_by_ref.get(unique_name) {
-                    if let Some(cat) = &wfcd.category {
-                        // Warframes, Archwings, Necramechs, Sentinels, Pets, MOAs, Hounds
-                        if cat == "Warframes"
-                            || cat == "Archwing"
-                            || cat == "Necramech"
-                            || cat == "Sentinels"
-                            || cat == "Pets"
-                            || cat == "Moa"
-                            || cat == "Hound"
-                        {
-                            MASTERY_THRESHOLD_FRAME
+            for entry in xp_info {
+                let item_type = entry.get("ItemType").and_then(|v| v.as_str());
+                let xp = entry.get("XP").and_then(|v| v.as_u64());
+                if let (Some(unique_name), Some(xp_value)) = (item_type, xp) {
+                    // Determine max rank from WFCD
+                    let max_rank = if let Some(wfcd) = wfcd_by_ref.get(unique_name) {
+                        // Prefer fusionLimit, else derive from level_stats length
+                        if let Some(limit) = wfcd.fusion_limit {
+                            limit
+                        } else if let Some(levels) = &wfcd.level_stats {
+                            levels.len() as u32 - 1  // level_stats includes rank 0..max
                         } else {
-                            MASTERY_THRESHOLD_WEAPON
+                            30  // fallback
                         }
                     } else {
-                        // Fallback: if category unknown, assume weapon
-                        MASTERY_THRESHOLD_WEAPON
+                        30
+                    };
+                    // Required affinity = max_rank * 15000
+                    let required = max_rank * 15000;
+                    if xp_value >= required.into() {
+                        mastered_set.insert(unique_name.to_string());
                     }
-                } else {
-                    // Not found in WFCD – default to weapon threshold (or frame if it looks like a frame?)
-                    // We'll use a heuristic: if the uniqueName contains "Powersuits" or "Sentinels" etc.
-                    if unique_name.contains("/Powersuits/")
-                        || unique_name.contains("/Sentinels/")
-                        || unique_name.contains("/Necramech/")
-                        || unique_name.contains("/Pets/")
-                        || unique_name.contains("/MoaPets/")
-                    {
-                        MASTERY_THRESHOLD_FRAME
-                    } else {
-                        MASTERY_THRESHOLD_WEAPON
-                    }
-                };
-                if xp_value >= threshold {
-                    mastered_set.insert(unique_name.to_string());
                 }
             }
         }
-    }
 
-    (mastered_set, owned_built_set)
-}
+        (mastered_set, owned_built_set)
+    }
 
 /// Build status of a parent item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
