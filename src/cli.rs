@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use tokio::time::{sleep, Duration};
 
+use crate::models::WfmStatsResponse;
 use crate::wfm_client::{WfmClient, Credentials, CreateOrder, UpdateOrder, Order as OwnedOrder};
 use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
 use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};
@@ -865,5 +866,77 @@ mod no_op_decision_tests {
     fn small_drift_within_tolerance_is_still_noop() {
         // 41p existing vs 42p suggested on a price where 3% tolerance is >= 1.
         assert!(matches!(decide_no_op(42, 41, 10, 10), NoOpDecision::TrueNoOp));
+    }
+}
+
+#[cfg(test)]
+mod threshold_calibration_tests {
+    use super::*;
+    use crate::models::WfmStatsResponse;
+    use std::fs;
+
+    // Reuse the load_fixture helper from recent_volume_tests (copy it here or refer to it).
+    fn load_fixture(name: &str) -> WfmStatsResponse {
+        let path = format!("tests/fixtures/statistics/{name}.json");
+        let raw = fs::read_to_string(&path).expect("fixture missing — see Task 0.1");
+        serde_json::from_str(&raw).expect("fixture failed to parse")
+    }
+
+    #[test]
+    fn calibration_set_separates_cleanly_on_volume_floor() {
+        // Junk cases from Task 0.1 manifest
+        let junk_cases = [
+            ("vitality", 0u8),
+            ("vitality", 10),
+            ("steel_fiber", 0),
+            ("steel_fiber", 10),
+            ("arcane_ice", 0),
+            ("arcane_ice", 5),
+        ];
+
+        // Real-demand cases (including the weakest one: archon_flow r10 at 24.2/day)
+        let real_demand_cases = [
+            ("archon_flow", 10u8),
+            ("archon_flow", 0),
+            ("archon_stretch", 0),
+            ("archon_stretch", 10),
+            ("primed_flow", 0),
+            ("primed_flow", 10),
+            ("primed_pressure_point", 0),
+            ("primed_pressure_point", 10),
+            ("molt_reconstruct", 0),
+            ("molt_reconstruct", 5),
+            ("molt_augmented", 0),
+            ("molt_augmented", 5),
+            ("arcane_energize", 0),
+            ("arcane_energize", 5),
+            ("arcane_persistence", 0),
+            ("arcane_persistence", 5),
+            ("primary_merciless", 0),
+            ("primary_merciless", 5),
+        ];
+
+        // Import the constant from cli
+        use crate::cli::MIN_DAILY_VOLUME_FOR_MOD_ARCANE;
+
+        for (slug, rank) in junk_cases {
+            let stats = load_fixture(slug);
+            let (vol, _) = recent_volume(&stats, Some(rank), 30);
+            let per_day = f64::from(vol) / 30.0;
+            assert!(
+                per_day < MIN_DAILY_VOLUME_FOR_MOD_ARCANE,
+                "{slug} r{rank} should read as junk, got {per_day:.2}/day"
+            );
+        }
+
+        for (slug, rank) in real_demand_cases {
+            let stats = load_fixture(slug);
+            let (vol, _) = recent_volume(&stats, Some(rank), 30);
+            let per_day = f64::from(vol) / 30.0;
+            assert!(
+                per_day >= MIN_DAILY_VOLUME_FOR_MOD_ARCANE,
+                "{slug} r{rank} should clear the demand floor, got {per_day:.2}/day"
+            );
+        }
     }
 }
