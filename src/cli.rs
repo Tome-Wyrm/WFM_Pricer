@@ -13,6 +13,18 @@ use crate::pricing::{
     fetch_statistics, get_ayatan_endo_yield, is_antique, get_fusion_cost_from_zero, recent_volume,
 };
 
+/// How far a recalculated price can drift from the currently-listed price before we bother
+/// showing it to the user. Keeps a continuously-recalculated weighted-average price from
+/// triggering a re-prompt every run over noise (e.g. 41.3p -> 41.7p). Tune as needed —
+/// percentage with a 1-plat floor so cheap items (1-2p Ayatan stars) aren't hypersensitive.
+const PRICE_TOLERANCE_PCT: f64 = 0.03;
+
+enum NoOpDecision {
+    TrueNoOp,
+    QuantitySyncOnly { new_quantity: u32, keep_price: u32 },
+    NeedsReview,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionReportItem {
     pub name: String,
@@ -67,6 +79,21 @@ fn resolve_action_choice(raw_input: &str) -> String {
         "Y".to_string()
     } else {
         trimmed
+    }
+}
+
+fn decide_no_op(
+    suggested_price: u32,
+    existing_price: u32,
+    desired_total_qty: u32,
+    existing_qty: u32,
+) -> NoOpDecision {
+    let tolerance = std::cmp::max(1, (f64::from(suggested_price) * PRICE_TOLERANCE_PCT).round() as u32);
+    let price_matches = suggested_price.abs_diff(existing_price) <= tolerance;
+    match (price_matches, desired_total_qty == existing_qty) {
+        (true, true) => NoOpDecision::TrueNoOp,
+        (true, false) => NoOpDecision::QuantitySyncOnly { new_quantity: desired_total_qty, keep_price: existing_price },
+        (false, _) => NoOpDecision::NeedsReview,
     }
 }
 
@@ -298,6 +325,48 @@ async fn handle_single_candidate(
     if *ctx.active_slots_count >= 100 && !is_already_listed {
         print_warning(&format!("Budget limit reached (100/100 slots). Skipping listing creation candidate: {}", item.name));
         return Ok(None);
+    }
+
+    // ── Silent no‑op / quantity‑sync for already‑listed items ──────────────
+    if is_already_listed {
+        let suggested_price = wa_price.round() as u32;
+        let desired_total_qty = listed_qty + available_qty;
+
+        // Get the first existing listing for this key
+        if let Some(listings) = ctx.existing_listings_map.get(&listing_key)
+            && let Some(existing) = listings.first()
+        {
+            let decision = decide_no_op(
+                suggested_price,
+                existing.platinum(),
+                desired_total_qty,
+                existing.quantity(),
+            );
+
+            match decision {
+                NoOpDecision::TrueNoOp => return Ok(None),
+                NoOpDecision::QuantitySyncOnly { new_quantity, keep_price } => {
+                    // Silently update the listing with the new quantity, keeping the price exactly as-is.
+                    let update = UpdateOrder::new().platinum(keep_price).quantity(new_quantity);
+                    if let Err(e) = ctx.wfm_client.update_order(existing.id(), update).await {
+                        eprintln!("\x1B[31m[SYNC_ERROR] Failed to sync quantity for {}: {}\x1B[0m", item.name, e);
+                        return Ok(None);
+                    }
+                    // Return a report item so the session report records the sync.
+                    return Ok(Some(SessionReportItem {
+                        name: item.name.clone(),
+                        slug: item.slug.clone(),
+                        price: keep_price,
+                        quantity: new_quantity,
+                        rank: item.rank.map(u32::from),
+                        action: "Updated (qty sync, no prompt)".to_string(),
+                    }));
+                }
+                NoOpDecision::NeedsReview => {
+                    // Fall through to normal prompt flow.
+                }
+            }
+        }
     }
 
     println!("\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m");
@@ -753,5 +822,37 @@ mod action_choice_tests {
         assert_eq!(resolve_action_choice("k"), "K");
         assert_eq!(resolve_action_choice("b"), "B");
         assert_eq!(resolve_action_choice("y"), "Y");
+    }
+}
+
+#[cfg(test)]
+mod no_op_decision_tests {
+    use super::*;
+
+    #[test]
+    fn stable_ayatan_star_is_a_true_noop() {
+        // 100 owned, 100 listed, 1p suggested, 1p existing.
+        assert!(matches!(decide_no_op(1, 1, 100, 100), NoOpDecision::TrueNoOp));
+    }
+
+    #[test]
+    fn restock_with_stable_price_is_quantity_sync_only() {
+        // 105 owned (100 listed + 5 new), price unchanged at 1p.
+        assert!(matches!(
+            decide_no_op(1, 1, 105, 100),
+            NoOpDecision::QuantitySyncOnly { new_quantity: 105, .. }
+        ));
+    }
+
+    #[test]
+    fn real_price_move_needs_review() {
+        // existing listed at 40p, market now suggests 55p — well outside 3% tolerance.
+        assert!(matches!(decide_no_op(55, 40, 10, 10), NoOpDecision::NeedsReview));
+    }
+
+    #[test]
+    fn small_drift_within_tolerance_is_still_noop() {
+        // 41p existing vs 42p suggested on a price where 3% tolerance is >= 1.
+        assert!(matches!(decide_no_op(42, 41, 10, 10), NoOpDecision::TrueNoOp));
     }
 }
