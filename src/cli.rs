@@ -61,6 +61,10 @@ fn find_same_price_order<'a>(
     })
 }
 
+fn quantity_default(is_already_listed: bool, listed_qty: u32, available_qty: u32) -> u32 {
+    if is_already_listed { listed_qty + available_qty } else { available_qty }
+}
+
 fn arcane_rank_cost(rank: u8) -> u32 {
     match rank {
         1 => 3,
@@ -329,14 +333,15 @@ async fn handle_single_candidate(
     }
 
     if choice == "Y" {
-        return handle_list_or_update(
-            &item,
-            wa_price,
-            available_qty,
-            is_already_listed,
-            &listing_key,
-            ctx,
-        ).await;
+      return handle_list_or_update(
+          &item,
+          wa_price,
+          available_qty,
+          listed_qty,
+          is_already_listed,
+          &listing_key,
+          ctx,
+      ).await;
     }
 
     Ok(None)
@@ -346,6 +351,7 @@ async fn handle_list_or_update(
     item: &MappedItem,
     wa_price: f64,
     available_qty: u32,
+    listed_qty: u32,
     is_already_listed: bool,
     listing_key: &ListingKey,
     ctx: &mut CandidateContext<'_>,
@@ -360,11 +366,12 @@ async fn handle_list_or_update(
     let price: u32 = price_str.trim().parse::<u32>().unwrap_or(default_price);
 
     // Quantity prompt
-    print!("  Quantity to list (default {available_qty}): ");
+    let quantity_default = quantity_default(is_already_listed, listed_qty, available_qty);
+    print!("  Quantity to list (default {quantity_default}): ");
     let _ = ctx.stdout.flush();
     let mut qty_str = String::new();
     io::stdin().read_line(&mut qty_str)?;
-    let quantity: u32 = qty_str.trim().parse::<u32>().unwrap_or(available_qty);
+    let quantity: u32 = qty_str.trim().parse::<u32>().unwrap_or(quantity_default);
 
     let mut cyan_stars: Option<u8> = None;
     let mut amber_stars: Option<u8> = None;
@@ -702,5 +709,20 @@ mod price_conflict_tests {
         assert_eq!(result.map(|o| o.id()), Some("o5"));
         // Ensure it does not return the rank-0 order.
         assert_ne!(result.map(|o| o.id()), Some("o0"));
+    }
+}
+
+#[cfg(test)]
+mod quantity_default_tests {
+    use super::*;
+
+    #[test]
+    fn restock_default_includes_already_listed_quantity() {
+        assert_eq!(quantity_default(true, 100, 5), 105);
+    }
+
+    #[test]
+    fn fresh_listing_default_is_just_available() {
+        assert_eq!(quantity_default(false, 0, 5), 5);
     }
 }
