@@ -61,6 +61,15 @@ fn find_same_price_order<'a>(
     })
 }
 
+fn resolve_action_choice(raw_input: &str) -> String {
+    let trimmed = raw_input.trim().to_uppercase();
+    if trimmed.is_empty() {
+        "Y".to_string()
+    } else {
+        trimmed
+    }
+}
+
 fn quantity_default(is_already_listed: bool, listed_qty: u32, available_qty: u32) -> u32 {
     if is_already_listed { listed_qty + available_qty } else { available_qty }
 }
@@ -303,11 +312,11 @@ async fn handle_single_candidate(
         }
     }
 
-    print!("\x1B[1;35m  Action? [Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m");
+    print!("\x1B[1;35m  Action? [Enter/Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m");
     let _ = ctx.stdout.flush();
     let mut choice = String::new();
     io::stdin().read_line(&mut choice)?;
-    let choice = choice.trim().to_uppercase();
+    let choice = resolve_action_choice(&choice);
 
     if choice == "X" {
         return Err("EXIT_REQUESTED".into());
@@ -724,5 +733,25 @@ mod quantity_default_tests {
     #[test]
     fn fresh_listing_default_is_just_available() {
         assert_eq!(quantity_default(false, 0, 5), 5);
+    }
+}
+
+#[cfg(test)]
+mod action_choice_tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_defaults_to_yes() {
+        assert_eq!(resolve_action_choice("\n"), "Y");
+        assert_eq!(resolve_action_choice(""), "Y");
+    }
+
+    #[test]
+    fn explicit_choices_pass_through_uppercased() {
+        assert_eq!(resolve_action_choice("n\n"), "N");
+        assert_eq!(resolve_action_choice("x"), "X");
+        assert_eq!(resolve_action_choice("k"), "K");
+        assert_eq!(resolve_action_choice("b"), "B");
+        assert_eq!(resolve_action_choice("y"), "Y");
     }
 }
