@@ -1,6 +1,6 @@
 use reqwest::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
 use std::path::Path;
@@ -781,6 +781,117 @@ fn apply_keep_blacklist(
         item.quantity -= keep_reserved;
     }
     Some(item)
+}
+
+/// Given the inventory JSON and the WFCD lookup table, returns a set of mastered uniqueNames
+/// and a set of owned‑built uniqueNames.
+pub fn load_mastery_and_ownership(
+    inventory: &serde_json::Value,
+    wfcd_by_ref: &std::collections::HashMap<String, WfcdItem>,
+) -> (HashSet<String>, HashSet<String>) {
+    let mut mastered_set = HashSet::new();
+    let mut owned_built_set = HashSet::new();
+
+    // 1. Collect all owned built items from the equipment arrays.
+    // The top‑level keys that contain player‑owned equipment:
+    // Suits, LongGuns, Pistols, Melee, Archwing, Necramech, Sentinels, KubrowPets, etc.
+    let equipment_keys = [
+        "Suits", "LongGuns", "Pistols", "Melee",
+        "Archwing", "Necramech", "Sentinels", "KubrowPets",
+        "MoaPets", "Hounds", "CrewShips", "SpaceSuits", "SpaceGuns", "SpaceMelee",
+        // There may be others; we'll add the common ones.
+    ];
+
+    if let Some(obj) = inventory.as_object() {
+        for &key in &equipment_keys {
+            if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
+                for entry in arr {
+                    if let Some(item_type) = entry.get("ItemType").and_then(|v| v.as_str()) {
+                        owned_built_set.insert(item_type.to_string());
+                    }
+                }
+            }
+        }
+        // Also handle Operator Amps? Not necessary for now.
+    }
+
+    // 2. Process XPInfo to determine mastered items.
+    if let Some(xp_info) = inventory.get("XPInfo").and_then(|v| v.as_array()) {
+        for entry in xp_info {
+            let item_type = entry.get("ItemType").and_then(|v| v.as_str());
+            let xp = entry.get("XP").and_then(|v| v.as_u64());
+            if let (Some(unique_name), Some(xp_value)) = (item_type, xp) {
+                // Determine threshold based on WFCD category if available.
+                let threshold = if let Some(wfcd) = wfcd_by_ref.get(unique_name) {
+                    if let Some(cat) = &wfcd.category {
+                        // Warframes, Archwings, Necramechs, Sentinels, Pets, MOAs, Hounds
+                        if cat == "Warframes"
+                            || cat == "Archwing"
+                            || cat == "Necramech"
+                            || cat == "Sentinels"
+                            || cat == "Pets"
+                            || cat == "Moa"
+                            || cat == "Hound"
+                        {
+                            MASTERY_THRESHOLD_FRAME
+                        } else {
+                            MASTERY_THRESHOLD_WEAPON
+                        }
+                    } else {
+                        // Fallback: if category unknown, assume weapon
+                        MASTERY_THRESHOLD_WEAPON
+                    }
+                } else {
+                    // Not found in WFCD – default to weapon threshold (or frame if it looks like a frame?)
+                    // We'll use a heuristic: if the uniqueName contains "Powersuits" or "Sentinels" etc.
+                    if unique_name.contains("/Powersuits/")
+                        || unique_name.contains("/Sentinels/")
+                        || unique_name.contains("/Necramech/")
+                        || unique_name.contains("/Pets/")
+                        || unique_name.contains("/MoaPets/")
+                    {
+                        MASTERY_THRESHOLD_FRAME
+                    } else {
+                        MASTERY_THRESHOLD_WEAPON
+                    }
+                };
+                if xp_value >= threshold {
+                    mastered_set.insert(unique_name.to_string());
+                }
+            }
+        }
+    }
+
+    (mastered_set, owned_built_set)
+}
+
+/// Build status of a parent item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStatus {
+    Mastered,
+    BuiltUnmastered,
+    NotBuilt,
+    Unknown, // component not in any build map
+}
+
+/// Determine the build status of a component's parent build.
+pub fn get_build_status(
+    component_unique_name: &str,
+    parent_map: &BuildParentMap,
+    mastered_set: &HashSet<String>,
+    owned_built_set: &HashSet<String>,
+) -> BuildStatus {
+    if let Some(parent) = parent_map.get(component_unique_name) {
+        if mastered_set.contains(parent) {
+            BuildStatus::Mastered
+        } else if owned_built_set.contains(parent) {
+            BuildStatus::BuiltUnmastered
+        } else {
+            BuildStatus::NotBuilt
+        }
+    } else {
+        BuildStatus::Unknown
+    }
 }
 
 // ── Main mapping function ─────────────────────────────────────────────────────
