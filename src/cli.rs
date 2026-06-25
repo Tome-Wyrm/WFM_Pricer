@@ -18,6 +18,13 @@ use crate::pricing::{
 /// triggering a re-prompt every run over noise (e.g. 41.3p -> 41.7p). Tune as needed —
 /// percentage with a 1-plat floor so cheap items (1-2p Ayatan stars) aren't hypersensitive.
 const PRICE_TOLERANCE_PCT: f64 = 0.03;
+/// Minimum average daily trade volume (trailing 30 days) for a mod or arcane to be worth a
+/// listing slot. Calibrated against real WFM data (see tests/fixtures/statistics manifest):
+/// every confirmed-junk sample (common ubiquitous mods, an unused eidolon arcane) topped out
+/// at 3.1/day; every confirmed-real-demand sample, including the weakest one tested, started
+/// at 24.2/day. This sits in that gap. Applies identically at every rank — junk stays junk and
+/// real demand clears the bar at both unranked and maxed; no rank-specific adjustment needed.
+pub(crate) const MIN_DAILY_VOLUME_FOR_MOD_ARCANE: f64 = 9.0;
 
 enum NoOpDecision {
     TrueNoOp,
@@ -189,10 +196,7 @@ fn filter_candidates(mapped_items: Vec<MappedItem>) -> Vec<MappedItem> {
                 return true;
             }
             if item.is_mod {
-                if let Some(mr) = item.max_rank && mr >= 5 {
-                    return true;
-                }
-                return false;
+                return item.max_rank.is_some();
             }
             let name_lower = item.name.to_lowercase();
             name_lower.contains("prime") || name_lower.contains("set") || name_lower.contains("blueprint")
@@ -217,6 +221,13 @@ async fn build_priced_candidates(
             let endo_cost = get_fusion_cost_from_zero(&c.rarity, current_rank_u32, is_antique);
             let _ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
             let (vol_30d, _trading_days_30d) = recent_volume(&stats, target_rank, 30);
+            // ── Demand floor for mods/arcanes ──────────────────────────────────────
+            if c.is_mod || c.is_arcane {
+                let vol_per_day = f64::from(vol_30d) / 30.0;
+                if vol_per_day < MIN_DAILY_VOLUME_FOR_MOD_ARCANE {
+                    continue; // below the demand floor — not worth a slot, skip entirely
+                }
+            }
             let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
             let profit = wa_price - r0_price;
             let ppe = if endo_cost > 0 { (profit / f64::from(endo_cost)) * 1000.0 } else { 0.0 };
