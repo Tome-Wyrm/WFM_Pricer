@@ -4,8 +4,6 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use tokio::time::{sleep, Duration};
-
-use crate::models::WfmStatsResponse;
 use crate::wfm_client::{WfmClient, Credentials, CreateOrder, UpdateOrder, Order as OwnedOrder};
 use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
 use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};

@@ -86,6 +86,17 @@ pub struct WfcdItem {
     pub rarity: Option<String>,
     #[serde(rename = "fusionLimit")]
     pub fusion_limit: Option<u32>,
+    #[serde(default)]
+    pub components: Option<Vec<WfcdComponent>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WfcdComponent {
+    #[serde(rename = "uniqueName")]
+    pub unique_name: String,
+    #[serde(rename = "itemCount")]
+    pub item_count: u32,
+    // We can ignore other fields like name, description, etc.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

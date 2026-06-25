@@ -29,6 +29,18 @@ pub struct AyatanStaticDef {
     pub fully_filled_mask: u32,
 }
 
+/// Mapping from a component's `uniqueName` to its parent build's `uniqueName`.
+pub type BuildParentMap = std::collections::HashMap<String, String>;
+
+/// Mapping from a build's `uniqueName` to its list of required components and quantities.
+pub type BuildRequirements = std::collections::HashMap<String, Vec<(String, u32)>>;
+
+/// Mastery XP threshold for Warframes, Archwings, Necramechs, and Companions (Rank 30)
+pub const MASTERY_THRESHOLD_FRAME: u64 = 450_000;
+
+/// Mastery XP threshold for all weapons (Rank 30)
+pub const MASTERY_THRESHOLD_WEAPON: u64 = 900_000;
+
 pub const AYATANS: &[AyatanStaticDef] = &[
     AyatanStaticDef {
         name: "Ayatan Sah Sculpture",
@@ -129,6 +141,38 @@ type LookupTables = (
     HashMap<String, WfmItem>,
     HashMap<String, WfmItem>,
 );
+
+/// Loads the build‑parent map and the component‑requirements map from the cached WFCD `All.json`.
+/// Returns `(BuildParentMap, BuildRequirements)`.
+pub fn load_build_maps() -> Result<(BuildParentMap, BuildRequirements), Box<dyn Error>> {
+    let cache_path = crate::config::WFCD_CACHE_FILE;
+    if !std::path::Path::new(cache_path).exists() {
+        return Err("WFCD cache file missing. Run update_caches first.".into());
+    }
+    let raw = std::fs::read_to_string(cache_path)?;
+    let wfcd_items: Vec<WfcdItem> = serde_json::from_str(&raw)?;
+
+    let mut parent_map = BuildParentMap::new();
+    let mut requirements_map = BuildRequirements::new();
+
+    for item in wfcd_items {
+        if let Some(components) = item.components {
+            // Store the requirements for this build
+            let reqs: Vec<(String, u32)> = components
+                .iter()
+                .map(|comp| (comp.unique_name.clone(), comp.item_count))
+                .collect();
+            requirements_map.insert(item.unique_name.clone(), reqs);
+
+            // For each component, map it back to this build
+            for comp in components {
+                parent_map.insert(comp.unique_name, item.unique_name.clone());
+            }
+        }
+    }
+
+    Ok((parent_map, requirements_map))
+}
 
 // ── Cache management ─────────────────────────────────────────────────────────
 
@@ -837,6 +881,7 @@ mod mapping_tests {
             category: Some("Mods".into()),
             rarity: Some("Common".into()),
             fusion_limit: Some(10),
+            components: None,
         };
         let mut wfm_by_ref = HashMap::new();
         wfm_by_ref.insert("/Lotus/Test".to_string(), wfm_item.clone());
