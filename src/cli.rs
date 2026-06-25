@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
 use std::io::{self, Write};
@@ -6,6 +6,7 @@ use std::path::Path;
 use tokio::time::{sleep, Duration};
 use crate::wfm_client::{WfmClient, Credentials, CreateOrder, UpdateOrder, Order as OwnedOrder};
 use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
+use crate::mapping::{BuildParentMap, BuildStatus, get_build_status};
 use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};
 use crate::pricing::{
     calculate_saturation_ratio, calculate_weighted_average, derive_endo_to_plat_from_mods,
@@ -62,6 +63,23 @@ struct CandidateContext<'a> {
     keeplist: &'a mut KeepConfig,
     active_slots_count: &'a mut usize,
     stdout: &'a mut io::Stdout,
+    parent_map: &'a BuildParentMap,
+    mastered_set: &'a HashSet<String>,
+    owned_built_set: &'a HashSet<String>,
+}
+
+fn get_auto_keep(
+    item: &MappedItem,
+    parent_map: &BuildParentMap,
+    mastered_set: &HashSet<String>,
+    owned_built_set: &HashSet<String>,
+) -> u32 {
+    let status = get_build_status(&item.game_ref, parent_map, mastered_set, owned_built_set);
+    if status == BuildStatus::NotBuilt {
+        1
+    } else {
+        0
+    }
 }
 
 fn find_same_price_order<'a>(
@@ -298,6 +316,19 @@ async fn handle_single_candidate(
     }
 
     let keep_copies = get_keep_quantity(ctx.keeplist, &item.slug, item.rank, item.category());
+    if keep_copies > 0 {
+        if item.quantity <= keep_copies { return Ok(None); }
+        item.quantity -= keep_copies;
+    }
+
+    // ── Keep list / blacklist handling ─────────────────────────────────────
+    if ctx.blacklist_set.slugs.contains(&item.slug) {
+        return Ok(None);
+    }
+
+    let manual_keep = get_keep_quantity(ctx.keeplist, &item.slug, item.rank, item.category());
+    let auto_keep = get_auto_keep(&item, &ctx.parent_map, &ctx.mastered_set, &ctx.owned_built_set);
+    let keep_copies = std::cmp::max(manual_keep, auto_keep);
     if keep_copies > 0 {
         if item.quantity <= keep_copies { return Ok(None); }
         item.quantity -= keep_copies;
@@ -619,6 +650,9 @@ async fn process_candidates(
     blacklist_set: &mut BlacklistConfig,
     keeplist: &mut KeepConfig,
     active_slots_count: &mut usize,
+    parent_map: &BuildParentMap,
+    mastered_set: &HashSet<String>,
+    owned_built_set: &HashSet<String>,
 ) -> Result<Vec<SessionReportItem>, Box<dyn Error + Send + Sync>> {
     let mut session_items = Vec::new();
     let mut stdout = io::stdout();
@@ -630,6 +664,9 @@ async fn process_candidates(
         keeplist,
         active_slots_count,
         stdout: &mut stdout,
+        parent_map,
+        mastered_set,
+        owned_built_set,
     };
 
     for (item, wa_price, saturation, vol_30d, _score) in priced_candidates {
@@ -666,7 +703,12 @@ fn write_session_report(report: &SessionReport) -> Result<(), Box<dyn Error + Se
 /// - WFM client authentication fails.
 /// - Network or file I/O operations fail.
 /// - TOML or JSON serialization/deserialization fails.
-pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn run_cli(
+    mapped_items: Vec<MappedItem>,
+    parent_map: &BuildParentMap,
+    mastered_set: &HashSet<String>,
+    owned_built_set: &HashSet<String>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     print_header("Warframe.Market Advisor Session Init");
 
     let (email, password) = load_credentials()?;
@@ -702,6 +744,9 @@ pub async fn run_cli(mapped_items: Vec<MappedItem>) -> Result<(), Box<dyn Error 
         &mut blacklist_set,
         &mut keeplist,
         &mut active_slots_count,
+        parent_map,
+        mastered_set,
+        owned_built_set,
     ).await?;
 
     let report = SessionReport {

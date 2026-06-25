@@ -434,7 +434,7 @@ fn map_relic(game_ref: &str, relic_map: &HashMap<String, String>) -> Option<Stri
 
 // ── Inventory mapping helpers ──────────────────────────────────────────────────
 
-fn load_lookup_tables() -> Result<LookupTables, Box<dyn Error>> {
+pub(crate) fn load_lookup_tables() -> Result<LookupTables, Box<dyn Error>> {
     let wfcd_str = fs::read_to_string(WFCD_CACHE_FILE)?;
     let wfcd_items: Vec<WfcdItem> = serde_json::from_str(&wfcd_str)
         .map_err(|e| format!("Failed to parse cached WFCD All.json: {e:?}"))?;

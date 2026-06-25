@@ -7,65 +7,52 @@ pub mod models;
 pub mod pricing;
 pub mod wfm_client;
 
+use std::error::Error;
 use std::path::{Path, PathBuf};
 
 #[tokio::main]
-async fn main() {
-    // Load .env file
+async fn main() -> Result<(), Box<dyn Error>> {
     dotenvy::dotenv().ok();
-    std::fs::create_dir_all(config::CONFIG_DIR).expect("Failed to create config dir");
-    std::fs::create_dir_all(config::CACHE_DIR).expect("Failed to create cache dir");
-    std::fs::create_dir_all(config::STATISTICS_DIR).expect("Failed to create statistics dir");
+
+    // Ensure config directories exist
+    std::fs::create_dir_all(config::CONFIG_DIR)?;
+    std::fs::create_dir_all(config::CACHE_DIR)?;
+    std::fs::create_dir_all(config::STATISTICS_DIR)?;
 
     println!("--- WFM Pricer System Startup ---");
 
-    // 1. Update caches
-    if let Err(e) = mapping::update_caches().await {
-        println!("Error updating caches: {e:?}");
-        return;
-    }
+    // 1. Update caches (fail fast if this doesn't work)
+    mapping::update_caches().await?;
 
     // 2. Ingest inventory
     println!("Ingesting inventory...");
-
-    // Determine inventory source: use inventory.json if present, else fallback to AlecaFrame path
     let inventory_path = if Path::new("inventory.json").exists() {
         println!("Found inventory.json, using it directly.");
         PathBuf::from("inventory.json")
     } else {
         println!("inventory.json not found, falling back to AlecaFrame lastData.dat");
-        match ingestion::get_inventory_path() {
-            Ok(p) => p,
-            Err(e) => {
-                println!("Could not determine AlecaFrame inventory file location: {e}");
-                return;
-            }
-        }
+        ingestion::get_inventory_path()?
     };
 
-    let inventory = match ingestion::ingest_inventory(&inventory_path) {
-        Ok(inv) => inv,
-        Err(e) => {
-            println!("Error ingesting inventory from {}: {e:?}", inventory_path.display());
-            return;
-        }
-    };
+    let inventory = ingestion::ingest_inventory(&inventory_path)?;
 
-    // 3. Map inventory – create a reqwest client and pass it
+    // 3. Map inventory to WFM items
     println!("Mapping inventory items to Warframe.Market tradeable items...");
     let client = reqwest::Client::new();
-    let mapped = match mapping::map_inventory(&inventory, &client).await {
-        Ok(mapped) => mapped,
-        Err(e) => {
-            println!("Error mapping inventory: {e:?}");
-            return;
-        }
-    };
+    let mapped = mapping::map_inventory(&inventory, &client).await?;
+
+    // 4. Load build maps and mastery status (needed for auto‑keep logic)
+    println!("Loading build maps and mastery status...");
+    let (parent_map, _requirements) = mapping::load_build_maps()?;
+    let (wfcd_by_ref, _, _, _) = mapping::load_lookup_tables()?;
+    let (mastered_set, owned_built_set) = mapping::load_mastery_and_ownership(&inventory, &wfcd_by_ref);
 
     println!("Successfully mapped {} items!", mapped.len());
 
-    // 4. Run interactive CLI
-    if let Err(e) = cli::run_cli(mapped).await {
-        println!("CLI execution failed: {e:?}");
-    }
+    // 5. Run interactive CLI
+    cli::run_cli(mapped, &parent_map, &mastered_set, &owned_built_set)
+        .await
+        .map_err(|e| -> Box<dyn Error> { e })?;
+
+    Ok(())
 }
