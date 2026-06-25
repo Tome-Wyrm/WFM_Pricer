@@ -521,7 +521,7 @@ fn map_single(
         quantity: qty,
         rank: if is_mod || is_arcane { Some(rank) } else { None },
         max_rank,
-        rarity: String::new(),
+        rarity: wfcd_item.and_then(|item| item.rarity.clone()).unwrap_or_default(),
         is_mod,
         is_arcane,
         is_ayatan: false,
@@ -578,6 +578,8 @@ fn process_veiled_riven(
             quantity: qty,
             rank: Some(0),
             max_rank: None,
+            // Intentional: unveiled rivens always trade at Rare tier on WFM regardless of weapon type.
+            // Do not "fix" this to read from WFCD.
             rarity: "Rare".to_string(),
             is_mod: true,
             is_arcane: false,
@@ -807,4 +809,52 @@ pub async fn map_inventory(
     save_full_items_cache(&full_cache)?;
 
     Ok(results)
+}
+#[cfg(test)]
+mod mapping_tests {
+    use super::*;
+    use crate::models::WfmI18n;
+
+    #[test]
+    fn rarity_populated_from_wfcd() {
+        let wfm_item = WfmItem {
+            id: "test_id".into(),
+            slug: "test_slug".into(),
+            game_ref: Some("/Lotus/Test".into()),
+            tags: vec!["mod".into()],
+            max_rank: Some(10),
+            i18n: WfmI18n { en: WfmEn { name: "Test Mod".into() } },
+            subtypes: vec![],
+            set_root: false,
+            bulk_tradable: false,
+            max_amber_stars: None,
+            max_cyan_stars: None,
+        };
+        let wfcd_item = WfcdItem {
+            unique_name: "/Lotus/Test".into(),
+            name: "Test Mod".into(),
+            level_stats: None,
+            category: Some("Mods".into()),
+            rarity: Some("Common".into()),
+            fusion_limit: Some(10),
+        };
+        let mut wfm_by_ref = HashMap::new();
+        wfm_by_ref.insert("/Lotus/Test".to_string(), wfm_item.clone());
+        let mut wfm_by_name = HashMap::new();
+        wfm_by_name.insert("test mod".to_string(), wfm_item);
+        let mut wfcd_by_ref = HashMap::new();
+        wfcd_by_ref.insert("/Lotus/Test".to_string(), wfcd_item);
+
+        let mapped = map_single(
+            "/Lotus/Test",
+            1,
+            0,
+            None,
+            &wfm_by_ref,
+            &wfm_by_name,
+            &wfcd_by_ref,
+        ).expect("mapping should succeed");
+
+        assert_eq!(mapped.rarity, "Common");
+    }
 }
