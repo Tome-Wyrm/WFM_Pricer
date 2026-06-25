@@ -158,8 +158,8 @@ async fn build_priced_candidates(
             let (wa_price, _) = calculate_weighted_average(&stats, target_rank);
             let (r0_price, _) = calculate_weighted_average(&stats, Some(0));
             let is_antique = is_antique(&c.slug, &c.game_ref);
-            let target_rank_u32 = u32::from(c.max_rank.unwrap_or(0));
-            let endo_cost = get_fusion_cost_from_zero(&c.rarity, target_rank_u32, is_antique);
+            let current_rank_u32 = u32::from(c.rank.unwrap_or(0));
+            let endo_cost = get_fusion_cost_from_zero(&c.rarity, current_rank_u32, is_antique);
             let ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
             let vol_30d: u32 = ninety_days_closed
                 .iter()
