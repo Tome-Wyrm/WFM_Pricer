@@ -161,12 +161,7 @@ async fn build_priced_candidates(
             let current_rank_u32 = u32::from(c.rank.unwrap_or(0));
             let endo_cost = get_fusion_cost_from_zero(&c.rarity, current_rank_u32, is_antique);
             let ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
-            let vol_30d: u32 = ninety_days_closed
-                .iter()
-                .filter(|d| d.mod_rank == target_rank.map(u32::from))
-                .take(30)
-                .map(|d| d.volume)
-                .sum();
+            let (vol_30d, _trading_days_30d) = recent_volume(&stats, target_rank, 30);
             let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
             let profit = wa_price - r0_price;
             let ppe = if endo_cost > 0 { (profit / f64::from(endo_cost)) * 1000.0 } else { 0.0 };

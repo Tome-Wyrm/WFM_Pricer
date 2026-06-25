@@ -469,3 +469,27 @@ fn endo_to_max_is_nonzero_when_current_rank_below_max() {
     let endo_to_max = cost_to_max.saturating_sub(cost_to_current);
     assert!(endo_to_max > 0, "a rank‑3‑of‑10 mod must have nonzero endo cost remaining");
 }
+
+#[cfg(test)]
+mod recent_volume_tests {
+    use super::*;
+    use std::fs;
+
+    fn load_fixture(name: &str) -> WfmStatsResponse {
+        let path = format!("tests/fixtures/statistics/{name}.json");
+        let raw = fs::read_to_string(&path).expect("fixture missing — see Task 0.1");
+        serde_json::from_str(&raw).expect("fixture failed to parse")
+    }
+
+    #[test]
+    fn voruna_recent_volume_matches_known_value_not_stale_value() {
+        let stats = load_fixture("voruna_prime_set");
+        let (volume, trading_days) = recent_volume(&stats, None, 30);
+        assert_eq!(trading_days, 30);
+        // Known correct value from Task 0.1 manifest: ~13,790
+        assert!(
+            (12_000..=15_500).contains(&volume),
+            "expected recent volume near 13790, got {volume}"
+        );
+    }
+}
