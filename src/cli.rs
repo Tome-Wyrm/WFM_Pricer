@@ -10,7 +10,7 @@ use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
 use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};
 use crate::pricing::{
     calculate_saturation_ratio, calculate_weighted_average, derive_endo_to_plat_from_mods,
-    fetch_statistics, get_ayatan_endo_yield, is_antique, get_fusion_cost_from_zero,
+    fetch_statistics, get_ayatan_endo_yield, is_antique, get_fusion_cost_from_zero, recent_volume,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -44,6 +44,21 @@ struct CandidateContext<'a> {
     keeplist: &'a mut KeepConfig,
     active_slots_count: &'a mut usize,
     stdout: &'a mut io::Stdout,
+}
+
+fn find_same_price_order<'a>(
+    existing_listings_map: &'a HashMap<ListingKey, Vec<OwnedOrder>>,
+    item_id: &str,
+    rank: Option<u8>,
+    price: u32,
+) -> Option<&'a OwnedOrder> {
+    existing_listings_map.iter().find_map(|(key, orders)| {
+        if key.item_id == item_id && key.rank == rank {
+            orders.iter().find(|o| o.platinum() == price)
+        } else {
+            None
+        }
+    })
 }
 
 fn arcane_rank_cost(rank: u8) -> u32 {
@@ -356,15 +371,12 @@ async fn handle_list_or_update(
     let mut per_trade: Option<u32> = None;
 
     // ── Price‑conflict detection ──────────────────────────────────────────────
-    let mut existing_same_price_order: Option<&OwnedOrder> = None;
-    for (key, orders) in ctx.existing_listings_map.iter() {
-        if key.item_id == item.id {
-            if let Some(order) = orders.iter().find(|o| o.platinum() == price) {
-                existing_same_price_order = Some(order);
-                break;
-            }
-        }
-    }
+    let existing_same_price_order = find_same_price_order(
+        ctx.existing_listings_map,
+        &item.id,
+        listing_key.rank,
+        price,
+    );
 
     if let Some(order) = existing_same_price_order {
         println!("\x1B[33m[SYNC] Found an existing order for {} at the same price ({} plat). Updating its quantity to {}...\x1B[0m",
@@ -666,4 +678,29 @@ fn add_to_keeplist(
     rules.push(KeepRule { keep: qty, rank });
     fs::write(KEEPLIST_FILE, toml::to_string(keeplist)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod price_conflict_tests {
+    use super::*;
+    use crate::wfm_client::Order;
+
+    #[test]
+    fn does_not_match_across_different_ranks_at_same_price() {
+        let mut map = HashMap::new();
+        let item_id = "abc".to_string();
+
+        let key0 = ListingKey { item_id: item_id.clone(), rank: Some(0) };
+        let order0 = Order { id: "o0".into(), order_type: "sell".into(), platinum: 50, quantity: 1, item_id: item_id.clone(), visible: true, rank: Some(0), subtype: None };
+        map.entry(key0).or_default().push(order0);
+
+        let key5 = ListingKey { item_id: item_id.clone(), rank: Some(5) };
+        let order5 = Order { id: "o5".into(), order_type: "sell".into(), platinum: 50, quantity: 1, item_id: item_id.clone(), visible: true, rank: Some(5), subtype: None };
+        map.entry(key5).or_default().push(order5);
+
+        let result = find_same_price_order(&map, &item_id, Some(5), 50);
+        assert_eq!(result.map(|o| o.id()), Some("o5"));
+        // Ensure it does not return the rank-0 order.
+        assert_ne!(result.map(|o| o.id()), Some("o0"));
+    }
 }

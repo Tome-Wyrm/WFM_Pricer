@@ -113,7 +113,7 @@ pub fn recent_volume(
     target_rank: Option<u8>,
     window_days: i64,
 ) -> (u32, u32) {
-    use chrono::{DateTime, Duration, Utc};
+    use chrono::{DateTime, Duration};
     let days_for_rank: Vec<&WfmStatsItem> = stats
         .payload
         .statistics_closed
