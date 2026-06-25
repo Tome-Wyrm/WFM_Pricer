@@ -179,7 +179,7 @@ async fn build_priced_candidates(
             let is_antique = is_antique(&c.slug, &c.game_ref);
             let current_rank_u32 = u32::from(c.rank.unwrap_or(0));
             let endo_cost = get_fusion_cost_from_zero(&c.rarity, current_rank_u32, is_antique);
-            let ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
+            let _ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
             let (vol_30d, _trading_days_30d) = recent_volume(&stats, target_rank, 30);
             let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
             let profit = wa_price - r0_price;
@@ -694,7 +694,7 @@ mod price_conflict_tests {
 
     #[test]
     fn does_not_match_across_different_ranks_at_same_price() {
-        let mut map = HashMap::new();
+        let mut map: HashMap<ListingKey, Vec<Order>> = HashMap::new();
         let item_id = "abc".to_string();
 
         let key0 = ListingKey { item_id: item_id.clone(), rank: Some(0) };

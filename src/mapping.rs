@@ -813,7 +813,7 @@ pub async fn map_inventory(
 #[cfg(test)]
 mod mapping_tests {
     use super::*;
-    use crate::models::WfmI18n;
+    use crate::models::{WfmI18n, WfmEn};
 
     #[test]
     fn rarity_populated_from_wfcd() {
