@@ -420,3 +420,11 @@ pub fn calculate_mod_upgrade_endo(rarity: &str, target_rank: u32) -> u32 {
 pub fn calculate_mod_upgrade_credits(endo_cost: u32) -> u32 {
     (f64::from(endo_cost) * 48.25) as u32
 }
+
+#[test]
+fn endo_to_max_is_nonzero_when_current_rank_below_max() {
+    let cost_to_current = get_fusion_cost_from_zero("Rare", 3, false);
+    let cost_to_max = get_fusion_cost_from_zero("Rare", 10, false);
+    let endo_to_max = cost_to_max.saturating_sub(cost_to_current);
+    assert!(endo_to_max > 0, "a rank‑3‑of‑10 mod must have nonzero endo cost remaining");
+}
