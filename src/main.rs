@@ -114,13 +114,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // WFM fallback (also filtered)
         for (name, item) in &wfm_by_name {
             let norm = name.to_lowercase();
-            if let Some(gr) = &item.game_ref {
-                if let Some(wfcd_item) = wfcd_by_ref.get(gr)
+            if let Some(gr) = &item.game_ref
+                && let Some(wfcd_item) = wfcd_by_ref.get(gr)
                     && is_eligible_for_mastery_checklist(&wfcd_item.unique_name)
                 {
                     name_to_unique.entry(norm).or_insert(wfcd_item.unique_name.clone());
                 }
-            }
         }
 
         // ---- Read checklist ----
@@ -186,7 +185,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 };
 
                 let max_rank = if let Some(wfm_item) = wfm_by_ref.get(&unique) {
-                    wfm_item.max_rank.unwrap_or(30) as u32
+                    wfm_item.max_rank.unwrap_or(30)
                 } else if let Some(wfcd) = wfcd_by_ref.get(&unique) {
                     wfcd.fusion_limit
                         .or_else(|| wfcd.level_stats.as_ref().map(|v| v.len() as u32 - 1))

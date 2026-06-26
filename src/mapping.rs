@@ -9,9 +9,12 @@ use tokio::time::sleep;
 use toml;
 
 use crate::config::{
-    CACHE_DIR, METADATA_FILE, RELICS_CACHE_FILE, WFCD_CACHE_FILE, WFM_CACHE_FILE, FULL_ITEMS_CACHE_FILE,
+    CACHE_DIR, METADATA_FILE, RELICS_CACHE_FILE, WFCD_CACHE_FILE, WFM_CACHE_FILE, FULL_ITEMS_CACHE_FILE
 };
-use crate::models::{MappedItem, WfcdItem, WfmItem, WfmV2Response, KeepConfig, BlacklistConfig};
+use crate::models::{MappedItem, WfcdItem, WfmItem, WfmV2Response, KeepConfig,
+    BlacklistConfig
+};
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMetadata {
@@ -291,6 +294,17 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
 }
 
 // ── WFM item lookup helpers ───────────────────────────────────────────────────
+
+/// Resolve the WFM item for a build's complete set (e.g. "Mag Prime" → "mag_prime_set").
+/// Returns `None` if no such set item exists in the WFM cache.
+pub fn resolve_set_item(
+    build_name: &str,
+    wfm_by_name: &HashMap<String, WfmItem>,
+) -> Option<WfmItem> {
+    let set_name = format!("{} Set", build_name);
+    let lower = set_name.to_lowercase();
+    wfm_by_name.get(&lower).cloned()
+}
 
 fn load_full_items_cache() -> Result<HashMap<String, WfmItem>, Box<dyn Error>> {
     if !Path::new(FULL_ITEMS_CACHE_FILE).exists() {
@@ -1022,6 +1036,45 @@ mod mapping_tests {
 
         assert_eq!(mapped.rarity, "Common");
     }
+}
+
+#[test]
+fn resolve_set_item_finds_set_not_component() {
+    use std::collections::HashMap;
+    let mut map = HashMap::new();
+    // Simulate WFM cache entries
+    let set_item = WfmItem {
+        id: "set_id".into(),
+        slug: "mag_prime_set".into(),
+        game_ref: None,
+        tags: vec![],
+        max_rank: None,
+        i18n: WfmI18n { en: WfmEn { name: "Mag Prime Set".into() } },
+        subtypes: vec![],
+        set_root: true,
+        bulk_tradable: false,
+        max_amber_stars: None,
+        max_cyan_stars: None,
+    };
+    let part_item = WfmItem {
+        id: "part_id".into(),
+        slug: "mag_prime_chassis".into(),
+        game_ref: None,
+        tags: vec![],
+        max_rank: None,
+        i18n: WfmI18n { en: WfmEn { name: "Mag Prime Chassis".into() } },
+        subtypes: vec![],
+        set_root: false,
+        bulk_tradable: false,
+        max_amber_stars: None,
+        max_cyan_stars: None,
+    };
+    map.insert("mag prime set".to_string(), set_item.clone());
+    map.insert("mag prime chassis".to_string(), part_item);
+
+    let resolved = resolve_set_item("Mag Prime", &map).expect("should resolve set");
+    assert_eq!(resolved.slug, "mag_prime_set");
+    assert_eq!(resolved.id, "set_id");
 }
 
 #[test]
