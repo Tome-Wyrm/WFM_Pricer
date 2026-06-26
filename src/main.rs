@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // 4. Load build maps and mastery status (needed for auto‑keep logic)
     println!("Loading build maps and mastery status...");
-    let (parent_map, _requirements) = mapping::load_build_maps()?;
+    let (parent_map, requirements) = mapping::load_build_maps()?;
     let (wfcd_by_ref, wfm_by_ref, wfm_by_name, _wfm_by_slug) = mapping::load_lookup_tables()?;
     let (mastered_set, owned_built_set) = mapping::load_mastery_and_ownership(&inventory, &wfcd_by_ref);
 
@@ -185,7 +185,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 };
 
                 let max_rank = if let Some(wfm_item) = wfm_by_ref.get(&unique) {
-                    wfm_item.max_rank.unwrap_or(30)
+                    wfm_item.max_rank.unwrap_or(30) // no cast needed
                 } else if let Some(wfcd) = wfcd_by_ref.get(&unique) {
                     wfcd.fusion_limit
                         .or_else(|| wfcd.level_stats.as_ref().map(|v| v.len() as u32 - 1))
@@ -215,9 +215,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // 5. Run interactive CLI
-    cli::run_cli(mapped, &parent_map, &mastered_set, &owned_built_set)
-        .await
-        .map_err(|e| -> Box<dyn Error> { e })?;
+    cli::run_cli(
+        mapped,
+        &parent_map,
+        &mastered_set,
+        &owned_built_set,
+        &requirements,
+        &wfcd_by_ref,
+        &wfm_by_name,
+    )
+    .await
+    .map_err(|e| e as Box<dyn Error>)?;
 
     Ok(())
 }

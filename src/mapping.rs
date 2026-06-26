@@ -11,9 +11,7 @@ use toml;
 use crate::config::{
     CACHE_DIR, METADATA_FILE, RELICS_CACHE_FILE, WFCD_CACHE_FILE, WFM_CACHE_FILE, FULL_ITEMS_CACHE_FILE
 };
-use crate::models::{MappedItem, WfcdItem, WfmItem, WfmV2Response, KeepConfig,
-    BlacklistConfig
-};
+use crate::models::{MappedItem, WfcdItem, WfmItem, WfmV2Response, KeepConfig, BlacklistConfig};
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1040,6 +1038,7 @@ mod mapping_tests {
 
 #[test]
 fn resolve_set_item_finds_set_not_component() {
+    use crate::models::{WfmI18n, WfmEn}; // <-- added here
     use std::collections::HashMap;
     let mut map = HashMap::new();
     // Simulate WFM cache entries

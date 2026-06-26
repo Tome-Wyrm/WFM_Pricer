@@ -6,8 +6,8 @@ use std::path::Path;
 use tokio::time::{sleep, Duration};
 use crate::wfm_client::{WfmClient, Credentials, CreateOrder, UpdateOrder, Order as OwnedOrder};
 use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
-use crate::mapping::{BuildParentMap, BuildStatus, get_build_status};
-use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig};
+use crate::mapping::{BuildParentMap, BuildRequirements, BuildStatus, get_build_status, resolve_set_item};
+use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig, WfcdItem, WfmItem};
 use crate::pricing::{
     calculate_saturation_ratio, calculate_weighted_average, derive_endo_to_plat_from_mods,
     fetch_statistics, get_ayatan_endo_yield, is_antique, get_fusion_cost_from_zero, recent_volume,
@@ -25,6 +25,11 @@ const PRICE_TOLERANCE_PCT: f64 = 0.03;
 /// at 24.2/day. This sits in that gap. Applies identically at every rank — junk stays junk and
 /// real demand clears the bar at both unranked and maxed; no rank-specific adjustment needed.
 pub(crate) const MIN_DAILY_VOLUME_FOR_MOD_ARCANE: f64 = 9.0;
+/// If a single required component's own market price exceeds this fraction of the assembled
+/// Set's own market price, sell that component standalone instead of folding it into the Set
+/// bundle — otherwise you're giving away a disproportionately valuable part inside a cheaper
+/// bundle price.
+const SET_BUNDLE_PART_VALUE_GUARD_RATIO: f64 = 0.5;
 
 enum NoOpDecision {
     TrueNoOp,
@@ -204,6 +209,136 @@ async fn fetch_user_listings(wfm_client: &WfmClient) -> Result<(Vec<OwnedOrder>,
     Ok((user_listings, map))
 }
 
+/// Core set‑aggregation logic: takes a list of candidate items (which may include components),
+/// the build maps, and a price map (slug → wa_price). Returns a new list of items where complete
+/// sets are combined into a single MappedItem and their parts are removed. The guard check
+/// prevents bundling if any part is worth more than `SET_BUNDLE_PART_VALUE_GUARD_RATIO` of the
+/// set price.
+///
+/// This function is pure and synchronous, making it easy to unit test.
+fn aggregate_sets_with_prices(
+    candidates: Vec<MappedItem>,
+    parent_map: &BuildParentMap,
+    requirements: &BuildRequirements,
+    wfcd_by_ref: &HashMap<String, WfcdItem>,
+    wfm_by_name: &HashMap<String, WfmItem>,
+    prices: &HashMap<String, f64>,
+) -> Vec<MappedItem> {
+    // Separate parts that belong to a build from everything else
+    let mut part_items = Vec::new();
+    let mut other_items = Vec::new();
+
+    for item in candidates {
+        if parent_map.contains_key(&item.game_ref) {
+            part_items.push(item);
+        } else {
+            other_items.push(item);
+        }
+    }
+
+    // Build component quantity map: game_ref -> (total_qty, example_item)
+    let mut component_qty: HashMap<String, (u32, MappedItem)> = HashMap::new();
+    for item in &part_items {
+        let key = item.game_ref.clone();
+        let (qty, _) = component_qty.entry(key).or_insert((0, item.clone()));
+        *qty += item.quantity;
+    }
+
+    let mut set_items = Vec::new();
+    let mut consumed: HashMap<String, u32> = HashMap::new();
+
+    // Process each build
+    for (build_unique, recipe) in requirements {
+        let wfcd_item = match wfcd_by_ref.get(build_unique) {
+            Some(w) => w,
+            None => continue,
+        };
+        let set_item = match resolve_set_item(&wfcd_item.name, wfm_by_name) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Determine possible sets ignoring guard
+        let mut possible_sets = u32::MAX;
+        for (comp_unique, required_qty) in recipe {
+            if let Some((qty, _)) = component_qty.get(comp_unique) {
+                let avail = *qty - consumed.get(comp_unique).copied().unwrap_or(0);
+                possible_sets = possible_sets.min(avail / required_qty);
+                if possible_sets == 0 {
+                    break;
+                }
+            } else {
+                possible_sets = 0;
+                break;
+            }
+        }
+
+        if possible_sets == 0 {
+            continue;
+        }
+
+        // Guard check
+        let set_price = *prices.get(&set_item.slug).unwrap_or(&0.0);
+        if set_price <= 0.0 {
+            continue;
+        }
+
+        let mut guard_failed = false;
+        for (comp_unique, _) in recipe {
+            if let Some((_, comp_item)) = component_qty.get(comp_unique) {
+                let comp_price = *prices.get(&comp_item.slug).unwrap_or(&0.0);
+                if comp_price > set_price * SET_BUNDLE_PART_VALUE_GUARD_RATIO {
+                    guard_failed = true;
+                    break;
+                }
+            }
+        }
+
+        if guard_failed {
+            continue;
+        }
+
+        // Form sets
+        let sets_to_form = possible_sets;
+        let set_mapped = MappedItem {
+            id: set_item.id.clone(),
+            slug: set_item.slug.clone(),
+            name: set_item.i18n.en.name.clone(),
+            quantity: sets_to_form,
+            rank: None,
+            max_rank: None,
+            rarity: String::new(),
+            is_mod: false,
+            is_arcane: false,
+            is_ayatan: false,
+            game_ref: build_unique.clone(),
+            subtypes: set_item.subtypes.clone(),
+        };
+        set_items.push(set_mapped);
+
+        // Record consumption
+        for (comp_unique, required_qty) in recipe {
+            *consumed.entry(comp_unique.clone()).or_insert(0) += required_qty * sets_to_form;
+        }
+    }
+
+    // Build final list: sets + leftovers + other_items
+    let mut result = set_items;
+
+    for (comp_unique, (total_qty, comp_item_template)) in component_qty {
+        let used = consumed.get(&comp_unique).copied().unwrap_or(0);
+        let leftover = total_qty.saturating_sub(used);
+        if leftover > 0 {
+            let mut leftover_item = comp_item_template.clone();
+            leftover_item.quantity = leftover;
+            result.push(leftover_item);
+        }
+    }
+
+    result.extend(other_items);
+    result
+}
+
 fn filter_candidates(mapped_items: Vec<MappedItem>) -> Vec<MappedItem> {
     println!("Filtering high-value candidates for trade review...");
     mapped_items
@@ -223,50 +358,138 @@ fn filter_candidates(mapped_items: Vec<MappedItem>) -> Vec<MappedItem> {
 
 async fn build_priced_candidates(
     candidates: Vec<MappedItem>,
-    endo_rate: f64,
+    _endo_rate: f64, // unused here, needed for signature compatibility
+    parent_map: &BuildParentMap,
+    requirements: &BuildRequirements,
+    wfcd_by_ref: &HashMap<String, WfcdItem>,
+    wfm_by_name: &HashMap<String, WfmItem>,
 ) -> (Vec<(MappedItem, f64, f64, u32, f64)>, Vec<(String, f64, u32, u32, f64)>) {
+    // ---- 1. Collect all slugs we need ----
+    let mut slugs_to_fetch = HashSet::new();
+
+    // All candidate slugs (including components)
+    for item in &candidates {
+        slugs_to_fetch.insert(item.slug.clone());
+    }
+
+    // Also, for each build, add its set slug (if resolvable)
+    for build_unique in requirements.keys() {
+        if let Some(wfcd_item) = wfcd_by_ref.get(build_unique)
+            && let Some(set_item) = resolve_set_item(&wfcd_item.name, wfm_by_name) {
+                slugs_to_fetch.insert(set_item.slug);
+            }
+    }
+
+    // ---- 2. Fetch stats for all slugs, store in a map ----
+    let mut stats_map = HashMap::new();
+    for slug in &slugs_to_fetch {
+        if let Ok(stats) = fetch_statistics(slug).await {
+            stats_map.insert(slug.clone(), stats);
+        } else {
+            eprintln!("Warning: failed to fetch stats for {}", slug);
+        }
+    }
+
+    // ---- 3. Build price map (slug -> wa_price) ----
+    let mut price_map = HashMap::new();
+    for (slug, stats) in &stats_map {
+        let (wa_price, _) = calculate_weighted_average(stats, None);
+        price_map.insert(slug.clone(), wa_price);
+    }
+
+    // ---- 4. Aggregate sets ----
+    let aggregated_items = aggregate_sets_with_prices(
+        candidates,
+        parent_map,
+        requirements,
+        wfcd_by_ref,
+        wfm_by_name,
+        &price_map,
+    );
+
+    // ---- 5. For each aggregated item, compute pricing details ----
     let mut priced = Vec::new();
     let mut upgrades = Vec::new();
 
-    for c in candidates {
-        if let Ok(stats) = fetch_statistics(&c.slug).await {
-            let target_rank = if c.is_mod || c.is_arcane { c.rank } else { None };
-            let (wa_price, _) = calculate_weighted_average(&stats, target_rank);
-            let (r0_price, _) = calculate_weighted_average(&stats, Some(0));
-            let is_antique = is_antique(&c.slug, &c.game_ref);
-            let current_rank_u32 = u32::from(c.rank.unwrap_or(0));
-            let endo_cost = get_fusion_cost_from_zero(&c.rarity, current_rank_u32, is_antique);
-            let _ninety_days_closed = &stats.payload.statistics_closed.ninety_days;
-            let (vol_30d, _trading_days_30d) = recent_volume(&stats, target_rank, 30);
-            // ── Demand floor for mods/arcanes ──────────────────────────────────────
-            if c.is_mod || c.is_arcane {
-                let vol_per_day = f64::from(vol_30d) / 30.0;
-                if vol_per_day < MIN_DAILY_VOLUME_FOR_MOD_ARCANE {
-                    continue; // below the demand floor — not worth a slot, skip entirely
-                }
-            }
-            let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
-            let profit = wa_price - r0_price;
-            let ppe = if endo_cost > 0 { (profit / f64::from(endo_cost)) * 1000.0 } else { 0.0 };
-            priced.push((c.clone(), wa_price, calculate_saturation_ratio(&stats, target_rank), vol_30d, score));
+    for item in aggregated_items {
+        // Determine the target rank for price calculation (mods/arcanes only)
+        let target_rank = if item.is_mod || item.is_arcane { item.rank } else { None };
 
-            let is_maxed = c.rank.zip(c.max_rank).is_some_and(|(r, mr)| r >= mr);
-            if endo_cost > 0 && ppe > endo_rate * 1000.0 && c.quantity > 0 && !is_maxed {
-                println!("\x1B[1;32m[!] PROFITABLE UPGRADE\x1B[0m: {} (PPE: {:.2})", c.name, ppe);
-            }
-            if c.is_mod && !is_maxed && let Some(mr) = c.max_rank {
-                let (max_rank_price, _) = calculate_weighted_average(&stats, Some(mr));
-                let delta = max_rank_price - wa_price;
-                let endo_to_max = get_fusion_cost_from_zero(&c.rarity, u32::from(mr), is_antique)
-                    .saturating_sub(endo_cost);
-                if delta > 0.0 && endo_to_max > 0 {
-                    let upgrade_score = (delta / f64::from(endo_to_max)) * (1.0 + f64::from(vol_30d)).ln();
-                    upgrades.push((c.name.clone(), delta, endo_to_max, vol_30d, upgrade_score));
-                }
+        // Get stats for this item's slug
+        let stats_opt = stats_map.get(&item.slug);
+        let (wa_price, _total_vol) = if let Some(stats) = stats_opt {
+            calculate_weighted_average(stats, target_rank)
+        } else {
+            (0.0, 0)
+        };
+
+        if wa_price <= 0.0 {
+            // Skip items that have no market price
+            continue;
+        }
+
+        // ---- Demand floor for mods/arcanes ----
+        if item.is_mod || item.is_arcane {
+            let (vol_30d, _) = if let Some(stats) = stats_opt {
+                recent_volume(stats, target_rank, 30)
+            } else {
+                (0, 0)
+            };
+            let vol_per_day = f64::from(vol_30d) / 30.0;
+            if vol_per_day < MIN_DAILY_VOLUME_FOR_MOD_ARCANE {
+                continue; // below demand floor, skip entirely
             }
         }
+
+        // Saturation ratio
+        let saturation = if let Some(stats) = stats_opt {
+            calculate_saturation_ratio(stats, target_rank)
+        } else {
+            0.0
+        };
+
+        // Recent volume (30 days)
+        let (vol_30d, _) = if let Some(stats) = stats_opt {
+            recent_volume(stats, target_rank, 30)
+        } else {
+            (0, 0)
+        };
+
+        // Score: price * (1 + ln(volume)) – used for sorting later
+        let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
+
+        // ---- Upgrade suggestions (only for mods) ----
+        if item.is_mod && !item.is_arcane {
+            let current_rank_u32 = u32::from(item.rank.unwrap_or(0));
+            let is_antique = is_antique(&item.slug, &item.game_ref);
+            let endo_cost = get_fusion_cost_from_zero(&item.rarity, current_rank_u32, is_antique);
+            let is_maxed = item.rank.zip(item.max_rank).is_some_and(|(r, mr)| r >= mr);
+            if !is_maxed && endo_cost > 0
+                && let Some(max_rank) = item.max_rank {
+                    let max_rank_u32 = u32::from(max_rank);
+                    let endo_to_max = get_fusion_cost_from_zero(&item.rarity, max_rank_u32, is_antique)
+                        .saturating_sub(endo_cost);
+                    if let Some(stats) = stats_opt {
+                        let (max_price, _) = calculate_weighted_average(stats, Some(max_rank));
+                        let delta = max_price - wa_price;
+                        if delta > 0.0 && endo_to_max > 0 {
+                            let upgrade_score = (delta / f64::from(endo_to_max)) * (1.0 + f64::from(vol_30d)).ln();
+                            upgrades.push((item.name.clone(), delta, endo_to_max, vol_30d, upgrade_score));
+                        }
+                    }
+                }
+        }
+
+        // Store priced candidate
+        priced.push((item, wa_price, saturation, vol_30d, score));
     }
-    (priced, upgrades)
+
+    // Sort upgrades by score descending and truncate
+    let mut upgrades_sorted = upgrades;
+    upgrades_sorted.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
+    upgrades_sorted.truncate(15);
+
+    (priced, upgrades_sorted)
 }
 
 fn print_upgrade_suggestions(suggestions: &[(String, f64, u32, u32, f64)]) {
@@ -708,6 +931,9 @@ pub async fn run_cli(
     parent_map: &BuildParentMap,
     mastered_set: &HashSet<String>,
     owned_built_set: &HashSet<String>,
+    requirements: &BuildRequirements,
+    wfcd_by_ref: &HashMap<String, WfcdItem>,
+    wfm_by_name: &HashMap<String, WfmItem>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     print_header("Warframe.Market Advisor Session Init");
 
@@ -727,7 +953,14 @@ pub async fn run_cli(
     print_header("Trade Candidate Evaluation");
     println!("Fetching WFM pricing and volume stats dynamically for candidates...");
 
-    let (priced_candidates, upgrade_suggestions) = build_priced_candidates(candidates, endo_rate).await;
+    let (priced_candidates, upgrade_suggestions) = build_priced_candidates(
+            candidates,
+            endo_rate,
+            parent_map,
+            requirements,
+            wfcd_by_ref,
+            wfm_by_name,
+        ).await;
     print_upgrade_suggestions(&upgrade_suggestions);
 
     let priced_candidates = sort_candidates(priced_candidates, &existing_listings_map);
@@ -981,5 +1214,310 @@ mod threshold_calibration_tests {
                 "{slug} r{rank} should clear the demand floor, got {per_day:.2}/day"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod set_aggregation_tests {
+    use super::*;
+    use crate::models::{WfmItem, WfmI18n, WfmEn, WfcdItem};
+    use std::collections::HashMap;
+
+    fn build_test_wfm_item(slug: &str, name: &str) -> WfmItem {
+        WfmItem {
+            id: slug.to_string(),
+            slug: slug.to_string(),
+            game_ref: None,
+            tags: vec![],
+            max_rank: None,
+            i18n: WfmI18n { en: WfmEn { name: name.to_string() } },
+            subtypes: vec![],
+            set_root: true,
+            bulk_tradable: false,
+            max_amber_stars: None,
+            max_cyan_stars: None,
+        }
+    }
+
+    fn build_test_candidate(slug: &str, name: &str, game_ref: &str, qty: u32) -> MappedItem {
+        MappedItem {
+            id: slug.to_string(),
+            slug: slug.to_string(),
+            name: name.to_string(),
+            quantity: qty,
+            rank: None,
+            max_rank: None,
+            rarity: "Common".to_string(),
+            is_mod: false,
+            is_arcane: false,
+            is_ayatan: false,
+            game_ref: game_ref.to_string(),
+            subtypes: vec![],
+        }
+    }
+
+    #[test]
+    fn exactly_one_set() {
+        // Build: Mag Prime requires BP, Chassis, Neuroptics, Systems (1 each)
+        let build_name = "Mag Prime";
+        let build_unique = "/Lotus/Types/Recipes/WarframeRecipes/MagPrime".to_string();
+
+        let mut wfcd_by_ref = HashMap::new();
+        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
+            unique_name: build_unique.clone(),
+            name: build_name.to_string(),
+            level_stats: None,
+            category: None,
+            rarity: None,
+            fusion_limit: None,
+            components: None,
+        });
+
+        let mut requirements = BuildRequirements::new();
+        let recipe = vec![
+            ("/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(), 1),
+        ];
+        requirements.insert(build_unique.clone(), recipe.clone());
+
+        // WFM by name: set item and component items
+        let mut wfm_by_name = HashMap::new();
+        wfm_by_name.insert("mag prime set".to_string(), build_test_wfm_item("mag_prime_set", "Mag Prime Set"));
+        wfm_by_name.insert("mag prime blueprint".to_string(), build_test_wfm_item("mag_prime_blueprint", "Mag Prime Blueprint"));
+        wfm_by_name.insert("mag prime chassis".to_string(), build_test_wfm_item("mag_prime_chassis", "Mag Prime Chassis"));
+        wfm_by_name.insert("mag prime neuroptics".to_string(), build_test_wfm_item("mag_prime_neuroptics", "Mag Prime Neuroptics"));
+        wfm_by_name.insert("mag prime systems".to_string(), build_test_wfm_item("mag_prime_systems", "Mag Prime Systems"));
+
+        // Parent map: each component maps to the build
+        let mut parent_map = BuildParentMap::new();
+        for (comp, _) in &recipe {
+            parent_map.insert(comp.clone(), build_unique.clone());
+        }
+
+        // Candidates: one of each component
+        let candidates = vec![
+            build_test_candidate("mag_prime_blueprint", "Mag Prime Blueprint", "/Lotus/Types/Recipes/Components/MagPrimeBlueprint", 1),
+            build_test_candidate("mag_prime_chassis", "Mag Prime Chassis", "/Lotus/Types/Recipes/Components/MagPrimeChassis", 1),
+            build_test_candidate("mag_prime_neuroptics", "Mag Prime Neuroptics", "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics", 1),
+            build_test_candidate("mag_prime_systems", "Mag Prime Systems", "/Lotus/Types/Recipes/Components/MagPrimeSystems", 1),
+        ];
+
+        // Prices: set price 100, each component 10
+        let mut prices = HashMap::new();
+        prices.insert("mag_prime_set".to_string(), 100.0);
+        prices.insert("mag_prime_blueprint".to_string(), 10.0);
+        prices.insert("mag_prime_chassis".to_string(), 10.0);
+        prices.insert("mag_prime_neuroptics".to_string(), 10.0);
+        prices.insert("mag_prime_systems".to_string(), 10.0);
+
+        let result = aggregate_sets_with_prices(
+            candidates,
+            &parent_map,
+            &requirements,
+            &wfcd_by_ref,
+            &wfm_by_name,
+            &prices,
+        );
+
+        // Expect exactly one set item, no leftover components
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].slug, "mag_prime_set");
+        assert_eq!(result[0].quantity, 1);
+    }
+
+    #[test]
+    fn two_sets_with_leftovers() {
+        // Same as above but with extra parts
+        // Build: Mag Prime (1 each)
+        // Candidates: 2 BP, 2 Chassis, 2 Neuroptics, 5 Systems
+        // Expect 2 sets, leftover 3 Systems
+
+        let build_name = "Mag Prime";
+        let build_unique = "/Lotus/Types/Recipes/WarframeRecipes/MagPrime".to_string();
+
+        let mut wfcd_by_ref = HashMap::new();
+        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
+            unique_name: build_unique.clone(),
+            name: build_name.to_string(),
+            level_stats: None,
+            category: None,
+            rarity: None,
+            fusion_limit: None,
+            components: None,
+        });
+
+        let mut requirements = BuildRequirements::new();
+        let recipe = vec![
+            ("/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(), 1),
+        ];
+        requirements.insert(build_unique.clone(), recipe.clone());
+
+        let mut wfm_by_name = HashMap::new();
+        wfm_by_name.insert("mag prime set".to_string(), build_test_wfm_item("mag_prime_set", "Mag Prime Set"));
+        wfm_by_name.insert("mag prime blueprint".to_string(), build_test_wfm_item("mag_prime_blueprint", "Mag Prime Blueprint"));
+        wfm_by_name.insert("mag prime chassis".to_string(), build_test_wfm_item("mag_prime_chassis", "Mag Prime Chassis"));
+        wfm_by_name.insert("mag prime neuroptics".to_string(), build_test_wfm_item("mag_prime_neuroptics", "Mag Prime Neuroptics"));
+        wfm_by_name.insert("mag prime systems".to_string(), build_test_wfm_item("mag_prime_systems", "Mag Prime Systems"));
+
+        let mut parent_map = BuildParentMap::new();
+        for (comp, _) in &recipe {
+            parent_map.insert(comp.clone(), build_unique.clone());
+        }
+
+        let candidates = vec![
+            build_test_candidate("mag_prime_blueprint", "Mag Prime Blueprint", "/Lotus/Types/Recipes/Components/MagPrimeBlueprint", 2),
+            build_test_candidate("mag_prime_chassis", "Mag Prime Chassis", "/Lotus/Types/Recipes/Components/MagPrimeChassis", 2),
+            build_test_candidate("mag_prime_neuroptics", "Mag Prime Neuroptics", "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics", 2),
+            build_test_candidate("mag_prime_systems", "Mag Prime Systems", "/Lotus/Types/Recipes/Components/MagPrimeSystems", 5),
+        ];
+
+        let mut prices = HashMap::new();
+        prices.insert("mag_prime_set".to_string(), 100.0);
+        prices.insert("mag_prime_blueprint".to_string(), 10.0);
+        prices.insert("mag_prime_chassis".to_string(), 10.0);
+        prices.insert("mag_prime_neuroptics".to_string(), 10.0);
+        prices.insert("mag_prime_systems".to_string(), 10.0);
+
+        let result = aggregate_sets_with_prices(
+            candidates,
+            &parent_map,
+            &requirements,
+            &wfcd_by_ref,
+            &wfm_by_name,
+            &prices,
+        );
+
+        // Expect 2 sets + 1 leftover systems (qty 3)
+        assert_eq!(result.len(), 2);
+        let sets: Vec<_> = result.iter().filter(|i| i.slug == "mag_prime_set").collect();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].quantity, 2);
+        let leftovers: Vec<_> = result.iter().filter(|i| i.slug == "mag_prime_systems").collect();
+        assert_eq!(leftovers.len(), 1);
+        assert_eq!(leftovers[0].quantity, 3);
+    }
+
+    #[test]
+    fn not_enough_parts_no_set() {
+        // Missing one component -> no set
+        let build_unique = "/Lotus/Types/Recipes/WarframeRecipes/MagPrime".to_string();
+        let mut wfcd_by_ref = HashMap::new();
+        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
+            unique_name: build_unique.clone(),
+            name: "Mag Prime".to_string(),
+            level_stats: None,
+            category: None,
+            rarity: None,
+            fusion_limit: None,
+            components: None,
+        });
+
+        let mut requirements = BuildRequirements::new();
+        let recipe = vec![
+            ("/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(), 1),
+        ];
+        requirements.insert(build_unique.clone(), recipe.clone());
+
+        let mut wfm_by_name = HashMap::new();
+        wfm_by_name.insert("mag prime set".to_string(), build_test_wfm_item("mag_prime_set", "Mag Prime Set"));
+
+        let mut parent_map = BuildParentMap::new();
+        for (comp, _) in &recipe {
+            parent_map.insert(comp.clone(), build_unique.clone());
+        }
+
+        let candidates = vec![
+            build_test_candidate("mag_prime_blueprint", "Mag Prime Blueprint", "/Lotus/Types/Recipes/Components/MagPrimeBlueprint", 1),
+            build_test_candidate("mag_prime_chassis", "Mag Prime Chassis", "/Lotus/Types/Recipes/Components/MagPrimeChassis", 1),
+            build_test_candidate("mag_prime_neuroptics", "Mag Prime Neuroptics", "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics", 1),
+            // missing systems
+        ];
+
+        let mut prices = HashMap::new();
+        prices.insert("mag_prime_set".to_string(), 100.0);
+        prices.insert("mag_prime_blueprint".to_string(), 10.0);
+        prices.insert("mag_prime_chassis".to_string(), 10.0);
+        prices.insert("mag_prime_neuroptics".to_string(), 10.0);
+
+        let result = aggregate_sets_with_prices(
+            candidates,
+            &parent_map,
+            &requirements,
+            &wfcd_by_ref,
+            &wfm_by_name,
+            &prices,
+        );
+
+        // No set, all parts remain as individual candidates
+        assert_eq!(result.len(), 3);
+        assert!(!result.iter().any(|i| i.slug == "mag_prime_set"));
+    }
+
+    #[test]
+    fn guard_check_prevents_bundling() {
+        // One component is worth 60% of set price -> guard fails
+        let build_unique = "/Lotus/Types/Recipes/WarframeRecipes/MagPrime".to_string();
+        let mut wfcd_by_ref = HashMap::new();
+        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
+            unique_name: build_unique.clone(),
+            name: "Mag Prime".to_string(),
+            level_stats: None,
+            category: None,
+            rarity: None,
+            fusion_limit: None,
+            components: None,
+        });
+
+        let mut requirements = BuildRequirements::new();
+        let recipe = vec![
+            ("/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(), 1),
+            ("/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(), 1),
+        ];
+        requirements.insert(build_unique.clone(), recipe.clone());
+
+        let mut wfm_by_name = HashMap::new();
+        wfm_by_name.insert("mag prime set".to_string(), build_test_wfm_item("mag_prime_set", "Mag Prime Set"));
+
+        let mut parent_map = BuildParentMap::new();
+        for (comp, _) in &recipe {
+            parent_map.insert(comp.clone(), build_unique.clone());
+        }
+
+        let candidates = vec![
+            build_test_candidate("mag_prime_blueprint", "Mag Prime Blueprint", "/Lotus/Types/Recipes/Components/MagPrimeBlueprint", 1),
+            build_test_candidate("mag_prime_chassis", "Mag Prime Chassis", "/Lotus/Types/Recipes/Components/MagPrimeChassis", 1),
+            build_test_candidate("mag_prime_neuroptics", "Mag Prime Neuroptics", "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics", 1),
+            build_test_candidate("mag_prime_systems", "Mag Prime Systems", "/Lotus/Types/Recipes/Components/MagPrimeSystems", 1),
+        ];
+
+        let mut prices = HashMap::new();
+        prices.insert("mag_prime_set".to_string(), 100.0);
+        prices.insert("mag_prime_blueprint".to_string(), 10.0);
+        prices.insert("mag_prime_chassis".to_string(), 10.0);
+        prices.insert("mag_prime_neuroptics".to_string(), 60.0); // 60% of 100 = 60, exceeds 50%
+        prices.insert("mag_prime_systems".to_string(), 10.0);
+
+        let result = aggregate_sets_with_prices(
+            candidates,
+            &parent_map,
+            &requirements,
+            &wfcd_by_ref,
+            &wfm_by_name,
+            &prices,
+        );
+
+        // No set, all parts remain separate
+        assert_eq!(result.len(), 4);
+        assert!(!result.iter().any(|i| i.slug == "mag_prime_set"));
     }
 }
