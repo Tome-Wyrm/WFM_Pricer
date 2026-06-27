@@ -44,9 +44,9 @@ pub const MASTERY_THRESHOLD_OVERLEVEL_WEAPON: u64 = 800_000; // 500 * 40^2
 /// True for the small, finite set of gear that ranks past 30 up to rank 40 via 5 Forma
 /// (Kuva/Tenet/Coda weapons, Paracesis, and the Entrati Necramechs). Deliberately matched on
 /// `display_name` rather than `unique_name` substrings — checked against real account data,
-/// substring-matching the unique_name doesn't reliably work for this set (e.g. Paracesis has no
+/// substring-matching the `unique_name` doesn't reliably work for this set (e.g. Paracesis has no
 /// "Paracesis" anywhere in its path). The one exception is `EntratiMech`, which is a reliable
-/// unique_name substring for both Necramechs and is kept that way to distinguish the Necramech
+/// `unique_name` substring for both Necramechs and is kept that way to distinguish the Necramech
 /// (1,600,000) threshold from the ordinary overlevel-weapon (800,000) one below.
 #[must_use]
 pub fn is_overlevel_gear(display_name: &str, unique_name: &str) -> bool {
