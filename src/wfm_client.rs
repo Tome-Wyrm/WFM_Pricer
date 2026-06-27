@@ -186,6 +186,10 @@ impl WfmClient {
         &self.token
     }
 
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be built, the sign-in request fails or
+    /// returns a non-success status, or the response doesn't contain a usable JWT token in
+    /// either the `Authorization` header or the response body.
     pub async fn from_credentials(creds: Credentials) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let client = reqwest::Client::builder()
             .cookie_store(true)
@@ -235,7 +239,7 @@ impl WfmClient {
         } else if let Some(t) = auth_header.strip_prefix("Bearer ") {
             t.to_string()
         } else {
-            return Err(format!("Unexpected Authorization header format: {}", auth_header).into());
+            return Err(format!("Unexpected Authorization header format: {auth_header}").into());
         };
 
         // Fallback: if token empty, try body (safety net)
@@ -257,6 +261,9 @@ impl WfmClient {
         Ok(Self { client, token })
     }
 
+    /// # Errors
+    /// Returns an error if the request fails, the server returns a non-success status, or the
+    /// response body doesn't contain the expected `ingameName` field.
     pub async fn get_username(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
         let resp = self.client
             .get("https://api.warframe.market/v2/me")
@@ -281,6 +288,9 @@ impl WfmClient {
         Ok(username)
     }
 
+    /// # Errors
+    /// Returns an error if the request fails, the server returns a non-success status, or the
+    /// response body cannot be parsed as the expected order-list shape.
     pub async fn my_orders(&self) -> Result<Vec<Order>, Box<dyn Error + Send + Sync>> {
         let resp = self.client
             .get("https://api.warframe.market/v2/orders/my")
@@ -300,6 +310,8 @@ impl WfmClient {
         Ok(body.data)
     }
 
+    /// # Errors
+    /// Returns an error if the request fails or the server returns a non-success status.
     pub async fn create_order(&self, order: CreateOrder) -> Result<(), Box<dyn Error + Send + Sync>> {
         let resp = self.client
             .post("https://api.warframe.market/v2/order")
@@ -321,8 +333,10 @@ impl WfmClient {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if the request fails or the server returns a non-success status.
     pub async fn update_order(&self, order_id: &str, update: UpdateOrder) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let url = format!("https://api.warframe.market/v2/order/{}", order_id);
+        let url = format!("https://api.warframe.market/v2/order/{order_id}");
         let resp = self.client
             .patch(&url)
             .header("Authorization", format!("Bearer {}", self.token))

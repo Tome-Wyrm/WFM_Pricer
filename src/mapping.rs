@@ -41,6 +41,40 @@ pub const MASTERY_THRESHOLD_WEAPON: u64 = 450_000;      // 500 * 30^2
 pub const MASTERY_THRESHOLD_NECRAMECH: u64 = 1_600_000; // 1000 * 40^2
 pub const MASTERY_THRESHOLD_OVERLEVEL_WEAPON: u64 = 800_000; // 500 * 40^2
 
+/// True for the small, finite set of gear that ranks past 30 up to rank 40 via 5 Forma
+/// (Kuva/Tenet/Coda weapons, Paracesis, and the Entrati Necramechs). Deliberately matched on
+/// `display_name` rather than `unique_name` substrings — checked against real account data,
+/// substring-matching the unique_name doesn't reliably work for this set (e.g. Paracesis has no
+/// "Paracesis" anywhere in its path). The one exception is `EntratiMech`, which is a reliable
+/// unique_name substring for both Necramechs and is kept that way to distinguish the Necramech
+/// (1,600,000) threshold from the ordinary overlevel-weapon (800,000) one below.
+#[must_use]
+pub fn is_overlevel_gear(display_name: &str, unique_name: &str) -> bool {
+    display_name.starts_with("Kuva ")
+        || display_name.starts_with("Tenet ")
+        || display_name.starts_with("Coda ")
+        || display_name == "Paracesis"
+        || unique_name.contains("EntratiMech")
+}
+
+/// Resolves the mastery XP threshold for a given item. `is_frame_tier` should come from
+/// whichever equipment-array scan a caller already has on hand (see `load_mastery_and_ownership`'s
+/// `frame_tier_uniques`) rather than re-deriving frame-vs-weapon a second, different way.
+#[must_use]
+pub fn mastery_threshold(display_name: &str, unique_name: &str, is_frame_tier: bool) -> u64 {
+    if is_overlevel_gear(display_name, unique_name) {
+        if unique_name.contains("EntratiMech") {
+            MASTERY_THRESHOLD_NECRAMECH
+        } else {
+            MASTERY_THRESHOLD_OVERLEVEL_WEAPON
+        }
+    } else if is_frame_tier {
+        MASTERY_THRESHOLD_FRAME
+    } else {
+        MASTERY_THRESHOLD_WEAPON
+    }
+}
+
 pub const AYATANS: &[AyatanStaticDef] = &[
     AyatanStaticDef {
         name: "Ayatan Sah Sculpture",
@@ -142,16 +176,11 @@ type LookupTables = (
     HashMap<String, WfmItem>,
 );
 
-/// Loads the build‑parent map and the component‑requirements map from the cached WFCD `All.json`.
-/// Returns `(BuildParentMap, BuildRequirements)`.
-pub fn load_build_maps() -> Result<(BuildParentMap, BuildRequirements), Box<dyn Error>> {
-    let cache_path = crate::config::WFCD_CACHE_FILE;
-    if !std::path::Path::new(cache_path).exists() {
-        return Err("WFCD cache file missing. Run update_caches first.".into());
-    }
-    let raw = std::fs::read_to_string(cache_path)?;
-    let wfcd_items: Vec<WfcdItem> = serde_json::from_str(&raw)?;
-
+/// Pure helper: builds the parent map and requirements map from an already-parsed list of WFCD
+/// items. Split out from `load_build_maps` so the parsing logic can be unit tested against a
+/// small fixture slice without touching the filesystem.
+#[must_use]
+pub fn build_maps_from_items(wfcd_items: Vec<WfcdItem>) -> (BuildParentMap, BuildRequirements) {
     let mut parent_map = BuildParentMap::new();
     let mut requirements_map = BuildRequirements::new();
 
@@ -171,7 +200,24 @@ pub fn load_build_maps() -> Result<(BuildParentMap, BuildRequirements), Box<dyn 
         }
     }
 
-    Ok((parent_map, requirements_map))
+    (parent_map, requirements_map)
+}
+
+/// Loads the build‑parent map and the component‑requirements map from the cached WFCD `All.json`.
+/// Returns `(BuildParentMap, BuildRequirements)`.
+///
+/// # Errors
+/// Returns an error if the WFCD cache file is missing, cannot be read, or cannot be parsed as
+/// the expected JSON shape.
+pub fn load_build_maps() -> Result<(BuildParentMap, BuildRequirements), Box<dyn Error>> {
+    let cache_path = crate::config::WFCD_CACHE_FILE;
+    if !std::path::Path::new(cache_path).exists() {
+        return Err("WFCD cache file missing. Run update_caches first.".into());
+    }
+    let raw = std::fs::read_to_string(cache_path)?;
+    let wfcd_items: Vec<WfcdItem> = serde_json::from_str(&raw)?;
+
+    Ok(build_maps_from_items(wfcd_items))
 }
 
 // ── Cache management ─────────────────────────────────────────────────────────
@@ -293,13 +339,14 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
 
 // ── WFM item lookup helpers ───────────────────────────────────────────────────
 
-/// Resolve the WFM item for a build's complete set (e.g. "Mag Prime" → "mag_prime_set").
+/// Resolve the WFM item for a build's complete set (e.g. "Mag Prime" → "`mag_prime_set`").
 /// Returns `None` if no such set item exists in the WFM cache.
+#[must_use]
 pub fn resolve_set_item(
     build_name: &str,
     wfm_by_name: &HashMap<String, WfmItem>,
 ) -> Option<WfmItem> {
-    let set_name = format!("{} Set", build_name);
+    let set_name = format!("{build_name} Set");
     let lower = set_name.to_lowercase();
     wfm_by_name.get(&lower).cloned()
 }
@@ -323,12 +370,17 @@ async fn fetch_full_item(
     client: &reqwest::Client,
     cache: &mut HashMap<String, WfmItem>,
 ) -> Result<WfmItem, Box<dyn Error>> {
+    #[derive(Deserialize)]
+    struct ApiResponse {
+        data: WfmItem,
+    }
+
     if let Some(item) = cache.get(slug) {
         return Ok(item.clone());
     }
     // Respect rate limit
     sleep(Duration::from_millis(400)).await;
-    let url = format!("https://api.warframe.market/v2/item/{}", slug);
+    let url = format!("https://api.warframe.market/v2/item/{slug}");
     let resp = client
         .get(&url)
         .header(reqwest::header::USER_AGENT, "wfm-pricer-cli")
@@ -336,10 +388,6 @@ async fn fetch_full_item(
         .await?;
     if !resp.status().is_success() {
         return Err(format!("Failed to fetch full item for {}: {}", slug, resp.status()).into());
-    }
-    #[derive(Deserialize)]
-    struct ApiResponse {
-        data: WfmItem,
     }
     let parsed: ApiResponse = resp.json().await?;
     cache.insert(slug.to_string(), parsed.data.clone());
@@ -794,21 +842,31 @@ fn apply_keep_blacklist(
     Some(item)
 }
 
-/// Given the inventory JSON and the WFCD lookup table, returns a set of mastered uniqueNames
-/// and a set of owned‑built uniqueNames.
+/// Given the inventory JSON and the WFCD lookup table, returns a set of mastered uniqueNames,
+/// a set of owned‑built uniqueNames, and the set of uniqueNames classified as frame-tier (so
+/// callers like the `--debug-mastery` tool can classify items the same way this function does,
+/// instead of re-deriving frame-vs-weapon a second, different way).
+#[must_use]
 pub fn load_mastery_and_ownership(
     inventory: &serde_json::Value,
     wfcd_by_ref: &std::collections::HashMap<String, WfcdItem>,
-) -> (HashSet<String>, HashSet<String>) {
+) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
     let mut mastered_set = HashSet::new();
     let mut owned_built_set = HashSet::new();
 
     // ---- Build frame-tier set ----
+    // NOTE: "Hoverboard" is a best-effort guess at the real inventory.json key for K-Drives,
+    // based on the unique_name path prefix ("/Lotus/Types/Vehicles/Hoverboard/...") — please
+    // verify against a real inventory.json export (the same way MechSuits/SpaceGuns were
+    // confirmed) and correct the key name here if it's wrong. K-Drives use the frame-tier
+    // 1000*R^2 formula per the Warframe Wiki, confirmed in-game with Needlenose at rank 21/30
+    // reading 456,993 XP — well under 900,000, so without this key K-Drives fall through to the
+    // weapon-tier default and can read as falsely "Mastered."
     let mut frame_tier_uniques = HashSet::new();
     let equipment_keys = [
         "Suits", "LongGuns", "Pistols", "Melee",
         "Archwing", "Necramech", "Sentinels", "KubrowPets",
-        "MoaPets", "Hounds", "CrewShips", "SpaceSuits", "SpaceGuns", "SpaceMelee",
+        "MoaPets", "Hounds", "Hoverboard", "CrewShips", "SpaceSuits", "SpaceGuns", "SpaceMelee",
     ];
     if let Some(obj) = inventory.as_object() {
         for &key in &equipment_keys {
@@ -817,7 +875,7 @@ pub fn load_mastery_and_ownership(
                     if let Some(item_type) = entry.get("ItemType").and_then(|v| v.as_str()) {
                         owned_built_set.insert(item_type.to_string());
                         match key {
-                            "Suits" | "Archwing" | "Necramech" | "Sentinels" | "KubrowPets" | "MoaPets" | "Hounds" => {
+                            "Suits" | "Archwing" | "Necramech" | "Sentinels" | "KubrowPets" | "MoaPets" | "Hounds" | "Hoverboard" => {
                                 frame_tier_uniques.insert(item_type.to_string());
                             }
                             _ => {}
@@ -828,32 +886,19 @@ pub fn load_mastery_and_ownership(
         }
     }
 
-    // ---- Helper: overlevel gear ----
-    fn is_overlevel_gear(display_name: &str, unique_name: &str) -> bool {
-        display_name.starts_with("Kuva ")
-            || display_name.starts_with("Tenet ")
-            || display_name.starts_with("Coda ")
-            || display_name == "Paracesis"
-            || unique_name.contains("EntratiMech")
-    }
-
-    // ---- Collect XP (override with MechSuits) ----
+    // ---- Collect XP ----
+    // XPInfo is the only reliable source: confirmed against real account data, it records the
+    // XP value at the moment of each rank-up event and persists that value across later Forma
+    // resets. The equipped item's own live "XP" field (on MechSuits, SpaceGuns, and every other
+    // equipment-array entry) is the *current*, Forma-resettable affinity and is not a safe signal
+    // of total achievement — do not merge it in here, even via a max(), since XPInfo already
+    // captures every rank-up the item has ever actually crossed.
     let mut xp_map = std::collections::HashMap::new();
     if let Some(xp_info) = inventory.get("XPInfo").and_then(|v| v.as_array()) {
         for entry in xp_info {
             if let (Some(unique), Some(xp)) = (
                 entry.get("ItemType").and_then(|v| v.as_str()),
-                entry.get("XP").and_then(|v| v.as_u64()),
-            ) {
-                xp_map.insert(unique.to_string(), xp);
-            }
-        }
-    }
-    if let Some(mech_suits) = inventory.get("MechSuits").and_then(|v| v.as_array()) {
-        for entry in mech_suits {
-            if let (Some(unique), Some(xp)) = (
-                entry.get("ItemType").and_then(|v| v.as_str()),
-                entry.get("XP").and_then(|v| v.as_u64()),
+                entry.get("XP").and_then(serde_json::Value::as_u64),
             ) {
                 xp_map.insert(unique.to_string(), xp);
             }
@@ -863,27 +908,16 @@ pub fn load_mastery_and_ownership(
     // ---- Process ----
     for (unique_name, xp_value) in xp_map {
         let display_name = wfcd_by_ref.get(&unique_name)
-            .map(|w| w.name.as_str())
-            .unwrap_or("");
+            .map_or("", |w| w.name.as_str());
 
-        let threshold = if is_overlevel_gear(display_name, &unique_name) {
-            if unique_name.contains("EntratiMech") {
-                1_600_000 // 1000 * 40^2
-            } else {
-                800_000    // 500 * 40^2
-            }
-        } else if frame_tier_uniques.contains(&unique_name) {
-            900_000        // 1000 * 30^2
-        } else {
-            450_000        // 500 * 30^2
-        };
+        let threshold = mastery_threshold(display_name, &unique_name, frame_tier_uniques.contains(&unique_name));
 
         if xp_value >= threshold {
             mastered_set.insert(unique_name);
         }
     }
 
-    (mastered_set, owned_built_set)
+    (mastered_set, owned_built_set, frame_tier_uniques)
 }
 
 /// Build status of a parent item.
@@ -896,6 +930,7 @@ pub enum BuildStatus {
 }
 
 /// Determine the build status of a component's parent build.
+#[must_use]
 pub fn get_build_status(
     component_unique_name: &str,
     parent_map: &BuildParentMap,
@@ -1036,72 +1071,184 @@ mod mapping_tests {
     }
 }
 
-#[test]
-fn resolve_set_item_finds_set_not_component() {
-    use crate::models::{WfmI18n, WfmEn}; // <-- added here
+#[cfg(test)]
+mod resolve_and_recipe_tests {
+    use super::*;
+    use crate::models::{WfmEn, WfmI18n};
     use std::collections::HashMap;
-    let mut map = HashMap::new();
-    // Simulate WFM cache entries
-    let set_item = WfmItem {
-        id: "set_id".into(),
-        slug: "mag_prime_set".into(),
-        game_ref: None,
-        tags: vec![],
-        max_rank: None,
-        i18n: WfmI18n { en: WfmEn { name: "Mag Prime Set".into() } },
-        subtypes: vec![],
-        set_root: true,
-        bulk_tradable: false,
-        max_amber_stars: None,
-        max_cyan_stars: None,
-    };
-    let part_item = WfmItem {
-        id: "part_id".into(),
-        slug: "mag_prime_chassis".into(),
-        game_ref: None,
-        tags: vec![],
-        max_rank: None,
-        i18n: WfmI18n { en: WfmEn { name: "Mag Prime Chassis".into() } },
-        subtypes: vec![],
-        set_root: false,
-        bulk_tradable: false,
-        max_amber_stars: None,
-        max_cyan_stars: None,
-    };
-    map.insert("mag prime set".to_string(), set_item.clone());
-    map.insert("mag prime chassis".to_string(), part_item);
 
-    let resolved = resolve_set_item("Mag Prime", &map).expect("should resolve set");
-    assert_eq!(resolved.slug, "mag_prime_set");
-    assert_eq!(resolved.id, "set_id");
+    #[test]
+    fn resolve_set_item_finds_set_not_component() {
+        let mut map = HashMap::new();
+        // Simulate WFM cache entries
+        let set_item = WfmItem {
+            id: "set_id".into(),
+            slug: "mag_prime_set".into(),
+            game_ref: None,
+            tags: vec![],
+            max_rank: None,
+            i18n: WfmI18n { en: WfmEn { name: "Mag Prime Set".into() } },
+            subtypes: vec![],
+            set_root: true,
+            bulk_tradable: false,
+            max_amber_stars: None,
+            max_cyan_stars: None,
+        };
+        let part_item = WfmItem {
+            id: "part_id".into(),
+            slug: "mag_prime_chassis".into(),
+            game_ref: None,
+            tags: vec![],
+            max_rank: None,
+            i18n: WfmI18n { en: WfmEn { name: "Mag Prime Chassis".into() } },
+            subtypes: vec![],
+            set_root: false,
+            bulk_tradable: false,
+            max_amber_stars: None,
+            max_cyan_stars: None,
+        };
+        map.insert("mag prime set".to_string(), set_item.clone());
+        map.insert("mag prime chassis".to_string(), part_item);
+
+        let resolved = resolve_set_item("Mag Prime", &map).expect("should resolve set");
+        assert_eq!(resolved.slug, "mag_prime_set");
+        assert_eq!(resolved.id, "set_id");
+    }
+
+    #[test]
+    fn parses_known_recipe_with_real_quantities() {
+        // Small fixture slice — just the Mag Prime entry and its 4 components.
+        let fixture = r#"[
+            {
+                "uniqueName": "/Lotus/Powersuits/Mag/MagPrime",
+                "name": "Mag Prime",
+                "components": [
+                    {"uniqueName": "/Lotus/Weapons/Tenno/Blueprints/MagPrimeBlueprint", "itemCount": 1},
+                    {"uniqueName": "/Lotus/Powersuits/Mag/MagPrimeChassis", "itemCount": 1},
+                    {"uniqueName": "/Lotus/Powersuits/Mag/MagPrimeNeuroptics", "itemCount": 1},
+                    {"uniqueName": "/Lotus/Powersuits/Mag/MagPrimeSystems", "itemCount": 1}
+                ]
+            }
+        ]"#;
+        let wfcd_items: Vec<WfcdItem> = serde_json::from_str(fixture).expect("fixture should parse");
+        let (parent_map, requirements_map) = build_maps_from_items(wfcd_items);
+
+        let recipe = requirements_map
+            .get("/Lotus/Powersuits/Mag/MagPrime")
+            .expect("Mag Prime should have a recorded recipe");
+        assert_eq!(recipe.len(), 4);
+        assert!(recipe.contains(&("/Lotus/Weapons/Tenno/Blueprints/MagPrimeBlueprint".to_string(), 1)));
+        assert!(recipe.contains(&("/Lotus/Powersuits/Mag/MagPrimeChassis".to_string(), 1)));
+        assert!(recipe.contains(&("/Lotus/Powersuits/Mag/MagPrimeNeuroptics".to_string(), 1)));
+        assert!(recipe.contains(&("/Lotus/Powersuits/Mag/MagPrimeSystems".to_string(), 1)));
+
+        // Each component should map back to the parent build.
+        assert_eq!(
+            parent_map.get("/Lotus/Powersuits/Mag/MagPrimeChassis"),
+            Some(&"/Lotus/Powersuits/Mag/MagPrime".to_string())
+        );
+    }
 }
 
-#[test]
-fn mastery_calibration_against_real_account_data() {
-    // Known mastered (barely over their real rank‑30 threshold)
-    let _known_mastered = [
-        ("/Lotus/Powersuits/Ninja/Ninja", 901_045u64), // Ash
-        ("/Lotus/Weapons/Tenno/LongGuns/SapientPrimary/SapientPrimaryWeapon", 450_743), // Acceltra
+#[cfg(test)]
+mod build_status_tests {
+    use super::*;
+
+    fn sample_parent_map() -> BuildParentMap {
+        let mut m = BuildParentMap::new();
+        m.insert("part_a".to_string(), "build_x".to_string());
+        m
+    }
+
+    #[test]
+    fn mastered_build_no_longer_owned_is_still_mastered() {
+        let parent_map = sample_parent_map();
+        let mastered: HashSet<String> = ["build_x".to_string()].into_iter().collect();
+        let owned: HashSet<String> = HashSet::new(); // sold the built copy
+        assert_eq!(
+            get_build_status("part_a", &parent_map, &mastered, &owned),
+            BuildStatus::Mastered
+        );
+    }
+
+    #[test]
+    fn built_but_unmastered_is_built_unmastered() {
+        let parent_map = sample_parent_map();
+        let mastered = HashSet::new();
+        let owned: HashSet<String> = ["build_x".to_string()].into_iter().collect();
+        assert_eq!(
+            get_build_status("part_a", &parent_map, &mastered, &owned),
+            BuildStatus::BuiltUnmastered
+        );
+    }
+
+    #[test]
+    fn never_built_is_not_built() {
+        let parent_map = sample_parent_map();
+        let mastered = HashSet::new();
+        let owned = HashSet::new();
+        assert_eq!(
+            get_build_status("part_a", &parent_map, &mastered, &owned),
+            BuildStatus::NotBuilt
+        );
+    }
+
+    #[test]
+    fn component_with_no_known_parent_is_unknown() {
+        let parent_map = sample_parent_map();
+        assert_eq!(
+            get_build_status("untracked_part", &parent_map, &HashSet::new(), &HashSet::new()),
+            BuildStatus::Unknown
+        );
+    }
+}
+
+#[cfg(test)]
+mod mastery_calibration_tests {
+    use super::*;
+
+    #[test]
+    fn mastery_calibration_against_real_account_data() {
+    // (display_name, unique_name, is_frame_tier, xp, should_be_mastered)
+    //
+    // is_frame_tier here reflects each item's real equipment category directly (Warframe Wiki:
+    // Warframes/Archwings/Companions/Sentinels/K-Drives/Necramechs use 1000*R^2; ordinary weapons
+    // use 500*R^2) rather than going through load_mastery_and_ownership's equipment-array scan —
+    // that scan has its own coverage gaps (see the Hoverboard/K-Drive note above) which are a
+    // separate concern from whether this threshold math itself is correct.
+    let cases = [
+        ("Ash", "/Lotus/Powersuits/Ninja/Ninja", true, 901_045u64, true),
+        ("Acceltra", "/Lotus/Weapons/Tenno/LongGuns/SapientPrimary/SapientPrimaryWeapon", false, 450_743, true),
+        // Needlenose: K-Drive deck, confirmed in-game at rank 21/30. K-Drives are frame-tier
+        // (1000*R^2), not weapon-tier — at 456,993 XP this is comfortably below the frame-tier
+        // rank-30 threshold of 900,000, matching the real "Not Mastered" status.
+        ("Needlenose", "/Lotus/Types/Vehicles/Hoverboard/HoverboardParts/PartComponents/HoverboardCorpusB/HoverboardCorpusBDeck", true, 456_993, false),
+        ("Tenet Ferrox", "/Lotus/Weapons/Corpus/BoardExec/Primary/CrpBEFerrox/CrpBEFerrox", false, 578_000, false),
+        ("Coda Mire", "/Lotus/Weapons/Infested/InfestedLich/Melee/CodaMire", false, 648_000, false),
+        ("Coda Motovore", "/Lotus/Weapons/Infested/InfestedLich/Melee/InfestedHammer/InfLichHammerWeapon", false, 648_000, false),
+        ("Coda Pathocyst", "/Lotus/Weapons/Infested/InfestedLich/Melee/CodaPathocyst/CodaPathocyst", false, 648_000, false),
+        ("Kuva Shildeg", "/Lotus/Weapons/Grineer/Melee/GrnKuvaLichScythe/GrnKuvaLichScytheWeapon", false, 648_000, false),
+        ("Paracesis", "/Lotus/Weapons/Orokin/BallasSword/BallasSwordWeapon", false, 648_000, false),
+        ("Tenet Grigori", "/Lotus/Weapons/Corpus/Melee/CrpBriefcaseScythe/CrpBriefcaseScythe", false, 648_000, false),
+        ("Tenet Livia", "/Lotus/Weapons/Corpus/Melee/CrpBriefcase2HKatana/CrpBriefcase2HKatana", false, 648_000, false),
+        // Exactly at the weapon-tier threshold (450,000) but well under the overlevel-weapon
+        // threshold (800,000) it should actually be held to — a naive weapon-tier check would
+        // wrongly call this mastered.
+        ("Kuva Ayanga", "/Lotus/Weapons/Grineer/HeavyWeapons/GrnHeavyGrenadeLauncher", false, 450_000, false),
+        ("Kuva Grattler", "/Lotus/Weapons/Grineer/KuvaLich/HeavyWeapons/Grattler/KuvaGrattler", false, 512_000, false),
+        ("Bonewidow", "/Lotus/Powersuits/EntratiMech/ThanoTech", true, 900_000, false),
+        // Real XPInfo value (not the live MechSuits value, which is unreliable — see the
+        // load_mastery_and_ownership doc comment on why MechSuits is never read here).
+        ("Voidrig", "/Lotus/Powersuits/EntratiMech/NechroTech", true, 1_024_000, false),
     ];
-    // Known NOT mastered – the 12 flagged overleveling items plus Needlenose
-    let _known_not_mastered = [
-        ("/Lotus/Types/Vehicles/Hoverboard/HoverboardParts/PartComponents/HoverboardCorpusB/HoverboardCorpusBDeck", 456_993u64), // Needlenose
-        ("/Lotus/Weapons/Corpus/BoardExec/Primary/CrpBEFerrox/CrpBEFerrox", 578_000u64),               // Tenet Ferrox
-        ("/Lotus/Weapons/Infested/InfestedLich/Melee/CodaMire", 648_000u64),                            // Coda Mire
-        ("/Lotus/Weapons/Infested/InfestedLich/Melee/InfestedHammer/InfLichHammerWeapon", 648_000u64),  // Coda Motovore
-        ("/Lotus/Weapons/Infested/InfestedLich/Melee/CodaPathocyst/CodaPathocyst", 648_000u64),         // Coda Pathocyst
-        ("/Lotus/Weapons/Grineer/Melee/GrnKuvaLichScythe/GrnKuvaLichScytheWeapon", 648_000u64),         // Kuva Shildeg
-        ("/Lotus/Weapons/Orokin/BallasSword/BallasSwordWeapon", 648_000u64),                            // Paracesis
-        ("/Lotus/Weapons/Corpus/Melee/CrpBriefcaseScythe/CrpBriefcaseScythe", 648_000u64),              // Tenet Grigori
-        ("/Lotus/Weapons/Corpus/Melee/CrpBriefcase2HKatana/CrpBriefcase2HKatana", 648_000u64),          // Tenet Livia
-        ("/Lotus/Weapons/Grineer/HeavyWeapons/GrnHeavyGrenadeLauncher", 450_000u64),                    // Kuva Ayanga
-        ("/Lotus/Weapons/Grineer/KuvaLich/HeavyWeapons/Grattler/KuvaGrattler", 512_000u64),              // Kuva Grattler
-        ("/Lotus/Powersuits/EntratiMech/ThanoTech", 900_000u64),                                         // Bonewidow
-        ("/Lotus/Powersuits/EntratiMech/NechroTech", 900_000u64),                                        // Voidrig
-    ];
-    // For the test to be truly self‑contained, we'd need a fixture containing:
-    // - inventory.json snippet with XPInfo for these unique names
-    // - wfcd_by_ref and wfm_by_ref for those items
-    // That's too heavy for a unit test; we'll rely on the debug print validation instead.
-    // So this test is more a documentation of the calibration set.
+
+    for (display_name, unique_name, is_frame_tier, xp, should_be_mastered) in cases {
+        let threshold = mastery_threshold(display_name, unique_name, is_frame_tier);
+        assert_eq!(
+            xp >= threshold,
+            should_be_mastered,
+            "{display_name} ({unique_name}): xp={xp}, threshold={threshold}"
+        );
+    }
+    }
 }

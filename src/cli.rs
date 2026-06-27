@@ -80,10 +80,40 @@ fn get_auto_keep(
     owned_built_set: &HashSet<String>,
 ) -> u32 {
     let status = get_build_status(&item.game_ref, parent_map, mastered_set, owned_built_set);
-    if status == BuildStatus::NotBuilt {
-        1
-    } else {
-        0
+    u32::from(status == BuildStatus::NotBuilt)
+}
+
+/// Merges the manual keeplist reservation with the automatic build-status-driven floor.
+/// Pulled out as its own pure function so the merge behavior is directly testable without
+/// constructing a full `MappedItem`/`CandidateContext` pipeline.
+fn resolve_keep_copies(manual_keep: u32, auto_keep: u32) -> u32 {
+    std::cmp::max(manual_keep, auto_keep)
+}
+
+#[cfg(test)]
+mod keep_quantity_tests {
+    use super::*;
+
+    #[test]
+    fn manual_keep_used_when_no_auto_keep() {
+        assert_eq!(resolve_keep_copies(2, 0), 2);
+    }
+
+    #[test]
+    fn auto_keep_floor_applies_even_with_no_manual_entry() {
+        assert_eq!(resolve_keep_copies(0, 1), 1);
+    }
+
+    #[test]
+    fn manual_keep_wins_when_already_higher_than_auto() {
+        assert_eq!(resolve_keep_copies(2, 1), 2);
+    }
+
+    #[test]
+    fn auto_keep_floor_wins_over_a_lower_manual_entry() {
+        // manual keeplist says 0 (or doesn't mention the item), but the build is still
+        // "not built" — the auto floor of 1 must still win.
+        assert_eq!(resolve_keep_copies(0, 1), 1);
     }
 }
 
@@ -117,7 +147,11 @@ fn decide_no_op(
     desired_total_qty: u32,
     existing_qty: u32,
 ) -> NoOpDecision {
-    let tolerance = std::cmp::max(1, (f64::from(suggested_price) * PRICE_TOLERANCE_PCT).round() as u32);
+    // suggested_price and PRICE_TOLERANCE_PCT are both non-negative and well within u32 range,
+    // so the rounded result can never be negative or truncate.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let rounded_tolerance = (f64::from(suggested_price) * PRICE_TOLERANCE_PCT).round() as u32;
+    let tolerance = std::cmp::max(1, rounded_tolerance);
     let price_matches = suggested_price.abs_diff(existing_price) <= tolerance;
     match (price_matches, desired_total_qty == existing_qty) {
         (true, true) => NoOpDecision::TrueNoOp,
@@ -210,8 +244,8 @@ async fn fetch_user_listings(wfm_client: &WfmClient) -> Result<(Vec<OwnedOrder>,
 }
 
 /// Core set‑aggregation logic: takes a list of candidate items (which may include components),
-/// the build maps, and a price map (slug → wa_price). Returns a new list of items where complete
-/// sets are combined into a single MappedItem and their parts are removed. The guard check
+/// the build maps, and a price map (slug → `wa_price`). Returns a new list of items where complete
+/// sets are combined into a single `MappedItem` and their parts are removed. The guard check
 /// prevents bundling if any part is worth more than `SET_BUNDLE_PART_VALUE_GUARD_RATIO` of the
 /// set price.
 ///
@@ -249,14 +283,8 @@ fn aggregate_sets_with_prices(
 
     // Process each build
     for (build_unique, recipe) in requirements {
-        let wfcd_item = match wfcd_by_ref.get(build_unique) {
-            Some(w) => w,
-            None => continue,
-        };
-        let set_item = match resolve_set_item(&wfcd_item.name, wfm_by_name) {
-            Some(s) => s,
-            None => continue,
-        };
+        let Some(wfcd_item) = wfcd_by_ref.get(build_unique) else { continue };
+        let Some(set_item) = resolve_set_item(&wfcd_item.name, wfm_by_name) else { continue };
 
         // Determine possible sets ignoring guard
         let mut possible_sets = u32::MAX;
@@ -386,7 +414,7 @@ async fn build_priced_candidates(
         if let Ok(stats) = fetch_statistics(slug).await {
             stats_map.insert(slug.clone(), stats);
         } else {
-            eprintln!("Warning: failed to fetch stats for {}", slug);
+            eprintln!("Warning: failed to fetch stats for {slug}");
         }
     }
 
@@ -428,13 +456,16 @@ async fn build_priced_candidates(
             continue;
         }
 
+        // Recent volume (30 days) — computed once and reused for both the demand-floor check
+        // below and the score/display value further down.
+        let (vol_30d, _trading_days_30d) = if let Some(stats) = stats_opt {
+            recent_volume(stats, target_rank, 30)
+        } else {
+            (0, 0)
+        };
+
         // ---- Demand floor for mods/arcanes ----
         if item.is_mod || item.is_arcane {
-            let (vol_30d, _) = if let Some(stats) = stats_opt {
-                recent_volume(stats, target_rank, 30)
-            } else {
-                (0, 0)
-            };
             let vol_per_day = f64::from(vol_30d) / 30.0;
             if vol_per_day < MIN_DAILY_VOLUME_FOR_MOD_ARCANE {
                 continue; // below demand floor, skip entirely
@@ -446,13 +477,6 @@ async fn build_priced_candidates(
             calculate_saturation_ratio(stats, target_rank)
         } else {
             0.0
-        };
-
-        // Recent volume (30 days)
-        let (vol_30d, _) = if let Some(stats) = stats_opt {
-            recent_volume(stats, target_rank, 30)
-        } else {
-            (0, 0)
         };
 
         // Score: price * (1 + ln(volume)) – used for sorting later
@@ -527,6 +551,12 @@ fn sort_candidates(
     priced
 }
 
+// This function is a single linear decision pipeline (keep/blacklist checks, price-vs-Endo
+// comparison, listing-state lookup, no-op/quantity-sync short-circuit, then the interactive
+// prompt). Splitting it purely to satisfy the line-count lint would mean threading the same
+// half-dozen pieces of state through several smaller functions for no behavioral benefit;
+// left as-is deliberately rather than fixed blindly without a compiler to verify a refactor.
+#[allow(clippy::too_many_lines)]
 async fn handle_single_candidate(
     mut item: MappedItem,
     wa_price: f64,
@@ -534,16 +564,6 @@ async fn handle_single_candidate(
     vol_30d: u32,
     ctx: &mut CandidateContext<'_>,
 ) -> Result<Option<SessionReportItem>, Box<dyn Error + Send + Sync>> {
-    if ctx.blacklist_set.slugs.contains(&item.slug) {
-        return Ok(None);
-    }
-
-    let keep_copies = get_keep_quantity(ctx.keeplist, &item.slug, item.rank, item.category());
-    if keep_copies > 0 {
-        if item.quantity <= keep_copies { return Ok(None); }
-        item.quantity -= keep_copies;
-    }
-
     // ── Keep list / blacklist handling ─────────────────────────────────────
     if ctx.blacklist_set.slugs.contains(&item.slug) {
         return Ok(None);
@@ -551,7 +571,7 @@ async fn handle_single_candidate(
 
     let manual_keep = get_keep_quantity(ctx.keeplist, &item.slug, item.rank, item.category());
     let auto_keep = get_auto_keep(&item, ctx.parent_map, ctx.mastered_set, ctx.owned_built_set);
-    let keep_copies = std::cmp::max(manual_keep, auto_keep);
+    let keep_copies = resolve_keep_copies(manual_keep, auto_keep);
     if keep_copies > 0 {
         if item.quantity <= keep_copies { return Ok(None); }
         item.quantity -= keep_copies;
@@ -593,6 +613,8 @@ async fn handle_single_candidate(
 
     // ── Silent no‑op / quantity‑sync for already‑listed items ──────────────
     if is_already_listed {
+        // wa_price is always a non-negative market price, well within u32 range.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let suggested_price = wa_price.round() as u32;
         let desired_total_qty = listed_qty + available_qty;
 
@@ -689,6 +711,10 @@ async fn handle_single_candidate(
     Ok(None)
 }
 
+// Same rationale as handle_single_candidate above: this is a single interactive prompt-then-act
+// sequence (price prompt, quantity prompt, price-conflict detection, sculpture/per-trade prompts,
+// create-or-update). Deliberately left as one function rather than split blind.
+#[allow(clippy::too_many_lines)]
 async fn handle_list_or_update(
     item: &MappedItem,
     wa_price: f64,
@@ -744,7 +770,7 @@ async fn handle_list_or_update(
                 }));
             }
             Err(e) => {
-                eprintln!("\x1B[31m[SYNC_ERROR] Failed to update existing order: {}\x1B[0m", e);
+                eprintln!("\x1B[31m[SYNC_ERROR] Failed to update existing order: {e}\x1B[0m");
                 return Ok(None);
             }
         }
@@ -865,6 +891,11 @@ async fn handle_list_or_update(
     Ok(None)
 }
 
+// This is an internal orchestration function (not part of any public API) that exists purely to
+// build the CandidateContext shared by every candidate in the loop below; some of its parameters
+// are borrowed with lifetimes tied to state created inside this function (e.g. `stdout`), so the
+// context can't simply be constructed by the caller and passed in as one value instead.
+#[allow(clippy::too_many_arguments)]
 async fn process_candidates(
     priced_candidates: Vec<(MappedItem, f64, f64, u32, f64)>,
     existing_listings_map: &HashMap<ListingKey, Vec<OwnedOrder>>,
