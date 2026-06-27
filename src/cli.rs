@@ -384,6 +384,67 @@ fn filter_candidates(mapped_items: Vec<MappedItem>) -> Vec<MappedItem> {
         .collect()
 }
 
+/// Computes a mod's upgrade suggestion (price delta, endo cost to max, and a ranking score) if
+/// leveling it to `max_rank` would be profitable. Returns `None` if it's already maxed, there's
+/// no endo left to spend, or leveling wouldn't raise the price enough to be worth it.
+///
+/// Pulled out as a pure function specifically so this is unit-testable without a live
+/// `build_priced_candidates` pipeline — see `upgrade_suggestion_tests` below, including a
+/// regression test for the rank-0 case that was previously, silently, never suggested.
+fn upgrade_suggestion(
+    rarity: &str,
+    current_rank: u32,
+    max_rank: u32,
+    is_antique: bool,
+    wa_price: f64,
+    max_price: f64,
+    vol_30d: u32,
+) -> Option<(f64, u32, f64)> {
+    if current_rank >= max_rank {
+        return None;
+    }
+    let endo_cost = get_fusion_cost_from_zero(rarity, current_rank, is_antique);
+    let endo_to_max = get_fusion_cost_from_zero(rarity, max_rank, is_antique).saturating_sub(endo_cost);
+    if endo_to_max == 0 {
+        return None;
+    }
+    let delta = max_price - wa_price;
+    if delta <= 0.0 {
+        return None;
+    }
+    let upgrade_score = (delta / f64::from(endo_to_max)) * (1.0 + f64::from(vol_30d)).ln();
+    Some((delta, endo_to_max, upgrade_score))
+}
+
+#[cfg(test)]
+mod upgrade_suggestion_tests {
+    use super::*;
+
+    #[test]
+    fn unranked_mod_with_profitable_max_price_is_suggested() {
+        // Regression test: get_fusion_cost_from_zero(rank=0) is 0 by definition, which used to
+        // be (wrongly) used as a gate for "has this mod been touched at all" — excluding every
+        // unranked mod, the single most common case for a sellable duplicate.
+        let result = upgrade_suggestion("Rare", 0, 10, false, 10.0, 80.0, 500);
+        assert!(result.is_some(), "an unranked mod with a profitable max price must still be suggested");
+        let (delta, endo_to_max, _score) = result.unwrap();
+        assert!((delta - 70.0).abs() < f64::EPSILON);
+        assert!(endo_to_max > 0);
+    }
+
+    #[test]
+    fn already_maxed_mod_is_not_suggested() {
+        assert!(upgrade_suggestion("Rare", 10, 10, false, 10.0, 80.0, 500).is_none());
+    }
+
+    #[test]
+    fn unprofitable_upgrade_is_not_suggested() {
+        // max_price <= wa_price: no point spending endo to "upgrade" into a cheaper or
+        // equal price.
+        assert!(upgrade_suggestion("Rare", 0, 10, false, 50.0, 40.0, 500).is_none());
+    }
+}
+
 async fn build_priced_candidates(
     candidates: Vec<MappedItem>,
     _endo_rate: f64, // unused here, needed for signature compatibility
@@ -483,26 +544,19 @@ async fn build_priced_candidates(
         let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
 
         // ---- Upgrade suggestions (only for mods) ----
-        if item.is_mod && !item.is_arcane {
-            let current_rank_u32 = u32::from(item.rank.unwrap_or(0));
-            let is_antique = is_antique(&item.slug, &item.game_ref);
-            let endo_cost = get_fusion_cost_from_zero(&item.rarity, current_rank_u32, is_antique);
-            let is_maxed = item.rank.zip(item.max_rank).is_some_and(|(r, mr)| r >= mr);
-            if !is_maxed && endo_cost > 0
-                && let Some(max_rank) = item.max_rank {
-                    let max_rank_u32 = u32::from(max_rank);
-                    let endo_to_max = get_fusion_cost_from_zero(&item.rarity, max_rank_u32, is_antique)
-                        .saturating_sub(endo_cost);
-                    if let Some(stats) = stats_opt {
-                        let (max_price, _) = calculate_weighted_average(stats, Some(max_rank));
-                        let delta = max_price - wa_price;
-                        if delta > 0.0 && endo_to_max > 0 {
-                            let upgrade_score = (delta / f64::from(endo_to_max)) * (1.0 + f64::from(vol_30d)).ln();
-                            upgrades.push((item.name.clone(), delta, endo_to_max, vol_30d, upgrade_score));
-                        }
-                    }
+        if item.is_mod && !item.is_arcane
+            && let Some(max_rank) = item.max_rank
+            && let Some(stats) = stats_opt {
+                let current_rank_u32 = u32::from(item.rank.unwrap_or(0));
+                let max_rank_u32 = u32::from(max_rank);
+                let is_antique = is_antique(&item.slug, &item.game_ref);
+                let (max_price, _) = calculate_weighted_average(stats, Some(max_rank));
+                if let Some((delta, endo_to_max, upgrade_score)) = upgrade_suggestion(
+                    &item.rarity, current_rank_u32, max_rank_u32, is_antique, wa_price, max_price, vol_30d,
+                ) {
+                    upgrades.push((item.name.clone(), delta, endo_to_max, vol_30d, upgrade_score));
                 }
-        }
+            }
 
         // Store priced candidate
         priced.push((item, wa_price, saturation, vol_30d, score));
