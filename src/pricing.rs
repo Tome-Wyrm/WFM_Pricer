@@ -481,7 +481,7 @@ mod recent_volume_tests {
     use std::fs;
 
     fn load_fixture(name: &str) -> WfmStatsResponse {
-        let path = format!("tests/fixtures/statistics/{name}.json");
+        let path = format!("tests/fixtures/test_statistics/{name}.json");
         let raw = fs::read_to_string(&path).expect("fixture missing — see Task 0.1");
         serde_json::from_str(&raw).expect("fixture failed to parse")
     }
