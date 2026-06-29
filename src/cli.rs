@@ -19,7 +19,7 @@ use crate::pricing::{
 /// percentage with a 1-plat floor so cheap items (1-2p Ayatan stars) aren't hypersensitive.
 const PRICE_TOLERANCE_PCT: f64 = 0.03;
 /// Minimum average daily trade volume (trailing 30 days) for a mod or arcane to be worth a
-/// listing slot. Calibrated against real WFM data (see tests/fixtures/test_statistics manifest):
+/// listing slot. Calibrated against real WFM data (see `tests/fixtures/test_statistics` manifest):
 /// every confirmed-junk sample (common ubiquitous mods, an unused eidolon arcane) topped out
 /// at 3.1/day; every confirmed-real-demand sample, including the weakest one tested, started
 /// at 24.2/day. This sits in that gap. Applies identically at every rank — junk stays junk and
