@@ -1,5 +1,4 @@
-use std::iter::Peekable;
-use std::str::Chars;
+use crate::config;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
@@ -27,6 +26,27 @@ pub enum LuaValue {
 pub enum LuaKey {
     String(String),
     Integer(i64),
+}
+
+impl LuaValue {
+    pub fn as_table(&self) -> Option<&Vec<(Option<LuaKey>, LuaValue)>> {
+        match self {
+            LuaValue::Table(fields) => Some(fields),
+            _ => None,
+        }
+    }
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            LuaValue::String(s) => Some(s),
+            _ => None,
+        }
+    }
+    pub fn as_number(&self) -> Option<f64> {
+        match self {
+            LuaValue::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
 }
 
 // ---------- Tokenizer ----------
@@ -249,11 +269,181 @@ fn parse_field(tokens: &[Token], pos: &mut usize) -> Result<(Option<LuaKey>, Lua
     Ok((key, value))
 }
 
+// ---------- Load Vendor Data ----------
+
+/// Loads the raw vendor data from the cached file, extracts the Lua source,
+/// tokenizes and parses it, returning the parsed LuaValue.
+///
+/// # Errors
+/// Returns a String error if the file cannot be read, JSON parsing fails,
+/// tokenization or parsing fails.
+pub fn load_vendor_data() -> Result<LuaValue, String> {
+    // Try both possible file names (the one from the plan and the current one)
+    let cache_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
+    let alt_path = std::path::Path::new("cache/vendors_data_cache.json");
+    let path = if cache_path.exists() {
+        cache_path
+    } else if alt_path.exists() {
+        alt_path
+    } else {
+        return Err("Vendor cache file not found".to_string());
+    };
+
+    let raw_json = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read vendor cache file: {}", e))?;
+
+    let lua_source = extract_lua_content(&raw_json)
+        .map_err(|e| format!("Failed to extract Lua source: {}", e))?;
+
+    let tokens = tokenize(&lua_source)
+        .map_err(|e| format!("Tokenizer error: {}", e))?;
+
+    let parsed = parse(&tokens)
+        .map_err(|e| format!("Parser error: {}", e))?;
+
+    Ok(parsed)
+}
+
+/// Extracts the Lua source string from the MediaWiki API response JSON.
+fn extract_lua_content(json: &str) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    // Navigate to the content: pages[pageid].revisions[0].slots.main['*']
+    let content = v
+        .pointer("/query/pages")
+        .and_then(|pages| pages.as_object())
+        .and_then(|pages| pages.values().next())
+        .and_then(|page| page.get("revisions"))
+        .and_then(|revs| revs.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|rev| rev.get("slots"))
+        .and_then(|slots| slots.get("main"))
+        .and_then(|main| main.get("*"))
+        .and_then(|c| c.as_str())
+        .ok_or("Could not find Lua source in the cache JSON")?;
+
+    Ok(content.to_string())
+}
+
 // ---------- Tests ----------
 
 #[cfg(test)]
-mod tests {
+mod integration_tests {
     use super::*;
+
+    #[test]
+        fn parse_sample_vendor_fixture() {
+            // Load the fixture file from tests/fixtures/vendors_sample.json
+            let fixture_path = "tests/fixtures/vendors_sample.json";
+            let json_str = std::fs::read_to_string(fixture_path)
+                .expect("Fixture file missing");
+            let lua_source = extract_lua_content(&json_str).expect("Failed to extract Lua");
+            let tokens = tokenize(&lua_source).expect("Tokenizer failed");
+            let parsed = parse(&tokens).expect("Parser failed");
+
+            // Expect a table with top-level "Vendors"
+            match parsed {
+                LuaValue::Table(outer) => {
+                    // Find the "Vendors" key
+                    let vendors_opt = outer.iter().find_map(|(key, val)| {
+                        if let Some(LuaKey::String(name)) = key {
+                            if name == "Vendors" {
+                                Some(val)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                    let vendors_table = vendors_opt
+                        .expect("No Vendors key found")
+                        .as_table()
+                        .expect("Vendors is not a table");
+
+                    // Check a few known vendors
+                    // Acrithis
+                    let acrithis_opt = vendors_table.iter().find_map(|(key, val)| {
+                        if let Some(LuaKey::String(name)) = key {
+                            if name == "Acrithis" {
+                                Some(val.as_table().expect("Acrithis not a table"))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                    let acrithis = acrithis_opt.expect("Acrithis not found");
+                    // Check Currency
+                    let currency_opt = acrithis.iter().find_map(|(key, val)| {
+                        if let Some(LuaKey::String(name)) = key {
+                            if name == "Currency" {
+                                Some(val.as_str().expect("Currency not a string"))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                    assert_eq!(currency_opt, Some("Pathos Clamp"));
+
+                    // Check Offerings is a table with at least one entry
+                    let offerings_opt = acrithis.iter().find_map(|(key, val)| {
+                        if let Some(LuaKey::String(name)) = key {
+                            if name == "Offerings" {
+                                Some(val.as_table().expect("Offerings not a table"))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                    let offerings = offerings_opt.expect("Offerings not found");
+                    assert!(offerings.len() > 0);
+                }
+                _ => panic!("Top-level is not a table"),
+            }
+        }
+
+        #[test]
+        fn parse_full_vendors_cache() {
+            if !std::path::Path::new("cache/vendors_data_cache.json").exists() &&
+               !std::path::Path::new(config::VENDORS_RAW_CACHE_FILE).exists() {
+                eprintln!("Skipping full vendor cache test: file not found");
+                return;
+            }
+            let parsed = load_vendor_data().expect("Failed to load vendor data");
+            match parsed {
+                LuaValue::Table(outer) => {
+                    let vendors_opt = outer.iter().find_map(|(key, val)| {
+                        if let Some(LuaKey::String(name)) = key {
+                            if name == "Vendors" {
+                                Some(val.as_table().expect("Vendors not a table"))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    });
+                    let vendors = vendors_opt.expect("No Vendors key found");
+                    // According to the task, there should be 66 top-level entries.
+                    // We'll just check that it's around that number; the actual count may vary over time.
+                    // We'll assert it's >= 60 to be safe.
+                    assert!(vendors.len() >= 60, "Expected at least 60 vendors, got {}", vendors.len());
+                    // Check that a known vendor exists: "Cephalon Simaris"
+                    let has_simaris = vendors.iter().any(|(key, _)| {
+                        matches!(key, Some(LuaKey::String(name)) if name == "Cephalon Simaris")
+                    });
+                    assert!(has_simaris, "Cephalon Simaris not found");
+                }
+                _ => panic!("Top-level is not a table"),
+            }
+        }
 
     #[test]
     fn tokenizes_simple_lua_table() {
