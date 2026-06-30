@@ -1,6 +1,10 @@
 // src/vendor.rs
 use crate::config;
 use num_traits::ToPrimitive;
+use std::error::Error;
+use std::fs;
+use std::io::Write;
+use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq, Clone)]
@@ -512,17 +516,23 @@ fn parse_prereq(table: &[(Option<LuaKey>, LuaValue)]) -> Result<Option<PrereqSpe
 ///
 /// # Errors
 /// Returns a `String` error if the table is malformed (missing required fields).
+/// Converts a parsed `LuaValue::Table` (representing one offering) into a `RawOffering`.
+/// Returns `Ok(None)` if the table is malformed and should be skipped.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn parse_raw_offering(
     table: &[(Option<LuaKey>, LuaValue)],
     vendor_currency: Option<&str>,
-) -> Result<RawOffering, String> {
+) -> Result<Option<RawOffering>, String> {
     let is_named = get_string_field(table, "item").is_some() || get_number_field(table, "cost").is_some();
 
     if is_named {
-        let name = get_string_field(table, "item")
-            .ok_or("Named offering missing 'item'")?
-            .to_string();
+        let name = match get_string_field(table, "item") {
+            Some(n) => n.to_string(),
+            None => {
+                eprintln!("Warning: named offering missing 'item', skipping");
+                return Ok(None);
+            }
+        };
         let category = get_string_field(table, "type")
             .or_else(|| get_string_field(table, "category"))
             .unwrap_or("Misc")
@@ -537,13 +547,13 @@ pub fn parse_raw_offering(
             } else {
                 None
             }
-        }).ok_or("Named offering missing 'cost' or 'price'")?;
+        }).ok_or_else(|| "Named offering missing 'cost' or 'price'".to_string())?;
         let price = parse_price(price_val, vendor_currency)?;
         let qty = get_number_field(table, "qty").map_or(1, |n| n as u32);
         let timer = get_number_field(table, "Timer").map(|n| n as u64);
         let limit = get_number_field(table, "Limit").map(|n| n as u32);
         let prereq = parse_prereq(table)?;
-        Ok(RawOffering {
+        Ok(Some(RawOffering {
             name,
             category: normalize_category(&category),
             price,
@@ -551,8 +561,9 @@ pub fn parse_raw_offering(
             prereq,
             timer,
             limit,
-        })
+        }))
     } else {
+        // Positional offering: expects at least name, category, price
         let mut values = Vec::new();
         for (key, val) in table {
             if key.is_none() {
@@ -560,13 +571,15 @@ pub fn parse_raw_offering(
             }
         }
         if values.len() < 3 {
-            return Err("Positional offering needs at least name, category, price".to_string());
+            // Not enough fields – skip this offering
+            eprintln!("Warning: positional offering has fewer than 3 fields, skipping");
+            return Ok(None);
         }
         let name = values[0].as_str()
-            .ok_or("First positional value must be a string for name")?
+            .ok_or_else(|| "First positional value must be a string for name".to_string())?
             .to_string();
         let category = values[1].as_str()
-            .ok_or("Second positional value must be a string for category")?
+            .ok_or_else(|| "Second positional value must be a string for category".to_string())?
             .to_string();
         let price = parse_price(values[2], vendor_currency)?;
         let qty = if values.len() > 3 {
@@ -577,7 +590,7 @@ pub fn parse_raw_offering(
         let timer = get_number_field(table, "Timer").map(|n| n as u64);
         let limit = get_number_field(table, "Limit").map(|n| n as u32);
         let prereq = parse_prereq(table)?;
-        Ok(RawOffering {
+        Ok(Some(RawOffering {
             name,
             category: normalize_category(&category),
             price,
@@ -585,7 +598,7 @@ pub fn parse_raw_offering(
             prereq,
             timer,
             limit,
-        })
+        }))
     }
 }
 
@@ -649,8 +662,11 @@ pub fn parse_raw_vendor(
 
     let mut offerings = Vec::new();
     for offering_table in offerings_table {
-        let raw_offering = parse_raw_offering(std::slice::from_ref(offering_table), vendor_currency_str)?;
-        offerings.push(raw_offering);
+        match parse_raw_offering(std::slice::from_ref(offering_table), vendor_currency_str) {
+            Ok(Some(raw)) => offerings.push(raw),
+            Ok(None) => { /* skipped */ }
+            Err(e) => eprintln!("Warning: failed to parse offering: {}", e),
+        }
     }
 
     Ok(RawVendor {
@@ -707,6 +723,210 @@ fn parse_currency(fields: &[(Option<LuaKey>, LuaValue)]) -> Result<CurrencySpec,
     Ok(CurrencySpec::None)
 }
 
+// ---- Revid caching ----
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RevidCache {
+    revid: u64,
+}
+
+/// Reads the cached revid from disk, if present.
+pub fn read_cached_revid() -> Result<Option<u64>, Box<dyn Error>> {
+    let path = Path::new(crate::config::VENDOR_REVID_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path)?;
+    let cache: RevidCache = serde_json::from_str(&content)?;
+    Ok(Some(cache.revid))
+}
+
+/// Writes the given revid to the cache file.
+pub fn write_cached_revid(revid: u64) -> Result<(), Box<dyn Error>> {
+    let path = Path::new(crate::config::VENDOR_REVID_FILE);
+    let cache = RevidCache { revid };
+    let content = serde_json::to_string_pretty(&cache)?;
+    fs::write(path, content)?;
+    Ok(())
+}
+
+/// Fetches the latest revision ID of Module:Vendors/data from the Warframe wiki.
+///
+/// # Errors
+/// Returns an error if the network request fails or the response doesn't contain a revid.
+pub async fn fetch_latest_revid(client: &reqwest::Client) -> Result<u64, Box<dyn Error>> {
+    let url = "https://warframe.fandom.com/api.php";
+    let params = [
+        ("action", "query"),
+        ("prop", "revisions"),
+        ("titles", "Module:Vendors/data"),
+        ("rvprop", "ids"),
+        ("format", "json"),
+        ("formatversion", "2"),
+    ];
+
+    let response = client
+        .get(url)
+        .query(&params)
+        .header("User-Agent", "wfm-pricer-cli")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(format!("API request failed: {}", response.status()).into());
+    }
+
+    let json: serde_json::Value = response.json().await?;
+    let revid = json
+        .pointer("/query/pages/0/revisions/0/revid")
+        .and_then(|v| v.as_u64())
+        .ok_or("Failed to extract revid from API response")?;
+
+    Ok(revid)
+}
+
+/// Fetches the raw Lua source of Module:Vendors/data from the Warframe wiki.
+/// Uses the revisions API to get the content directly.
+pub async fn fetch_vendors_lua(client: &reqwest::Client) -> Result<String, Box<dyn Error>> {
+    let url = "https://warframe.fandom.com/api.php";
+    let params = [
+        ("action", "query"),
+        ("prop", "revisions"),
+        ("titles", "Module:Vendors/data"),
+        ("rvprop", "content"),
+        ("rvslots", "*"),
+        ("format", "json"),
+        ("formatversion", "2"),
+    ];
+
+    let response = client
+        .get(url)
+        .query(&params)
+        .header("User-Agent", "wfm-pricer-cli")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(format!("API request failed: {}", response.status()).into());
+    }
+
+    let json: serde_json::Value = response.json().await?;
+    let source = json
+        .pointer("/query/pages/0/revisions/0/slots/main/content")
+        .and_then(|v| v.as_str())
+        .ok_or("Failed to extract content from revisions API response")?
+        .to_string();
+
+    Ok(source)
+}
+
+/// Parses the Lua source of Module:Vendors/data into a vector of RawVendor.
+pub fn parse_vendors_from_lua(source: &str) -> Result<Vec<RawVendor>, String> {
+    let tokens = tokenize(source)?;
+    let parsed = parse(&tokens)?;
+    let top_table = parsed.as_table().ok_or("Top-level is not a table")?;
+    let vendors_table = top_table
+        .iter()
+        .find_map(|(key, val)| {
+            if let Some(LuaKey::String(s)) = key {
+                if s == "Vendors" {
+                    val.as_table()
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .ok_or("No 'Vendors' table found")?;
+    let mut result = Vec::new();
+    for (key, val) in vendors_table {
+        let vendor_key = match key {
+            Some(LuaKey::String(s)) => s.clone(),
+            _ => return Err("Vendor key is not a string".to_string()),
+        };
+        let raw = parse_raw_vendor(vendor_key, val)?;
+        result.push(raw);
+    }
+    Ok(result)
+}
+
+/// Fetches and caches vendor data if the remote revision differs from the cached one.
+pub async fn fetch_and_cache_vendors(client: &reqwest::Client) -> Result<(), Box<dyn Error>> {
+    let remote_revid = fetch_latest_revid(client).await?;
+    let cached_revid = read_cached_revid()?;
+
+    if let Some(cached) = cached_revid {
+        if cached == remote_revid {
+            println!("Vendor data unchanged (revid {}). Skipping fetch.", remote_revid);
+            return Ok(());
+        }
+    }
+    println!("Vendor data changed (cached: {:?}, remote: {}). Fetching...", cached_revid, remote_revid);
+
+    let lua_source = fetch_vendors_lua(client).await?;
+    let raw_vendors = parse_vendors_from_lua(&lua_source)
+        .map_err(|e| format!("Failed to parse vendor Lua: {e}"))?;
+
+    write_vendor_cache(&raw_vendors)?;
+    write_cached_revid(remote_revid)?;
+
+    println!("Vendor cache updated successfully ({} vendors).", raw_vendors.len());
+    Ok(())
+}
+
+/// Runs the vendor mode: displays a list of vendors and their offerings.
+pub async fn run_vendor_cli() -> Result<(), Box<dyn Error>> {
+    let client = reqwest::Client::new();
+    // Ensure cache is fresh
+    fetch_and_cache_vendors(&client).await?;
+
+    // Load raw vendors
+    let raw_vendors = load_vendor_data()?;
+    println!("Loaded {} vendors from cache.", raw_vendors.len());
+
+    // Display vendor list
+    for (idx, vendor) in raw_vendors.iter().enumerate() {
+        let currency_desc = match &vendor.currency {
+            CurrencySpec::One(c) => format!("Currency: {}", c),
+            CurrencySpec::Many(currencies) => format!("Currencies: {}", currencies.join(", ")),
+            CurrencySpec::None => "No currency".to_string(),
+        };
+        println!("{}. {} ({})", idx + 1, vendor.name, currency_desc);
+    }
+
+    print!("\nSelect a vendor by number (1-{}): ", raw_vendors.len());
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let idx: usize = input.trim().parse().map_err(|_| "Invalid number")?;
+    if idx == 0 || idx > raw_vendors.len() {
+        return Err("Invalid vendor number".into());
+    }
+    let vendor = &raw_vendors[idx - 1];
+
+    println!("\nVendor: {}", vendor.name);
+    println!("Offerings ({} items):", vendor.offerings.len());
+    for offering in &vendor.offerings {
+        let price_desc = match &offering.price {
+            PriceSpec::Single(cur, amt) => format!("{} {}", amt, cur),
+            PriceSpec::Multi(pairs) => {
+                pairs.iter().map(|(cur, amt)| format!("{} {}", amt, cur)).collect::<Vec<_>>().join(" + ")
+            }
+        };
+        let prereq = match &offering.prereq {
+            Some(PrereqSpec::Rank(r)) => format!(" (Rank {})", r),
+            Some(PrereqSpec::Quest(q)) => format!(" (Quest: {})", q),
+            None => String::new(),
+        };
+        let timer = offering.timer.map_or(String::new(), |t| format!(" (Timer: {}s)", t));
+        let limit = offering.limit.map_or(String::new(), |l| format!(" (Limit: {})", l));
+        println!("  {} [{}] Cost: {}{}{}{}", offering.name, offering.category, price_desc, prereq, timer, limit);
+    }
+
+    Ok(())
+}
+
 // ---------- Tests ----------
 
 #[cfg(test)]
@@ -741,7 +961,7 @@ mod offering_tests {
             (no_key(), number(5000.0)),
             (key("Timer"), number(604800.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Pathos Clamp")).unwrap();
+        let result = parse_raw_offering(&fields, Some("Pathos Clamp")).unwrap().unwrap();
         assert_eq!(result.name, "Kuva");
         assert_eq!(result.category, "Resource");
         match result.price {
@@ -765,7 +985,7 @@ mod offering_tests {
             (no_key(), number(20.0)),
             (key("Timer"), number(604800.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Platinum")).unwrap();
+        let result = parse_raw_offering(&fields, Some("Platinum")).unwrap().unwrap();
         assert_eq!(result.name, "Orokin Reactor");
         assert_eq!(result.qty, 1);
     }
@@ -783,7 +1003,7 @@ mod offering_tests {
             (no_key(), number(1.0)),
             (key("Prereq"), number(0.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Platinum")).unwrap();
+        let result = parse_raw_offering(&fields, Some("Platinum")).unwrap().unwrap();
         match result.price {
             PriceSpec::Multi(currencies) => {
                 assert_eq!(currencies.len(), 2);
@@ -805,7 +1025,7 @@ mod offering_tests {
             (no_key(), number(1.0)),
             (key("Prereq"), string("Natah (Quest)")),
         ];
-        let result = parse_raw_offering(&fields, Some("Standing")).unwrap();
+        let result = parse_raw_offering(&fields, Some("Standing")).unwrap().unwrap();
         assert_eq!(result.prereq, Some(PrereqSpec::Quest("Natah (Quest)".to_string())));
     }
 
@@ -817,7 +1037,7 @@ mod offering_tests {
             (no_key(), number(100000.0)),
             (key("Prereq"), number(5.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Standing")).unwrap();
+        let result = parse_raw_offering(&fields, Some("Standing")).unwrap().unwrap();
         assert_eq!(result.prereq, Some(PrereqSpec::Rank(5)));
         assert_eq!(result.qty, 1);
     }
@@ -832,7 +1052,7 @@ mod offering_tests {
             (key("Timer"), number(604800.0)),
             (key("Limit"), number(10.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Riven Sliver")).unwrap();
+        let result = parse_raw_offering(&fields, Some("Riven Sliver")).unwrap().unwrap();
         assert_eq!(result.timer, Some(604800));
         assert_eq!(result.limit, Some(10));
     }
@@ -843,7 +1063,7 @@ mod offering_tests {
             (key("item"), string("Energy Conversion")),
             (key("cost"), number(100000.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Standing")).unwrap();
+        let result = parse_raw_offering(&fields, Some("Standing")).unwrap().unwrap();
         assert_eq!(result.name, "Energy Conversion");
         assert_eq!(result.category, "Misc");
         match result.price {
@@ -868,7 +1088,7 @@ mod offering_tests {
             (key("cost"), price_table),
             (key("qty"), number(1.0)),
         ];
-        let result = parse_raw_offering(&fields, None).unwrap();
+        let result = parse_raw_offering(&fields, None).unwrap().unwrap();
         assert_eq!(result.category, "Blueprint");
         match result.price {
             PriceSpec::Multi(currencies) => {
@@ -1261,5 +1481,21 @@ mod integration_tests {
             }
             _ => panic!("Expected Table"),
         }
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore] // This hits the live wiki – run with `cargo test -- --ignored`
+    async fn fetch_latest_revid_returns_plausible_number() {
+        let client = reqwest::Client::new();
+        let revid = fetch_latest_revid(&client).await.unwrap();
+        // A plausible revision ID for a popular module is > 1000000 and < 10^10
+        assert!(revid > 1_000_000);
+        assert!(revid < 10_000_000_000);
+        println!("Latest revid: {}", revid);
     }
 }

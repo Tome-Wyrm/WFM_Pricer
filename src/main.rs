@@ -158,6 +158,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(config::CACHE_DIR)?;
     std::fs::create_dir_all(config::STATISTICS_DIR)?;
 
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--vendor") {
+        return vendor::run_vendor_cli().await;
+    }
+
     println!("--- WFM Pricer System Startup ---");
 
     // 1. Update caches (fail fast if this doesn't work)
