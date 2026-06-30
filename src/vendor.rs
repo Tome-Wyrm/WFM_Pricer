@@ -1,5 +1,7 @@
 // src/vendor.rs
 use crate::config;
+use num_traits::ToPrimitive;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
@@ -15,6 +17,12 @@ pub enum Token {
 }
 
 // ---------- Lua AST ----------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RankList {
+    pub names: Vec<String>,
+    pub zero_indexed: bool,
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum LuaValue {
@@ -183,6 +191,37 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
 
 // ---------- Parser ----------
 
+fn parse_rank_list(table: &[(Option<LuaKey>, LuaValue)]) -> RankList {
+    let mut names = Vec::new();
+    let mut has_integer_key = false;
+    let mut pairs = Vec::new(); // (index, name) when integer keys exist
+
+    for (key, val) in table {
+        match (key, val.as_str()) {
+            (Some(LuaKey::Integer(i)), Some(name)) => {
+                has_integer_key = true;
+                pairs.push((*i, name.to_string()));
+            }
+            (_, Some(name)) => {
+                // No key, or string key – treat as positional
+                names.push(name.to_string());
+            }
+            _ => {} // ignore non-string values (shouldn't happen)
+        }
+    }
+
+    if has_integer_key {
+        // Sort by integer key and collect names
+        pairs.sort_by_key(|(i, _)| *i);
+        let zero_indexed = pairs.iter().any(|(i, _)| *i == 0);
+        names = pairs.into_iter().map(|(_, name)| name).collect();
+        RankList { names, zero_indexed }
+    } else {
+        // No integer keys – names are already in order
+        RankList { names, zero_indexed: false }
+    }
+}
+
 /// Parses a token stream into a `LuaValue`.
 ///
 /// # Errors
@@ -269,17 +308,15 @@ fn parse_field(tokens: &[Token], pos: &mut usize) -> Result<(Option<LuaKey>, Lua
             }
             *pos += 1;
             match key_expr {
-              LuaValue::String(s) => Some(LuaKey::String(s)),
-              LuaValue::Number(n) => {
-              // Only accept integers within the safe range for i64
-                if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
-                  #[allow(clippy::cast_possible_truncation)]
-                  Some(LuaKey::Integer(n as i64))
-                } else {
-                  return Err(format!("Bracket key must be string or integer, got {n}"));
+                LuaValue::String(s) => Some(LuaKey::String(s)),
+                LuaValue::Number(n) => {
+                    if let Some(i) = n.to_i64() {
+                        Some(LuaKey::Integer(i))
+                    } else {
+                        return Err(format!("Bracket key must be an integer, got {n}"));
+                    }
                 }
-              }
-              LuaValue::Table(_) => return Err(format!("Invalid bracket key type: {key_expr:?}")),
+                LuaValue::Table(_) => return Err(format!("Invalid bracket key type: {key_expr:?}")),
             }
         }
         Token::Ident(name) => {
@@ -305,39 +342,37 @@ fn parse_field(tokens: &[Token], pos: &mut usize) -> Result<(Option<LuaKey>, Lua
 
 // ---------- Load Vendor Data ----------
 
-/// Loads the raw vendor data from the cached file, extracts the Lua source,
-/// tokenizes and parses it, returning the parsed `LuaValue`.
+/// Loads the parsed vendor data from the cached file.
 ///
 /// # Errors
-/// Returns a `String` error if the file cannot be read, JSON parsing fails,
-/// tokenization or parsing fails.
-pub fn load_vendor_data() -> Result<LuaValue, String> {
-    let cache_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
-    let alt_path = std::path::Path::new("cache/vendors_data_cache.json");
-    let path = if cache_path.exists() {
-        cache_path
-    } else if alt_path.exists() {
-        alt_path
-    } else {
-        return Err("Vendor cache file not found".to_string());
-    };
+/// Returns a `String` error if the file cannot be read or the JSON is malformed.
+pub fn load_vendor_data() -> Result<Vec<RawVendor>, String> {
+    let path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
+    if !path.exists() {
+        return Err(format!("Vendor cache file not found: {}", path.display()));
+    }
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read vendor cache: {e}"))?;
+    let vendors: Vec<RawVendor> = serde_json::from_str(&json)
+        .map_err(|e| format!("Failed to parse vendor cache JSON: {e}"))?;
+    Ok(vendors)
+}
 
-    let raw_json = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read vendor cache file: {e}"))?;
-
-    let lua_source = extract_lua_content(&raw_json)
-        .map_err(|e| format!("Failed to extract Lua source: {e}"))?;
-
-    let tokens = tokenize(&lua_source)
-        .map_err(|e| format!("Tokenizer error: {e}"))?;
-
-    let parsed = parse(&tokens)
-        .map_err(|e| format!("Parser error: {e}"))?;
-
-    Ok(parsed)
+/// Writes a vector of `RawVendor` to the cache file.
+///
+/// # Errors
+/// Returns a `String` error if serialization or file write fails.
+pub fn write_vendor_cache(vendors: &[RawVendor]) -> Result<(), String> {
+    let path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
+    let json = serde_json::to_string_pretty(vendors)
+        .map_err(|e| format!("Failed to serialize vendor cache: {e}"))?;
+    std::fs::write(path, json)
+        .map_err(|e| format!("Failed to write vendor cache: {e}"))?;
+    Ok(())
 }
 
 /// Extracts the Lua source string from the `MediaWiki` API response JSON.
+#[allow(dead_code)]
 fn extract_lua_content(json: &str) -> Result<String, String> {
     let v: serde_json::Value = serde_json::from_str(json)
         .map_err(|e| format!("Invalid JSON: {e}"))?;
@@ -360,19 +395,19 @@ fn extract_lua_content(json: &str) -> Result<String, String> {
 
 // ========== Offering Normalizer ==========
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PriceSpec {
     Single(String, f64),
     Multi(Vec<(String, f64)>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PrereqSpec {
     Rank(u32),
     Quest(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RawOffering {
     pub name: String,
     pub category: String,
@@ -563,20 +598,20 @@ pub fn parse_raw_offering(
 
 // ========== Vendor Normalizer ==========
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CurrencySpec {
     One(String),
     Many(Vec<String>),
     None,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RawVendor {
     pub key: String,
     pub name: String,
     pub currency: CurrencySpec,
     pub vendor_type: Option<String>,
-    pub ranks: Option<Vec<(Option<LuaKey>, LuaValue)>>,
+    pub ranks: Option<RankList>,
     pub offerings: Vec<RawOffering>,
 }
 
@@ -599,12 +634,8 @@ pub fn parse_raw_vendor(
     let vendor_type = get_string_field(fields, "Type").map(String::from);
 
     let ranks = fields.iter().find_map(|(k, v)| {
-        if let Some(LuaKey::String(s)) = k {
-            if s == "Ranks" {
-                v.as_table().cloned()
-            } else {
-                None
-            }
+        if let Some(LuaKey::String(s)) = k && s == "Ranks" {
+            v.as_table().map(|t| parse_rank_list(t))
         } else {
             None
         }
@@ -933,8 +964,8 @@ mod vendor_tests {
         let vendor = parse_raw_vendor("Arbiters of Hexis".to_string(), &vendor_table).unwrap();
         assert!(vendor.ranks.is_some());
         let ranks = vendor.ranks.unwrap();
-        assert!(matches!(&ranks[0].0, Some(LuaKey::Integer(0))));
-        assert_eq!(ranks.len(), 6);
+        assert!(ranks.zero_indexed);
+        assert_eq!(ranks.names[0], "Initiation");
     }
 
     #[test]
@@ -954,10 +985,8 @@ mod vendor_tests {
         let vendor = parse_raw_vendor("Conclave".to_string(), &vendor_table).unwrap();
         assert!(vendor.ranks.is_some());
         let ranks = vendor.ranks.unwrap();
-        for (k, _) in &ranks {
-            assert!(k.is_none());
-        }
-        assert_eq!(ranks.len(), 5);
+        assert!(!ranks.zero_indexed);
+        assert_eq!(ranks.names, vec!["Mistral", "Whirlwind", "Tempest", "Hurricane", "Typhoon"]);
     }
 }
 
@@ -1037,12 +1066,17 @@ mod integration_tests {
 
     #[test]
     fn parse_full_vendors_cache() {
-        if !std::path::Path::new("cache/vendors_data_cache.json").exists() &&
-           !std::path::Path::new(config::VENDORS_RAW_CACHE_FILE).exists() {
-            eprintln!("Skipping full vendor cache test: file not found");
-            return;
-        }
-        let parsed = load_vendor_data().expect("Failed to load vendor data");
+      if !std::path::Path::new(config::VENDORS_RAW_CACHE_FILE).exists() {
+          panic!("Cache file not found; run the fetch step first");
+      }
+      // This test now loads the fixture directly, not the cache.
+      // It verifies that the parser + normalizer can handle the full real Lua source.
+      let fixture_path = "tests/fixtures/vendors_sample.json";
+      let json_str = std::fs::read_to_string(fixture_path)
+          .expect("Fixture file missing");
+      let lua_source = extract_lua_content(&json_str).expect("Failed to extract Lua");
+      let tokens = tokenize(&lua_source).expect("Tokenizer failed");
+      let parsed = parse(&tokens).expect("Parser failed");
         match parsed {
             LuaValue::Table(outer) => {
                 let vendors_opt = outer.iter().find_map(|(key, val)| {
