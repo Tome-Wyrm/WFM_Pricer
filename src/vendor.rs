@@ -192,34 +192,27 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
 // ---------- Parser ----------
 
 fn parse_rank_list(table: &[(Option<LuaKey>, LuaValue)]) -> RankList {
-    let mut names = Vec::new();
-    let mut has_integer_key = false;
-    let mut pairs = Vec::new(); // (index, name) when integer keys exist
+    let mut next_idx = 1i64; // Lua's default start index
+    let mut pairs = Vec::new();
 
     for (key, val) in table {
-        match (key, val.as_str()) {
-            (Some(LuaKey::Integer(i)), Some(name)) => {
-                has_integer_key = true;
+        let Some(name) = val.as_str() else { continue };
+        match key {
+            Some(LuaKey::Integer(i)) => {
                 pairs.push((*i, name.to_string()));
+                if *i + 1 > next_idx { next_idx = *i + 1; }
             }
-            (_, Some(name)) => {
-                // No key, or string key – treat as positional
-                names.push(name.to_string());
+            _ => {
+                pairs.push((next_idx, name.to_string()));
+                next_idx += 1;
             }
-            _ => {} // ignore non-string values (shouldn't happen)
         }
     }
 
-    if has_integer_key {
-        // Sort by integer key and collect names
-        pairs.sort_by_key(|(i, _)| *i);
-        let zero_indexed = pairs.iter().any(|(i, _)| *i == 0);
-        names = pairs.into_iter().map(|(_, name)| name).collect();
-        RankList { names, zero_indexed }
-    } else {
-        // No integer keys – names are already in order
-        RankList { names, zero_indexed: false }
-    }
+    pairs.sort_by_key(|(i, _)| *i);
+    let zero_indexed = pairs.iter().any(|(i, _)| *i == 0);
+    let names = pairs.into_iter().map(|(_, n)| n).collect();
+    RankList { names, zero_indexed }
 }
 
 /// Parses a token stream into a `LuaValue`.
@@ -965,7 +958,10 @@ mod vendor_tests {
         assert!(vendor.ranks.is_some());
         let ranks = vendor.ranks.unwrap();
         assert!(ranks.zero_indexed);
-        assert_eq!(ranks.names[0], "Initiation");
+        assert_eq!(
+            ranks.names,
+            vec!["Initiation", "Principled", "Authentic", "Lawful", "Crusader", "Maxim"]
+        );
     }
 
     #[test]
@@ -986,7 +982,10 @@ mod vendor_tests {
         assert!(vendor.ranks.is_some());
         let ranks = vendor.ranks.unwrap();
         assert!(!ranks.zero_indexed);
-        assert_eq!(ranks.names, vec!["Mistral", "Whirlwind", "Tempest", "Hurricane", "Typhoon"]);
+        assert_eq!(
+            ranks.names,
+            vec!["Mistral", "Whirlwind", "Tempest", "Hurricane", "Typhoon"]
+        );
     }
 }
 
@@ -1066,39 +1065,15 @@ mod integration_tests {
 
     #[test]
     fn parse_full_vendors_cache() {
-      if !std::path::Path::new(config::VENDORS_RAW_CACHE_FILE).exists() {
-          panic!("Cache file not found; run the fetch step first");
-      }
-      // This test now loads the fixture directly, not the cache.
-      // It verifies that the parser + normalizer can handle the full real Lua source.
-      let fixture_path = "tests/fixtures/vendors_sample.json";
-      let json_str = std::fs::read_to_string(fixture_path)
-          .expect("Fixture file missing");
-      let lua_source = extract_lua_content(&json_str).expect("Failed to extract Lua");
-      let tokens = tokenize(&lua_source).expect("Tokenizer failed");
-      let parsed = parse(&tokens).expect("Parser failed");
-        match parsed {
-            LuaValue::Table(outer) => {
-                let vendors_opt = outer.iter().find_map(|(key, val)| {
-                    if let Some(LuaKey::String(name)) = key {
-                        if name == "Vendors" {
-                            Some(val.as_table().expect("Vendors not a table"))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                });
-                let vendors = vendors_opt.expect("No Vendors key found");
-                assert!(vendors.len() >= 60, "Expected at least 60 vendors, got {}", vendors.len());
-                let has_simaris = vendors.iter().any(|(key, _)| {
-                    matches!(key, Some(LuaKey::String(name)) if name == "Cephalon Simaris")
-                });
-                assert!(has_simaris, "Cephalon Simaris not found");
-            }
-            _ => panic!("Top-level is not a table"),
+        let cache_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
+        if !cache_path.exists() {
+            eprintln!("Skipping full cache test – cache file not found. Run the fetch step first.");
+            return;
         }
+        let vendors = load_vendor_data().expect("Failed to load vendor data");
+        assert!(vendors.len() >= 60, "Expected at least 60 vendors, got {}", vendors.len());
+        let has_simaris = vendors.iter().any(|v| v.key == "Cephalon Simaris");
+        assert!(has_simaris, "Cephalon Simaris not found");
     }
 
     #[test]
