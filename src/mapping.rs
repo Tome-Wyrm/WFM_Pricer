@@ -12,6 +12,7 @@ use crate::config::{
     CACHE_DIR, METADATA_FILE, RELICS_CACHE_FILE, WFCD_CACHE_FILE, WFM_CACHE_FILE, FULL_ITEMS_CACHE_FILE
 };
 use crate::models::{MappedItem, WfcdItem, WfmItem, WfmV2Response, KeepConfig, BlacklistConfig};
+use crate::vendor;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,6 +311,11 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
         fs::write(METADATA_FILE, metadata_str)?;
         println!("Cache metadata updated.");
     }
+
+        // Vendor cache (from wiki Module:Vendors/data)
+        println!("Updating vendor cache...");
+        vendor::fetch_and_cache_vendors(&client).await?;
+        println!("Vendor cache updated.");
 
     let needs_relics_refresh = cache_invalidated || !Path::new(RELICS_CACHE_FILE).exists();
     if needs_relics_refresh {
