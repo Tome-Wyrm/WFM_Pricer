@@ -368,28 +368,6 @@ pub fn write_vendor_cache(vendors: &[RawVendor]) -> Result<(), String> {
     Ok(())
 }
 
-/// Extracts the Lua source string from the `MediaWiki` API response JSON.
-#[allow(dead_code)]
-fn extract_lua_content(json: &str) -> Result<String, String> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| format!("Invalid JSON: {e}"))?;
-
-    let content = v
-        .pointer("/query/pages")
-        .and_then(|pages| pages.as_object())
-        .and_then(|pages| pages.values().next())
-        .and_then(|page| page.get("revisions"))
-        .and_then(|revs| revs.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|rev| rev.get("slots"))
-        .and_then(|slots| slots.get("main"))
-        .and_then(|main| main.get("*"))
-        .and_then(|c| c.as_str())
-        .ok_or("Could not find Lua source in the cache JSON")?;
-
-    Ok(content.to_string())
-}
-
 // ========== Offering Normalizer ==========
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -622,13 +600,14 @@ pub struct RawVendor {
 }
 
 /// Converts a parsed vendor table (from the Vendors table) into a `RawVendor`.
+/// Returns the parsed vendor and the number of offerings that were skipped due to errors.
 ///
 /// # Errors
 /// Returns a `String` error if the table is malformed (missing Offerings, etc.).
 pub fn parse_raw_vendor(
     vendor_key: String,
     vendor_table: &LuaValue,
-) -> Result<RawVendor, String> {
+) -> Result<(RawVendor, usize), String> {
     let fields = vendor_table.as_table()
         .ok_or("Vendor table is not a table")?;
 
@@ -661,22 +640,26 @@ pub fn parse_raw_vendor(
     };
 
     let mut offerings = Vec::new();
+    let mut skipped = 0usize;
     for offering_table in offerings_table {
         match parse_raw_offering(std::slice::from_ref(offering_table), vendor_currency_str) {
             Ok(Some(raw)) => offerings.push(raw),
-            Ok(None) => { /* skipped */ }
-            Err(e) => eprintln!("Warning: failed to parse offering: {}", e),
+            Ok(None) => { skipped += 1; }
+            Err(e) => {
+                eprintln!("Warning: failed to parse offering: {}", e);
+                skipped += 1;
+            }
         }
     }
 
-    Ok(RawVendor {
+    Ok((RawVendor {
         key: vendor_key,
         name,
         currency,
         vendor_type,
         ranks,
         offerings,
-    })
+    }, skipped))
 }
 
 fn parse_currency(fields: &[(Option<LuaKey>, LuaValue)]) -> Result<CurrencySpec, String> {
@@ -723,6 +706,63 @@ fn parse_currency(fields: &[(Option<LuaKey>, LuaValue)]) -> Result<CurrencySpec,
     Ok(CurrencySpec::None)
 }
 
+// ---- Vendor metadata (config/vendors.toml) ----
+
+/// How multiple currencies on a single offering should be interpreted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CostMode {
+    /// Single currency (default — price is a plain number using the vendor's currency).
+    #[default]
+    Single,
+    /// Pay with any one of the listed currencies (buyer's choice).
+    AnyOf,
+    /// All listed currencies are required simultaneously.
+    AllOf,
+}
+
+/// Per-vendor metadata from `config/vendors.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VendorMeta {
+    /// Nav-tree location string, e.g. `"Misc/Zariman"`. Required unless `excluded = true`.
+    #[serde(default)]
+    pub location: Option<String>,
+    /// Shared standing pool name, e.g. `"Ostron"`. Absent means standalone.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// If true, never surface this vendor in rankings or the picker.
+    #[serde(default)]
+    pub excluded: bool,
+    /// How multi-currency prices on this vendor's offerings should be classified.
+    #[serde(default)]
+    pub cost_mode: CostMode,
+    /// True for vendors whose wares are hand-entered rather than auto-parsed.
+    #[serde(default)]
+    pub hand_curated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VendorConfig {
+    #[serde(default)]
+    vendor: std::collections::HashMap<String, VendorMeta>,
+}
+
+/// Loads `config/vendors.toml` into a map of vendor key → `VendorMeta`.
+/// Returns an empty map (not an error) if the file does not exist yet.
+///
+/// # Errors
+/// Returns an error if the file exists but cannot be read or parsed.
+pub fn load_vendor_metadata() -> Result<std::collections::HashMap<String, VendorMeta>, Box<dyn Error>> {
+    let path = Path::new(crate::config::VENDORS_CONFIG_FILE);
+    if !path.exists() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let content = fs::read_to_string(path)?;
+    let config: VendorConfig = toml::from_str(&content)
+        .map_err(|e| format!("Failed to parse vendors.toml: {e}"))?;
+    Ok(config.vendor)
+}
+
 // ---- Revid caching ----
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -755,7 +795,7 @@ pub fn write_cached_revid(revid: u64) -> Result<(), Box<dyn Error>> {
 /// # Errors
 /// Returns an error if the network request fails or the response doesn't contain a revid.
 pub async fn fetch_latest_revid(client: &reqwest::Client) -> Result<u64, Box<dyn Error>> {
-    let url = "https://warframe.fandom.com/api.php";
+    let url = "https://wiki.warframe.com/api.php";
     let params = [
         ("action", "query"),
         ("prop", "revisions"),
@@ -788,7 +828,7 @@ pub async fn fetch_latest_revid(client: &reqwest::Client) -> Result<u64, Box<dyn
 /// Fetches the raw Lua source of Module:Vendors/data from the Warframe wiki.
 /// Uses the revisions API to get the content directly.
 pub async fn fetch_vendors_lua(client: &reqwest::Client) -> Result<String, Box<dyn Error>> {
-    let url = "https://warframe.fandom.com/api.php";
+    let url = "https://wiki.warframe.com/api.php";
     let params = [
         ("action", "query"),
         ("prop", "revisions"),
@@ -821,7 +861,8 @@ pub async fn fetch_vendors_lua(client: &reqwest::Client) -> Result<String, Box<d
 }
 
 /// Parses the Lua source of Module:Vendors/data into a vector of RawVendor.
-pub fn parse_vendors_from_lua(source: &str) -> Result<Vec<RawVendor>, String> {
+/// Returns the parsed vendors and the total number of offerings skipped due to errors.
+pub fn parse_vendors_from_lua(source: &str) -> Result<(Vec<RawVendor>, usize), String> {
     let tokens = tokenize(source)?;
     let parsed = parse(&tokens)?;
     let top_table = parsed.as_table().ok_or("Top-level is not a table")?;
@@ -840,15 +881,17 @@ pub fn parse_vendors_from_lua(source: &str) -> Result<Vec<RawVendor>, String> {
         })
         .ok_or("No 'Vendors' table found")?;
     let mut result = Vec::new();
+    let mut total_skipped = 0usize;
     for (key, val) in vendors_table {
         let vendor_key = match key {
             Some(LuaKey::String(s)) => s.clone(),
             _ => return Err("Vendor key is not a string".to_string()),
         };
-        let raw = parse_raw_vendor(vendor_key, val)?;
+        let (raw, skipped) = parse_raw_vendor(vendor_key, val)?;
         result.push(raw);
+        total_skipped += skipped;
     }
-    Ok(result)
+    Ok((result, total_skipped))
 }
 
 /// Fetches and caches vendor data if the remote revision differs from the cached one.
@@ -865,13 +908,26 @@ pub async fn fetch_and_cache_vendors(client: &reqwest::Client) -> Result<(), Box
     println!("Vendor data changed (cached: {:?}, remote: {}). Fetching...", cached_revid, remote_revid);
 
     let lua_source = fetch_vendors_lua(client).await?;
-    let raw_vendors = parse_vendors_from_lua(&lua_source)
+    let (raw_vendors, skipped) = parse_vendors_from_lua(&lua_source)
         .map_err(|e| format!("Failed to parse vendor Lua: {e}"))?;
 
     write_vendor_cache(&raw_vendors)?;
     write_cached_revid(remote_revid)?;
 
-    println!("Vendor cache updated successfully ({} vendors).", raw_vendors.len());
+    if skipped > 0 {
+        println!(
+            "Vendor cache updated ({} vendors, {} offerings parsed, {} skipped).",
+            raw_vendors.len(),
+            raw_vendors.iter().map(|v| v.offerings.len()).sum::<usize>(),
+            skipped
+        );
+    } else {
+        println!(
+            "Vendor cache updated ({} vendors, {} offerings parsed).",
+            raw_vendors.len(),
+            raw_vendors.iter().map(|v| v.offerings.len()).sum::<usize>()
+        );
+    }
     Ok(())
 }
 
@@ -1106,6 +1162,28 @@ mod offering_tests {
         assert_eq!(normalize_category("Cosmetics"), "Cosmetic");
         assert_eq!(normalize_category("Mod"), "Mod");
     }
+
+    #[test]
+    fn named_offering_missing_item_returns_ok_none() {
+        // Has a 'cost' field (so is_named = true) but no 'item' field — should skip, not error.
+        let fields = vec![
+            (key("cost"), number(5000.0)),
+            (key("type"), string("Mod")),
+        ];
+        let result = parse_raw_offering(&fields, Some("Standing")).unwrap();
+        assert!(result.is_none(), "Expected Ok(None) for named offering missing 'item'");
+    }
+
+    #[test]
+    fn positional_offering_too_few_fields_returns_ok_none() {
+        // Only 2 positional values — needs at least 3 (name, category, price).
+        let fields = vec![
+            (no_key(), string("Orokin Reactor")),
+            (no_key(), string("Mod")),
+        ];
+        let result = parse_raw_offering(&fields, Some("Platinum")).unwrap();
+        assert!(result.is_none(), "Expected Ok(None) for positional offering with < 3 fields");
+    }
 }
 
 #[cfg(test)]
@@ -1120,7 +1198,8 @@ mod vendor_tests {
             (key("Name"), string("Acrithis")),
             (key("Offerings"), table(vec![])),
         ]);
-        let vendor = parse_raw_vendor("Acrithis".to_string(), &vendor_table).unwrap();
+        let (vendor, skipped) = parse_raw_vendor("Acrithis".to_string(), &vendor_table).unwrap();
+        assert_eq!(skipped, 0);
         assert_eq!(vendor.key, "Acrithis");
         assert_eq!(vendor.name, "Acrithis");
         assert_eq!(vendor.currency, CurrencySpec::One("Pathos Clamp".to_string()));
@@ -1141,7 +1220,7 @@ mod vendor_tests {
             (key("Name"), string("Marie")),
             (key("Offerings"), table(vec![])),
         ]);
-        let vendor = parse_raw_vendor("Marie".to_string(), &vendor_table).unwrap();
+        let (vendor, _) = parse_raw_vendor("Marie".to_string(), &vendor_table).unwrap();
         assert_eq!(vendor.currency, CurrencySpec::Many(vec![
             "Lyroic Bridge".to_string(),
             "Ren Hypercore".to_string(),
@@ -1155,7 +1234,7 @@ mod vendor_tests {
             (key("Name"), string("Star Days")),
             (key("Offerings"), table(vec![])),
         ]);
-        let vendor = parse_raw_vendor("Star Days".to_string(), &vendor_table).unwrap();
+        let (vendor, _) = parse_raw_vendor("Star Days".to_string(), &vendor_table).unwrap();
         assert_eq!(vendor.currency, CurrencySpec::None);
     }
 
@@ -1174,7 +1253,7 @@ mod vendor_tests {
             (key("Ranks"), ranks_table),
             (key("Offerings"), table(vec![])),
         ]);
-        let vendor = parse_raw_vendor("Arbiters of Hexis".to_string(), &vendor_table).unwrap();
+        let (vendor, _) = parse_raw_vendor("Arbiters of Hexis".to_string(), &vendor_table).unwrap();
         assert!(vendor.ranks.is_some());
         let ranks = vendor.ranks.unwrap();
         assert!(ranks.zero_indexed);
@@ -1198,7 +1277,7 @@ mod vendor_tests {
             (key("Ranks"), ranks_table),
             (key("Offerings"), table(vec![])),
         ]);
-        let vendor = parse_raw_vendor("Conclave".to_string(), &vendor_table).unwrap();
+        let (vendor, _) = parse_raw_vendor("Conclave".to_string(), &vendor_table).unwrap();
         assert!(vendor.ranks.is_some());
         let ranks = vendor.ranks.unwrap();
         assert!(!ranks.zero_indexed);
@@ -1215,11 +1294,28 @@ mod integration_tests {
 
     #[test]
     fn parse_sample_vendor_fixture() {
-        let fixture_path = "tests/fixtures/vendors_sample.json";
-        let json_str = std::fs::read_to_string(fixture_path)
-            .expect("Fixture file missing");
-        let lua_source = extract_lua_content(&json_str).expect("Failed to extract Lua");
-        let tokens = tokenize(&lua_source).expect("Tokenizer failed");
+        // Exercises the full tokenize → parse pipeline against a representative
+        // Acrithis-shaped snippet (same structure as the real wiki data).
+        // The old version of this test called extract_lua_content() on a v1-format
+        // JSON fixture; that function has been removed now that the fetch path uses
+        // the v2 API and returns plain Lua. The fixture was only testing the
+        // tokenizer/parser, so we inline equivalent Lua here instead.
+        let lua_source = r#"
+return {
+    Vendors = {
+        Acrithis = {
+            Currency = "Pathos Clamp",
+            Name = "Acrithis",
+            Type = "Store",
+            Offerings = {
+                { "Orokin Reactor", "Item", 20, 1, Prereq = 0 },
+                { "Orokin Catalyst", "Item", 20, 1, Prereq = 0 },
+            }
+        }
+    }
+}
+        "#;
+        let tokens = tokenize(lua_source).expect("Tokenizer failed");
         let parsed = parse(&tokens).expect("Parser failed");
 
         match parsed {
@@ -1277,7 +1373,7 @@ mod integration_tests {
                     }
                 });
                 let offerings = offerings_opt.expect("Offerings not found");
-                assert!(!offerings.is_empty());
+                assert_eq!(offerings.len(), 2);
             }
             _ => panic!("Top-level is not a table"),
         }
@@ -1296,6 +1392,136 @@ mod integration_tests {
         assert!(has_simaris, "Cephalon Simaris not found");
     }
 
+    /// C2 tripwire: every vendor key in the raw cache must appear in vendors.toml as either
+    /// a located vendor or an explicitly excluded one.  Fails loudly when a wiki update
+    /// adds a new vendor that hasn't been triaged yet.
+    #[test]
+    fn all_cached_vendors_have_toml_entry() {
+        let cache_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
+        let config_path = std::path::Path::new(config::VENDORS_CONFIG_FILE);
+        if !cache_path.exists() || !config_path.exists() {
+            eprintln!("Skipping tripwire – cache or config file not found.");
+            return;
+        }
+        let vendors = load_vendor_data().expect("Failed to load vendor data");
+        let meta = load_vendor_metadata().expect("Failed to load vendor metadata");
+
+        let mut missing = Vec::new();
+        for v in &vendors {
+            match meta.get(&v.key) {
+                Some(m) if m.excluded || m.location.is_some() => {}
+                Some(_) => missing.push(format!("{} (has entry but no location and not excluded)", v.key)),
+                None => missing.push(format!("{} (not in vendors.toml at all)", v.key)),
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "Vendors in cache but not fully triaged in vendors.toml:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+
+    /// C3 pool consistency check: vendors that share a group name must all agree
+    /// on that name (guards against typos between entries in vendors.toml).
+    #[test]
+    fn pool_group_members_are_internally_consistent() {
+        // Expected pool → member keys, derived from the planning doc.
+        // Update this list if a pool changes.
+        let expected_pools: &[(&str, &[&str])] = &[
+            ("Ostron", &["Fisher Hai-Luk", "Hok", "Master Teasonai", "Old Man Suumbaat"]),
+            ("Solaris United", &["Legs", "Rude Zuud", "Smokefinger", "The Business"]),
+            ("Entrati", &["Daughter", "Father", "Otak", "Son"]),
+            ("The Hex", &["Amir", "Aoi", "Quincy", "Minerva", "Velimir", "Eleanor"]),
+            ("The Holdfasts", &["Cavalero", "Hombask"]),
+        ];
+
+        let config_path = std::path::Path::new(config::VENDORS_CONFIG_FILE);
+        if !config_path.exists() {
+            eprintln!("Skipping pool consistency check – vendors.toml not found.");
+            return;
+        }
+        let meta = load_vendor_metadata().expect("Failed to load vendor metadata");
+
+        for (pool, members) in expected_pools {
+            for member in *members {
+                let entry = meta.get(*member);
+                match entry {
+                    Some(m) => assert_eq!(
+                        m.group.as_deref(),
+                        Some(*pool),
+                        "Vendor '{}' should have group '{}' but has {:?}",
+                        member, pool, m.group
+                    ),
+                    None => panic!("Pool member '{}' (group '{}') is missing from vendors.toml", member, pool),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    /// C1: loader handles all field types including defaults.
+    #[test]
+    fn load_vendor_metadata_parses_all_fields() {
+        let toml_str = r#"
+[vendor."Acrithis"]
+location = "Misc/Zariman"
+
+[vendor."Cavalero"]
+location = "Misc/Zariman"
+group = "The Holdfasts"
+
+[vendor."Conclave"]
+excluded = true
+
+[vendor."Unearth Citrine"]
+location = "Deimos/SanctumAnotomica"
+cost_mode = "all_of"
+
+[vendor."Operational Supply"]
+location = "Earth/Cetus"
+cost_mode = "any_of"
+
+[vendor."Marie"]
+location = "Deimos/SanctumAnotomica"
+hand_curated = true
+"#;
+        let config: super::VendorConfig = toml::from_str(toml_str).expect("TOML parse failed");
+        let meta = config.vendor;
+
+        // Defaults
+        let acrithis = meta.get("Acrithis").expect("Acrithis missing");
+        assert_eq!(acrithis.location.as_deref(), Some("Misc/Zariman"));
+        assert!(acrithis.group.is_none());
+        assert!(!acrithis.excluded);
+        assert_eq!(acrithis.cost_mode, CostMode::Single);
+        assert!(!acrithis.hand_curated);
+
+        // Group
+        let cavalero = meta.get("Cavalero").expect("Cavalero missing");
+        assert_eq!(cavalero.group.as_deref(), Some("The Holdfasts"));
+
+        // Excluded (no location required)
+        let conclave = meta.get("Conclave").expect("Conclave missing");
+        assert!(conclave.excluded);
+
+        // cost_mode variants
+        let citrine = meta.get("Unearth Citrine").expect("Unearth Citrine missing");
+        assert_eq!(citrine.cost_mode, CostMode::AllOf);
+        let supply = meta.get("Operational Supply").expect("Operational Supply missing");
+        assert_eq!(supply.cost_mode, CostMode::AnyOf);
+
+        // hand_curated
+        let marie = meta.get("Marie").expect("Marie missing");
+        assert!(marie.hand_curated);
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
     #[test]
     fn tokenizes_simple_lua_table() {
         let input = r#"
