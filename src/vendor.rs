@@ -1521,7 +1521,8 @@ hand_curated = true
 }
 
 #[cfg(test)]
-mod network_tests {
+mod tokenizer_tests {
+    use super::*;
     #[test]
     fn tokenizes_simple_lua_table() {
         let input = r#"
