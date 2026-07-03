@@ -985,10 +985,28 @@ pub async fn map_inventory(
         "FusionTreasures", "Recipes", "MiscItems",
     ];
 
+    // Total inventory entries across the allowed categories, used purely to render
+    // "(N/total)" progress below — this does not change what gets fetched or how.
+    let total_items: usize = inventory
+        .as_object()
+        .map(|obj| {
+            allowed_keys
+                .iter()
+                .filter_map(|&key| obj.get(key).and_then(serde_json::Value::as_array))
+                .map(std::vec::Vec::len)
+                .sum()
+        })
+        .unwrap_or(0);
+    let mut processed = 0usize;
+
     if let Some(obj) = inventory.as_object() {
         for &category_key in &allowed_keys {
             if let Some(arr) = obj.get(category_key).and_then(serde_json::Value::as_array) {
                 for element in arr {
+                    processed += 1;
+                    if processed % 50 == 0 {
+                        println!("Fetching item details... ({processed}/{total_items})");
+                    }
                     if let Some(mut mapped) = process_item(
                         element,
                         category_key,
