@@ -549,8 +549,11 @@ pub fn parse_raw_offering(
             }
         }
         if values.len() < 3 {
-            // Not enough fields – skip this offering
             eprintln!("Warning: positional offering has fewer than 3 fields, skipping");
+            eprintln!("Table fields: {:?}", table);   // 👈 print the whole table
+            for (key, val) in table {
+                eprintln!("  key={:?}, val={:?}", key, val);
+            }
             return Ok(None);
         }
         let name = values[0].as_str()
@@ -641,8 +644,16 @@ pub fn parse_raw_vendor(
 
     let mut offerings = Vec::new();
     let mut skipped = 0usize;
-    for offering_table in offerings_table {
-        match parse_raw_offering(std::slice::from_ref(offering_table), vendor_currency_str) {
+    for (_, offering_val) in offerings_table {
+        let fields = match offering_val {
+            LuaValue::Table(f) => f.as_slice(),
+            _ => {
+                eprintln!("Warning: offering entry is not a table, skipping");
+                skipped += 1;
+                continue;
+            }
+        };
+        match parse_raw_offering(fields, vendor_currency_str) {
             Ok(Some(raw)) => offerings.push(raw),
             Ok(None) => { skipped += 1; }
             Err(e) => {
