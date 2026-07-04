@@ -1971,11 +1971,11 @@ mod slug_matching_tests {
         // dump; PLACEHOLDER entries are skipped with a warning instead of failing, so
         // this test stays green while you fill the list in incrementally.
         const KNOWN_GOOD: &[(&str, &str)] = &[
-            ("PLACEHOLDER", "PLACEHOLDER"),
-            ("PLACEHOLDER", "PLACEHOLDER"),
-            ("PLACEHOLDER", "PLACEHOLDER"),
-            ("PLACEHOLDER", "PLACEHOLDER"),
-            ("PLACEHOLDER", "PLACEHOLDER"),
+            ("Acrithis", "Longbow Sharpshot"),
+            ("Eleanor", "Primary Crux"),
+            ("Arbiters of Hexis", "Decurion Barrel"),
+            ("Steel Meridian", "Grineer Asteroid Simulacrum"),
+            ("Hunhow", "Pontis Tower Scene"),
         ];
 
         for (vendor_key, item_name) in KNOWN_GOOD {
