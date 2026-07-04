@@ -733,7 +733,7 @@ pub enum CostMode {
 }
 
 /// Per-vendor metadata from `config/vendors.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VendorMeta {
     /// Nav-tree location string, e.g. `"Misc/Zariman"`. Required unless `excluded = true`.
     #[serde(default)]
@@ -772,6 +772,311 @@ pub fn load_vendor_metadata() -> Result<std::collections::HashMap<String, Vendor
     let config: VendorConfig = toml::from_str(&content)
         .map_err(|e| format!("Failed to parse vendors.toml: {e}"))?;
     Ok(config.vendor)
+}
+
+// ================== Phase D: WFM slug mapping + match-coverage report ==================
+
+// ---- D1: category allowlist ----
+
+/// Categories confirmed tradeable on Warframe.market. Kept as a real allowlist (not
+/// "everything except X") so a brand-new category from a future wiki update fails
+/// closed — see `classify_category`'s tripwire test (`all_cached_categories_are_classified`)
+/// rather than silently being treated as tradeable or silently mismatched.
+const TRADEABLE_CATEGORIES: &[&str] = &[
+    "Mod",
+    "Arcane",
+    "Blueprint",
+    "Resource",
+    "Weapon",
+    "Item",
+    "Key",
+    "Relic",
+    "Gear",
+    "Ayatan Sculpture",
+    "Riven",
+    "Riven Mod",
+    "Captura Scene",
+];
+
+/// Categories seen in the wiki dump that are known and explicitly *not* tradeable.
+/// Listed out (rather than inferred by "not in the allowlist") so `classify_category`
+/// can distinguish "known and excluded" from "never triaged" — only the latter is the
+/// tripwire case.
+const NON_TRADEABLE_CATEGORIES: &[&str] = &[
+    "Sigil",
+    "Glyph",
+    "Decoration",
+    "Emblem",
+    "Color",
+    "Somachord",
+    "Signa",
+    "Sugatra",
+    "Syandana",
+    "Emote",
+    "Scene",
+];
+
+/// Whether `category` (already run through `normalize_category`) is tradeable on WFM.
+#[must_use]
+pub fn is_tradeable_category(category: &str) -> bool {
+    TRADEABLE_CATEGORIES.contains(&category)
+}
+
+/// Result of triaging a category against the D1 allow/deny lists. `Unknown` is the
+/// tripwire case — a category the wiki dump contains that hasn't been explicitly
+/// sorted into either list yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CategoryClass {
+    Tradeable,
+    NonTradeable,
+    Unknown,
+}
+
+#[must_use]
+pub fn classify_category(category: &str) -> CategoryClass {
+    if TRADEABLE_CATEGORIES.contains(&category) {
+        CategoryClass::Tradeable
+    } else if NON_TRADEABLE_CATEGORIES.contains(&category) {
+        CategoryClass::NonTradeable
+    } else {
+        CategoryClass::Unknown
+    }
+}
+
+// ---- D2: item name normalizer ----
+
+/// If `s` starts with an `x`/`X`, returns the remainder of the string after it;
+/// otherwise `None`. Helper for `normalize_item_name`.
+fn strip_x_prefix(s: &str) -> Option<&str> {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some('x' | 'X') => Some(chars.as_str()),
+        _ => None,
+    }
+}
+
+/// Strips a yield-multiplier token (`"x10"`, `"(x20)"`, `"X 10"`) out of a raw vendor
+/// offering name so it matches WFM's plain `"<Name> Blueprint"` listing. This only
+/// handles multiplier removal — `mapping::find_wfm_match`'s lowercase/"set"-suffix
+/// normalization still runs downstream on the result, so the two aren't duplicated.
+#[must_use]
+pub fn normalize_item_name(raw: &str) -> String {
+    let words: Vec<&str> = raw.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        let word = words[i];
+        let core = word.trim_start_matches('(');
+        if let Some(rest) = strip_x_prefix(core) {
+            let rest_trimmed = rest.trim_end_matches(')');
+            if rest_trimmed.is_empty() {
+                // Bare "x"/"X" (optionally "(x") — the count may be the next word,
+                // e.g. "Vapor Specter X 10 Blueprint".
+                if let Some(next) = words.get(i + 1) {
+                    let next_core = next.trim_end_matches(')');
+                    if !next_core.is_empty() && next_core.chars().all(|c| c.is_ascii_digit()) {
+                        i += 2; // consume both the "x"/"X" token and the count
+                        continue;
+                    }
+                }
+                out.push(word.to_string());
+            } else if rest_trimmed.chars().all(|c| c.is_ascii_digit()) {
+                // Self-contained multiplier token: "x10", "(x20)", "x20)".
+                i += 1;
+                continue;
+            } else {
+                // Starts with x/X but isn't a multiplier (e.g. "Xoris") — keep as-is.
+                out.push(word.to_string());
+            }
+        } else {
+            out.push(word.to_string());
+        }
+        i += 1;
+    }
+    out.join(" ")
+}
+
+// ---- D3: slug matcher + rank targeting ----
+
+/// `Some(0)` for categories where the vendor always sells the unranked/base copy
+/// (Mod, Arcane); `None` for everything else, per the plan.
+#[must_use]
+fn target_rank_for(category: &str) -> Option<u32> {
+    match category {
+        "Mod" | "Arcane" => Some(0),
+        _ => None,
+    }
+}
+
+/// A `RawOffering` combined with its `vendors.toml` overlay context and WFM match
+/// result — the per-offering row of `cache/vendors_cache.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MappedOffering {
+    pub name: String,
+    pub category: String,
+    pub price: PriceSpec,
+    pub qty: u32,
+    pub prereq: Option<PrereqSpec>,
+    pub timer: Option<u64>,
+    pub limit: Option<u32>,
+    /// `None` (with `unmatched_reason` set) if the category isn't tradeable or no WFM
+    /// item name matched.
+    pub wfm_slug: Option<String>,
+    pub target_rank: Option<u32>,
+    pub unmatched_reason: Option<String>,
+}
+
+/// A `RawVendor` combined with its `vendors.toml` metadata overlay and mapped
+/// offerings — the per-vendor row of `cache/vendors_cache.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MappedVendor {
+    pub key: String,
+    pub name: String,
+    pub currency: CurrencySpec,
+    pub location: Option<String>,
+    pub group: Option<String>,
+    pub excluded: bool,
+    pub cost_mode: CostMode,
+    pub hand_curated: bool,
+    pub offerings: Vec<MappedOffering>,
+}
+
+/// Attempts to resolve a raw offering's WFM slug via the existing
+/// `mapping::find_wfm_match` lookup, after stripping any yield multiplier (D2).
+fn match_offering(
+    offering: &RawOffering,
+    wfm_by_name: &std::collections::HashMap<String, crate::models::WfmItem>,
+) -> (Option<String>, Option<String>) {
+    let normalized = normalize_item_name(&offering.name);
+    match crate::mapping::find_wfm_match(&normalized, wfm_by_name) {
+        Some(item) => (Some(item.slug.clone()), None),
+        None => (None, Some(format!("no WFM match for '{normalized}'"))),
+    }
+}
+
+/// D3: builds the processed vendor cache — raw offerings + `vendors.toml` overlay +
+/// matched WFM slug (or `None` + reason if unmatched) — and writes it to
+/// `cache/vendors_cache.json`.
+///
+/// # Errors
+/// Returns an error if the raw vendor cache, `vendors.toml`, or the WFM lookup tables
+/// can't be loaded, or if the resulting cache can't be serialized/written.
+pub fn build_and_write_vendor_cache() -> Result<Vec<MappedVendor>, Box<dyn Error>> {
+    let raw_vendors = load_vendor_data()?;
+    let meta = load_vendor_metadata()?;
+    let (_, _, wfm_by_name, _) = crate::mapping::load_lookup_tables()?;
+
+    let mapped: Vec<MappedVendor> = raw_vendors
+        .into_iter()
+        .map(|v| {
+            let m = meta.get(&v.key).cloned().unwrap_or_default();
+            let offerings = v
+                .offerings
+                .into_iter()
+                .map(|o| {
+                    let (slug, reason) = if is_tradeable_category(&o.category) {
+                        match_offering(&o, &wfm_by_name)
+                    } else {
+                        (None, Some(format!("category '{}' not tradeable", o.category)))
+                    };
+                    MappedOffering {
+                        target_rank: target_rank_for(&o.category),
+                        name: o.name,
+                        category: o.category,
+                        price: o.price,
+                        qty: o.qty,
+                        prereq: o.prereq,
+                        timer: o.timer,
+                        limit: o.limit,
+                        wfm_slug: slug,
+                        unmatched_reason: reason,
+                    }
+                })
+                .collect();
+            MappedVendor {
+                key: v.key,
+                name: v.name,
+                currency: v.currency,
+                location: m.location,
+                group: m.group,
+                excluded: m.excluded,
+                cost_mode: m.cost_mode,
+                hand_curated: m.hand_curated,
+                offerings,
+            }
+        })
+        .collect();
+
+    let json = serde_json::to_string_pretty(&mapped)?;
+    fs::write(config::VENDORS_CACHE_FILE, json)?;
+    Ok(mapped)
+}
+
+// ---- D4: match-coverage report ----
+
+/// Per-vendor match statistics for `vendor --match-report`.
+#[derive(Debug, Clone)]
+pub struct VendorMatchStats {
+    pub key: String,
+    pub total_offerings: usize,
+    pub tradeable_count: usize,
+    pub matched_count: usize,
+    /// Names of offerings that were in a tradeable category but didn't resolve to a
+    /// WFM slug.
+    pub unmatched: Vec<String>,
+}
+
+#[must_use]
+pub fn compute_match_stats(vendors: &[MappedVendor]) -> Vec<VendorMatchStats> {
+    vendors
+        .iter()
+        .map(|v| {
+            let total_offerings = v.offerings.len();
+            let tradeable: Vec<&MappedOffering> = v
+                .offerings
+                .iter()
+                .filter(|o| is_tradeable_category(&o.category))
+                .collect();
+            let matched_count = tradeable.iter().filter(|o| o.wfm_slug.is_some()).count();
+            let unmatched = tradeable
+                .iter()
+                .filter(|o| o.wfm_slug.is_none())
+                .map(|o| o.name.clone())
+                .collect();
+            VendorMatchStats {
+                key: v.key.clone(),
+                total_offerings,
+                tradeable_count: tradeable.len(),
+                matched_count,
+                unmatched,
+            }
+        })
+        .collect()
+}
+
+/// Prints the D4 match-coverage report: per vendor, total / tradeable / matched /
+/// unmatched counts, plus the unmatched item names. Internally,
+/// `matched + unmatched + skipped-by-category == total` always holds by construction
+/// (asserted below in debug builds) since every offering falls into exactly one of
+/// those three buckets.
+pub fn print_match_report(vendors: &[MappedVendor]) {
+    let stats = compute_match_stats(vendors);
+    println!(
+        "{:<28} {:>6} {:>10} {:>8} {:>10}",
+        "Vendor", "Total", "Tradeable", "Matched", "Unmatched"
+    );
+    for s in &stats {
+        let unmatched_count = s.unmatched.len();
+        let skipped = s.total_offerings - s.tradeable_count;
+        debug_assert_eq!(s.matched_count + unmatched_count + skipped, s.total_offerings);
+        println!(
+            "{:<28} {:>6} {:>10} {:>8} {:>10}",
+            s.key, s.total_offerings, s.tradeable_count, s.matched_count, unmatched_count
+        );
+        for name in &s.unmatched {
+            println!("    unmatched: {name}");
+        }
+    }
 }
 
 // ---- Revid caching ----
@@ -1528,6 +1833,170 @@ hand_curated = true
         // hand_curated
         let marie = meta.get("Marie").expect("Marie missing");
         assert!(marie.hand_curated);
+    }
+}
+
+#[cfg(test)]
+mod category_tests {
+    use super::*;
+
+    #[test]
+    fn classify_category_known_cases() {
+        assert_eq!(classify_category("Mod"), CategoryClass::Tradeable);
+        assert_eq!(classify_category("Captura Scene"), CategoryClass::Tradeable);
+        assert_eq!(classify_category("Sigil"), CategoryClass::NonTradeable);
+        assert_eq!(classify_category("Scene"), CategoryClass::NonTradeable);
+        assert_eq!(classify_category("SomeBrandNewCategory"), CategoryClass::Unknown);
+    }
+
+    #[test]
+    fn is_tradeable_category_matches_classify() {
+        assert!(is_tradeable_category("Weapon"));
+        assert!(!is_tradeable_category("Glyph"));
+        assert!(!is_tradeable_category("SomeBrandNewCategory"));
+    }
+
+    /// D1 tripwire: every category seen across the real vendor cache must be
+    /// explicitly triaged into `TRADEABLE_CATEGORIES` or `NON_TRADEABLE_CATEGORIES`.
+    /// Same pattern as C2's `all_cached_vendors_have_toml_entry` — fails loudly when a
+    /// wiki update introduces a category nobody's looked at yet.
+    #[test]
+    fn all_cached_categories_are_classified() {
+        let cache_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
+        if !cache_path.exists() {
+            eprintln!("Skipping category tripwire – cache file not found.");
+            return;
+        }
+        let vendors = load_vendor_data().expect("Failed to load vendor data");
+        let mut unknown: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for v in &vendors {
+            for o in &v.offerings {
+                if classify_category(&o.category) == CategoryClass::Unknown {
+                    unknown.insert(o.category.clone());
+                }
+            }
+        }
+        assert!(
+            unknown.is_empty(),
+            "Unclassified categories found in vendor cache — triage into \
+             TRADEABLE_CATEGORIES or NON_TRADEABLE_CATEGORIES in vendor.rs:\n  {}",
+            unknown.into_iter().collect::<Vec<_>>().join("\n  ")
+        );
+    }
+}
+
+#[cfg(test)]
+mod name_normalizer_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_item_name_strips_yield_multipliers() {
+        let cases = [
+            ("Tear Azurite x10 Blueprint", "Tear Azurite Blueprint"),
+            ("Fosfor Blau (x20) Blueprint", "Fosfor Blau Blueprint"),
+            ("Vapor Specter X 10 Blueprint", "Vapor Specter Blueprint"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_item_name(input), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn normalize_item_name_leaves_ordinary_names_alone() {
+        assert_eq!(normalize_item_name("Orokin Reactor"), "Orokin Reactor");
+        // Starts with "X" but isn't a multiplier — must not be mangled.
+        assert_eq!(normalize_item_name("Xoris Blueprint"), "Xoris Blueprint");
+    }
+}
+
+#[cfg(test)]
+mod slug_matching_tests {
+    use super::*;
+
+    /// D3 spot-check: run the real caches through `build_and_write_vendor_cache` and
+    /// confirm a known item resolves. Skips (rather than fails) if the caches this
+    /// depends on haven't been generated yet — same convention as the other
+    /// cache-dependent integration tests in this file.
+    #[test]
+    fn build_vendor_cache_resolves_known_item() {
+        let raw_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
+        let wfm_path = std::path::Path::new(config::WFM_CACHE_FILE);
+        let wfcd_path = std::path::Path::new(config::WFCD_CACHE_FILE);
+        if !raw_path.exists() || !wfm_path.exists() || !wfcd_path.exists() {
+            eprintln!("Skipping D3 spot-check – caches not present. Run update-caches first.");
+            return;
+        }
+        let mapped = build_and_write_vendor_cache().expect("failed to build vendor cache");
+
+        let acrithis = mapped
+            .iter()
+            .find(|v| v.key == "Acrithis")
+            .expect("Acrithis missing from mapped vendor cache");
+        let reactor = acrithis
+            .offerings
+            .iter()
+            .find(|o| o.name == "Orokin Reactor")
+            .expect("Orokin Reactor offering missing from Acrithis");
+        assert!(
+            reactor.wfm_slug.is_some(),
+            "Orokin Reactor should resolve to a WFM slug, got unmatched_reason: {:?}",
+            reactor.unmatched_reason
+        );
+    }
+}
+
+#[cfg(test)]
+mod match_report_tests {
+    use super::*;
+
+    fn offering(name: &str, category: &str, slug: Option<&str>) -> MappedOffering {
+        MappedOffering {
+            name: name.to_string(),
+            category: category.to_string(),
+            price: PriceSpec::Single("Credits".to_string(), 100.0),
+            qty: 1,
+            prereq: None,
+            timer: None,
+            limit: None,
+            wfm_slug: slug.map(str::to_string),
+            target_rank: target_rank_for(category),
+            unmatched_reason: if slug.is_some() {
+                None
+            } else {
+                Some("test".to_string())
+            },
+        }
+    }
+
+    #[test]
+    fn compute_match_stats_totals_reconcile() {
+        let vendors = vec![MappedVendor {
+            key: "Test".to_string(),
+            name: "Test".to_string(),
+            currency: CurrencySpec::One("Credits".to_string()),
+            location: None,
+            group: None,
+            excluded: false,
+            cost_mode: CostMode::Single,
+            hand_curated: false,
+            offerings: vec![
+                offering("A", "Mod", Some("a_slug")),
+                offering("B", "Mod", None),
+                offering("C", "Sigil", None),
+            ],
+        }];
+
+        let stats = compute_match_stats(&vendors);
+        assert_eq!(stats.len(), 1);
+        let s = &stats[0];
+        assert_eq!(s.total_offerings, 3);
+        assert_eq!(s.tradeable_count, 2); // Mod, Mod (Sigil is skipped-by-category)
+        assert_eq!(s.matched_count, 1);
+        assert_eq!(s.unmatched, vec!["B".to_string()]);
+
+        // Matched + unmatched + skipped-by-category == total.
+        let skipped = s.total_offerings - s.tradeable_count;
+        assert_eq!(s.matched_count + s.unmatched.len() + skipped, s.total_offerings);
     }
 }
 

@@ -400,7 +400,7 @@ async fn fetch_full_item(
     Ok(parsed.data)
 }
 
-fn find_wfm_match<'a>(
+pub(crate) fn find_wfm_match<'a>(
     name: &str,
     wfm_by_name: &'a HashMap<String, WfmItem>,
 ) -> Option<&'a WfmItem> {
