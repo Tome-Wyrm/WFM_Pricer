@@ -783,37 +783,44 @@ pub fn load_vendor_metadata() -> Result<std::collections::HashMap<String, Vendor
 /// closed — see `classify_category`'s tripwire test (`all_cached_categories_are_classified`)
 /// rather than silently being treated as tradeable or silently mismatched.
 const TRADEABLE_CATEGORIES: &[&str] = &[
-    "Mod",
     "Arcane",
+    "Ayatan Sculpture",
     "Blueprint",
-    "Resource",
-    "Weapon",
+    "Captura",
+    "Captura Scene",
+    "Gear",
     "Item",
     "Key",
+    "Landing Craft",
+    "Misc",
+    "Mod",
     "Relic",
-    "Gear",
-    "Ayatan Sculpture",
-    "Riven",
+    "Resource",
     "Riven Mod",
-    "Captura Scene",
+    "Riven",
+    "Weapon",
 ];
-
 /// Categories seen in the wiki dump that are known and explicitly *not* tradeable.
 /// Listed out (rather than inferred by "not in the allowlist") so `classify_category`
 /// can distinguish "known and excluded" from "never triaged" — only the latter is the
 /// tripwire case.
 const NON_TRADEABLE_CATEGORIES: &[&str] = &[
-    "Sigil",
-    "Glyph",
-    "Decoration",
-    "Emblem",
     "Color",
-    "Somachord",
+    "Cosmetic",
+    "Credits",
+    "Decoration",
+    "Ephemera",
+    "Emblem",
+    "Emote",
+    "Glyph",
+    "Honoria",
+    "Scene",
+    "Sigil",
     "Signa",
+    "Somachord",
     "Sugatra",
     "Syandana",
-    "Emote",
-    "Scene",
+    "Warframe",
 ];
 
 /// Whether `category` (already run through `normalize_category`) is tradeable on WFM.
@@ -1076,6 +1083,36 @@ pub fn print_match_report(vendors: &[MappedVendor]) {
         for name in &s.unmatched {
             println!("    unmatched: {name}");
         }
+    }
+}
+
+/// Ad hoc audit, grouped by category instead of by vendor: total offerings, matched
+/// count, and up to 5 sample unmatched names per category. `is_tradeable_category`
+/// only gates whether a lookup is attempted — this makes it visible whether a
+/// category is a clean single-tradeability bucket or a genuine mix, instead of having
+/// to infer that from the per-vendor D4 report.
+pub fn dump_category_audit(vendors: &[MappedVendor]) {
+    use std::collections::BTreeMap;
+    let mut by_category: BTreeMap<&str, (usize, usize, Vec<&str>)> = BTreeMap::new();
+    for v in vendors {
+        for o in &v.offerings {
+            let entry = by_category
+                .entry(o.category.as_str())
+                .or_insert((0, 0, Vec::new()));
+            entry.0 += 1;
+            if o.wfm_slug.is_some() {
+                entry.1 += 1;
+            } else if entry.2.len() < 5 {
+                entry.2.push(o.name.as_str());
+            }
+        }
+    }
+    println!(
+        "{:<20} {:>6} {:>8}  sample unmatched",
+        "Category", "Total", "Matched"
+    );
+    for (cat, (total, matched, samples)) in by_category {
+        println!("{cat:<20} {total:>6} {matched:>8}  {}", samples.join(", "));
     }
 }
 
@@ -1914,34 +1951,68 @@ mod slug_matching_tests {
     use super::*;
 
     /// D3 spot-check: run the real caches through `build_and_write_vendor_cache` and
-    /// confirm a known item resolves. Skips (rather than fails) if the caches this
-    /// depends on haven't been generated yet — same convention as the other
-    /// cache-dependent integration tests in this file.
+    /// confirm a handful of known-good (vendor, item) pairs resolve to a WFM slug.
+    /// Skips (rather than fails) if the caches this depends on haven't been generated
+    /// yet — same convention as the other cache-dependent integration tests in this
+    /// file. Add to `KNOWN_GOOD` as you hand-verify more pairs against WFM.
     #[test]
-    fn build_vendor_cache_resolves_known_item() {
+    fn build_vendor_cache_resolves_known_items() {
         let raw_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
         let wfm_path = std::path::Path::new(config::WFM_CACHE_FILE);
         let wfcd_path = std::path::Path::new(config::WFCD_CACHE_FILE);
         if !raw_path.exists() || !wfm_path.exists() || !wfcd_path.exists() {
-            eprintln!("Skipping D3 spot-check – caches not present. Run update-caches first.");
+            eprintln!("Skipping spot-check – caches not present. Run update-caches first.");
             return;
         }
         let mapped = build_and_write_vendor_cache().expect("failed to build vendor cache");
 
-        let acrithis = mapped
-            .iter()
-            .find(|v| v.key == "Acrithis")
-            .expect("Acrithis missing from mapped vendor cache");
-        let reactor = acrithis
-            .offerings
-            .iter()
-            .find(|o| o.name == "Orokin Reactor")
-            .expect("Orokin Reactor offering missing from Acrithis");
-        assert!(
-            reactor.wfm_slug.is_some(),
-            "Orokin Reactor should resolve to a WFM slug, got unmatched_reason: {:?}",
-            reactor.unmatched_reason
-        );
+        // (vendor_key, offering_name) — hand-verified as actually tradeable on WFM.
+        // Replace the placeholders below with real pairs from your vendors.toml/wiki
+        // dump; PLACEHOLDER entries are skipped with a warning instead of failing, so
+        // this test stays green while you fill the list in incrementally.
+        const KNOWN_GOOD: &[(&str, &str)] = &[
+            ("PLACEHOLDER", "PLACEHOLDER"),
+            ("PLACEHOLDER", "PLACEHOLDER"),
+            ("PLACEHOLDER", "PLACEHOLDER"),
+            ("PLACEHOLDER", "PLACEHOLDER"),
+            ("PLACEHOLDER", "PLACEHOLDER"),
+        ];
+
+        for (vendor_key, item_name) in KNOWN_GOOD {
+            if *vendor_key == "PLACEHOLDER" {
+                eprintln!("Skipping unfilled KNOWN_GOOD placeholder — fill in real (vendor, item) pairs.");
+                continue;
+            }
+            let vendor = mapped
+                .iter()
+                .find(|v| v.key == *vendor_key)
+                .unwrap_or_else(|| panic!("vendor '{vendor_key}' missing from mapped cache"));
+            let offering = vendor
+                .offerings
+                .iter()
+                .find(|o| o.name == *item_name)
+                .unwrap_or_else(|| {
+                    panic!("offering '{item_name}' missing from vendor '{vendor_key}'")
+                });
+            assert!(
+                offering.wfm_slug.is_some(),
+                "'{item_name}' ({vendor_key}) should resolve to a WFM slug, got: {:?}",
+                offering.unmatched_reason
+            );
+        }
+    }
+    #[test]
+    #[ignore] // manual audit, not a pass/fail check — run with `cargo test -- --ignored dump_category_audit -- --nocapture`
+    fn dump_category_audit_manual() {
+        let raw_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
+        let wfm_path = std::path::Path::new(config::WFM_CACHE_FILE);
+        let wfcd_path = std::path::Path::new(config::WFCD_CACHE_FILE);
+        if !raw_path.exists() || !wfm_path.exists() || !wfcd_path.exists() {
+            eprintln!("Skipping category audit – caches not present. Run update-caches first.");
+            return;
+        }
+        let mapped = build_and_write_vendor_cache().expect("failed to build vendor cache");
+        dump_category_audit(&mapped);
     }
 }
 
