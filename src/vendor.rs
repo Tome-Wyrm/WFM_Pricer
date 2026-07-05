@@ -1882,7 +1882,7 @@ mod category_tests {
         assert_eq!(classify_category("Mod"), CategoryClass::Tradeable);
         assert_eq!(classify_category("Captura Scene"), CategoryClass::Tradeable);
         assert_eq!(classify_category("Sigil"), CategoryClass::NonTradeable);
-        assert_eq!(classify_category("Scene"), CategoryClass::NonTradeable);
+        assert_eq!(classify_category("Glyph"), CategoryClass::NonTradeable);
         assert_eq!(classify_category("SomeBrandNewCategory"), CategoryClass::Unknown);
     }
 
