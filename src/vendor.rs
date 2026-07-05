@@ -786,18 +786,18 @@ const TRADEABLE_CATEGORIES: &[&str] = &[
     "Arcane",
     "Ayatan Sculpture",
     "Blueprint",
-    "Captura",
     "Captura Scene",
-    "Gear",
+    "Captura",
+    "Cosmetic",
+    "Emote",
     "Item",
     "Key",
-    "Landing Craft",
-    "Misc",
     "Mod",
     "Relic",
     "Resource",
     "Riven Mod",
     "Riven",
+    "Scene",
     "Weapon",
 ];
 /// Categories seen in the wiki dump that are known and explicitly *not* tradeable.
@@ -806,15 +806,15 @@ const TRADEABLE_CATEGORIES: &[&str] = &[
 /// tripwire case.
 const NON_TRADEABLE_CATEGORIES: &[&str] = &[
     "Color",
-    "Cosmetic",
     "Credits",
     "Decoration",
-    "Ephemera",
     "Emblem",
-    "Emote",
+    "Ephemera",
+    "Gear",
     "Glyph",
     "Honoria",
-    "Scene",
+    "Landing Craft",
+    "Misc",
     "Sigil",
     "Signa",
     "Somachord",
@@ -1975,7 +1975,7 @@ mod slug_matching_tests {
             ("Eleanor", "Primary Crux"),
             ("Arbiters of Hexis", "Decurion Barrel"),
             ("Steel Meridian", "Grineer Asteroid Simulacrum"),
-            ("Hunhow", "Pontis Tower Scene"),
+            ("Palladino", "Requiem I Relic"),
         ];
 
         for (vendor_key, item_name) in KNOWN_GOOD {
