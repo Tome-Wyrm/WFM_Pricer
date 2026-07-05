@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use tokio::time::{sleep, Duration};
 use crate::wfm_client::{WfmClient, Credentials, CreateOrder, UpdateOrder, Order as OwnedOrder};
-use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE};
+use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE, MIN_DAILY_VOLUME};
 use crate::mapping::{BuildParentMap, BuildRequirements, BuildStatus, get_build_status, resolve_set_item};
 use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig, WfcdItem, WfmItem, WfmStatsResponse};
 use crate::pricing::{
@@ -18,13 +18,6 @@ use crate::pricing::{
 /// triggering a re-prompt every run over noise (e.g. 41.3p -> 41.7p). Tune as needed —
 /// percentage with a 1-plat floor so cheap items (1-2p Ayatan stars) aren't hypersensitive.
 const PRICE_TOLERANCE_PCT: f64 = 0.03;
-/// Minimum average daily trade volume (trailing 30 days) for a mod or arcane to be worth a
-/// listing slot. Calibrated against real WFM data (see `tests/fixtures/test_statistics` manifest):
-/// every confirmed-junk sample (common ubiquitous mods, an unused eidolon arcane) topped out
-/// at 3.1/day; every confirmed-real-demand sample, including the weakest one tested, started
-/// at 24.2/day. This sits in that gap. Applies identically at every rank — junk stays junk and
-/// real demand clears the bar at both unranked and maxed; no rank-specific adjustment needed.
-pub(crate) const MIN_DAILY_VOLUME_FOR_MOD_ARCANE: f64 = 9.0;
 /// If a single required component's own market price exceeds this fraction of the assembled
 /// Set's own market price, sell that component standalone instead of folding it into the Set
 /// bundle — otherwise you're giving away a disproportionately valuable part inside a cheaper
@@ -544,7 +537,7 @@ async fn build_priced_candidates<S: StatsSource>(
         // ---- Demand floor for mods/arcanes ----
         if item.is_mod || item.is_arcane {
             let vol_per_day = f64::from(vol_30d) / 30.0;
-            if vol_per_day < MIN_DAILY_VOLUME_FOR_MOD_ARCANE {
+            if vol_per_day < MIN_DAILY_VOLUME {
                 continue; // below demand floor, skip entirely
             }
         }
@@ -713,7 +706,7 @@ mod build_priced_candidates_tests {
 
     #[tokio::test]
     async fn low_volume_mod_is_filtered_before_reaching_the_upgrade_check() {
-        // Below MIN_DAILY_VOLUME_FOR_MOD_ARCANE — should be skipped by the demand floor before
+        // Below config::MIN_DAILY_VOLUME — should be skipped by the demand floor before
         // the upgrade-suggestion block ever runs, even though it would otherwise qualify.
         let candidate = unranked_mod_candidate("illiquid_mod", 10);
 
@@ -1451,15 +1444,15 @@ mod threshold_calibration_tests {
             ("primary_merciless", 5),
         ];
 
-        // Import the constant from cli
-        use crate::cli::MIN_DAILY_VOLUME_FOR_MOD_ARCANE;
+        // Now lives in config.rs — applied universally as of vendor-rank Phase F.
+        use crate::config::MIN_DAILY_VOLUME;
 
         for (slug, rank) in junk_cases {
             let stats = load_fixture(slug);
             let (vol, _) = recent_volume(&stats, Some(rank), 30);
             let per_day = f64::from(vol) / 30.0;
             assert!(
-                per_day < MIN_DAILY_VOLUME_FOR_MOD_ARCANE,
+                per_day < MIN_DAILY_VOLUME,
                 "{slug} r{rank} should read as junk, got {per_day:.2}/day"
             );
         }
@@ -1469,7 +1462,7 @@ mod threshold_calibration_tests {
             let (vol, _) = recent_volume(&stats, Some(rank), 30);
             let per_day = f64::from(vol) / 30.0;
             assert!(
-                per_day >= MIN_DAILY_VOLUME_FOR_MOD_ARCANE,
+                per_day >= MIN_DAILY_VOLUME,
                 "{slug} r{rank} should clear the demand floor, got {per_day:.2}/day"
             );
         }
