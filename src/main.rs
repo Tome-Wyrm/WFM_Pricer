@@ -13,8 +13,52 @@ pub mod pricing;
 pub mod vendor;
 pub mod wfm_client;
 
+use clap::{Parser, Subcommand};
 use std::error::Error;
 use std::path::{Path, PathBuf};
+
+/// `wfm-pricer` — Warframe.Market pricing/inventory advisor, plus the `vendor` command
+/// for ranking vendor offerings by plat-efficiency.
+#[derive(Parser, Debug)]
+#[command(name = "wfm-pricer", version, about, long_about = None)]
+struct Cli {
+    /// Override the inventory file path (defaults to `inventory.json`, falling back
+    /// to the AlecaFrame `lastData.dat` location). Applies to the default pipeline
+    /// only; ignored by `vendor` / `update-caches`.
+    #[arg(short, long, global = true)]
+    inventory: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Rank vendor offerings by plat-efficiency for a location/vendor, or the whole
+    /// wiki dump's match-coverage.
+    Vendor {
+        /// Nav-tree path (e.g. `Misc/Zariman/Cavalero`), case-insensitive. Omit for
+        /// the interactive picker.
+        path: Option<String>,
+        /// Print the D4 WFM-match-coverage report instead of ranking anything.
+        #[arg(long)]
+        match_report: bool,
+        /// Write the ranked table to `vendor_rankings.json` in the project root.
+        #[arg(long)]
+        write_json: bool,
+        /// Drop offerings whose saturation ratio exceeds this value. Unset = no
+        /// filtering (saturation is always shown, just not enforced).
+        #[arg(long)]
+        max_saturation: Option<f64>,
+    },
+    /// Refresh all caches (including vendor data) and exit — no inventory ingestion,
+    /// no WFM login, no interactive loop. Safe to run from cron/Task Scheduler with
+    /// no `.env` configured.
+    UpdateCaches,
+    /// Run the `--debug-mastery` checklist report (reads
+    /// `config/mastery_checklist.txt`) and exit.
+    DebugMastery,
+}
 
 fn is_eligible_for_mastery_checklist(unique_name: &str) -> bool {
     !unique_name.starts_with("SolNode")
@@ -149,20 +193,26 @@ fn run_debug_mastery_checklist(
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    dotenvy::dotenv().ok();
-
-    // Ensure config directories exist
-    std::fs::create_dir_all(config::CONFIG_DIR)?;
-    std::fs::create_dir_all(config::CACHE_DIR)?;
-    std::fs::create_dir_all(config::STATISTICS_DIR)?;
-
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|arg| arg == "--vendor") {
-        return vendor::run_vendor_cli().await;
+/// Resolves the inventory file to ingest: an explicit `--inventory` override, else
+/// `inventory.json` in the cwd if present, else the AlecaFrame `lastData.dat` fallback.
+fn resolve_inventory_path(override_path: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>> {
+    if let Some(p) = override_path {
+        println!("Using --inventory override: {}", p.display());
+        return Ok(p);
     }
+    if Path::new("inventory.json").exists() {
+        println!("Found inventory.json, using it directly.");
+        return Ok(PathBuf::from("inventory.json"));
+    }
+    println!("inventory.json not found, falling back to AlecaFrame lastData.dat");
+    Ok(ingestion::get_inventory_path()?)
+}
 
+/// Runs today's full default pipeline (cache update → ingest → map → build/mastery
+/// load → optional debug-mastery report → interactive CLI). Unchanged behavior from
+/// before the Phase G clap migration, aside from `inventory_override` replacing the
+/// old `inventory.json`-or-bust check.
+async fn run_default_pipeline(inventory_override: Option<PathBuf>, debug_mastery: bool) -> Result<(), Box<dyn Error>> {
     println!("--- WFM Pricer System Startup ---");
 
     // 1. Update caches (fail fast if this doesn't work)
@@ -170,14 +220,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // 2. Ingest inventory
     println!("Ingesting inventory...");
-    let inventory_path = if Path::new("inventory.json").exists() {
-        println!("Found inventory.json, using it directly.");
-        PathBuf::from("inventory.json")
-    } else {
-        println!("inventory.json not found, falling back to AlecaFrame lastData.dat");
-        ingestion::get_inventory_path()?
-    };
-
+    let inventory_path = resolve_inventory_path(inventory_override)?;
     let inventory = ingestion::ingest_inventory(&inventory_path)?;
 
     // 3. Map inventory to WFM items
@@ -192,10 +235,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (mastered_set, owned_built_set, frame_tier_uniques) = mapping::load_mastery_and_ownership(&inventory, &wfcd_by_ref);
 
     println!("Successfully mapped {} items!", mapped.len());
-
-    // Parse command line args for --debug-mastery
-    let args: Vec<String> = std::env::args().collect();
-    let debug_mastery = args.iter().any(|arg| arg == "--debug-mastery");
 
     if debug_mastery {
         run_debug_mastery_checklist(&inventory, &wfcd_by_ref, &wfm_by_ref, &wfm_by_name, &mastered_set, &frame_tier_uniques)?;
@@ -215,6 +254,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .map_err(|e| e as Box<dyn Error>)?;
 
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    dotenvy::dotenv().ok();
+
+    // Ensure config directories exist
+    std::fs::create_dir_all(config::CONFIG_DIR)?;
+    std::fs::create_dir_all(config::CACHE_DIR)?;
+    std::fs::create_dir_all(config::STATISTICS_DIR)?;
+
+    let cli_args = Cli::parse();
+
+    match cli_args.command {
+        Some(Commands::Vendor { path, match_report, write_json, max_saturation }) => {
+            vendor::run_vendor_cli(path.as_deref(), match_report, write_json, max_saturation).await
+        }
+        Some(Commands::UpdateCaches) => mapping::update_caches().await,
+        Some(Commands::DebugMastery) => run_default_pipeline(cli_args.inventory, true).await,
+        None => run_default_pipeline(cli_args.inventory, false).await,
+    }
 }
 
 #[cfg(test)]

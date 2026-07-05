@@ -185,13 +185,13 @@ fn ayatan_max_stars(slug: &str) -> (u8, u8) {
     }
 }
 
-fn print_header(title: &str) {
+pub(crate) fn print_header(title: &str) {
     println!("\x1B[1;36m================================================================================\x1B[0m");
     println!("\x1B[1;35m   {}   \x1B[0m", title.to_uppercase());
     println!("\x1B[1;36m================================================================================\x1B[0m");
 }
 
-fn print_info(label: &str, value: &str) {
+pub(crate) fn print_info(label: &str, value: &str) {
     println!("\x1B[1;34m  {label:<25}\x1B[0m : \x1B[32m{value}\x1B[0m");
 }
 
