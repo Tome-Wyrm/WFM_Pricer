@@ -1116,6 +1116,133 @@ pub fn dump_category_audit(vendors: &[MappedVendor]) {
     }
 }
 
+// ================== Phase E: Cost model & multi-currency classification ==================
+
+// ---- E1: Cost type ----
+
+/// The classified cost of a single offering, derived from its `PriceSpec` (Phase A3)
+/// plus the owning vendor's `cost_mode` (Phase C). `Unclassified` is the tripwire case:
+/// a multi-currency `PriceSpec::Multi` whose vendor has no `cost_mode` override. Those
+/// are deliberately *not* guessed at — they're excluded from scoring and surfaced in
+/// the "needs classification" list alongside the match-coverage report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Cost {
+    Single(String, f64),
+    AnyOf(Vec<(String, f64)>),
+    AllOf(Vec<(String, f64)>),
+    Unclassified(Vec<(String, f64)>),
+}
+
+/// Builds a `Cost` from an offering's `PriceSpec` and its vendor's `cost_mode`.
+/// `PriceSpec::Single` always classifies as `Cost::Single` regardless of `cost_mode`.
+/// `PriceSpec::Multi` maps to `AnyOf`/`AllOf` per the vendor's declared mode, or
+/// `Unclassified` if the vendor never declared one — this function refuses to guess.
+#[must_use]
+pub fn classify_cost(price: &PriceSpec, cost_mode: &CostMode) -> Cost {
+    match price {
+        PriceSpec::Single(cur, amt) => Cost::Single(cur.clone(), *amt),
+        PriceSpec::Multi(pairs) => match cost_mode {
+            CostMode::AnyOf => Cost::AnyOf(pairs.clone()),
+            CostMode::AllOf => Cost::AllOf(pairs.clone()),
+            CostMode::Single => Cost::Unclassified(pairs.clone()),
+        },
+    }
+}
+
+/// Convenience wrapper: classifies every offering on a `MappedVendor`, pairing each
+/// with its `Cost` for downstream scoring/reporting.
+#[must_use]
+pub fn classify_vendor_offerings(vendor: &MappedVendor) -> Vec<(&MappedOffering, Cost)> {
+    vendor
+        .offerings
+        .iter()
+        .map(|o| (o, classify_cost(&o.price, &vendor.cost_mode)))
+        .collect()
+}
+
+/// Names of offerings across all vendors whose `Cost` came out `Unclassified` — the
+/// "needs classification" list to surface alongside the match-coverage report (D4).
+#[must_use]
+pub fn unclassified_offerings(vendors: &[MappedVendor]) -> Vec<(String, String)> {
+    vendors
+        .iter()
+        .flat_map(|v| {
+            classify_vendor_offerings(v)
+                .into_iter()
+                .filter(|(_, cost)| matches!(cost, Cost::Unclassified(_)))
+                .map(|(o, _)| (v.key.clone(), o.name.clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+// ---- E2: Scoring against Cost ----
+
+/// One row of the eventual ranking table: a single (currency, score) pairing for an
+/// offering, or a note in place of a score when a clean per-currency score isn't
+/// meaningful (the `AllOf` case).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CostRow {
+    pub currency: String,
+    pub amount: f64,
+    /// `weighted_avg_price / amount`. `None` when `note` is set instead (AllOf).
+    pub score: Option<f64>,
+    /// Set for `AllOf` rows: "also requires: X amount of Y" for every *other*
+    /// currency required alongside this row's own.
+    pub note: Option<String>,
+}
+
+/// Expands a `Cost` into its `CostRow`s given a plat price for the item being bought.
+/// - `Single`/`AnyOf`: one row per currency, each with a clean `score`.
+/// - `AllOf`: one row per currency too (so the offering still shows up under every
+///   currency's table), but with a `note` instead of a score — since the currencies
+///   aren't fungible with each other, there's no honest single number to rank by
+///   across vendors; manufacturing one would only make sense if the buyer already
+///   has surplus of every required currency, which isn't a safe assumption.
+/// - `Unclassified`: no rows — excluded from scoring entirely (E1).
+#[must_use]
+pub fn cost_rows(cost: &Cost, weighted_avg_price: f64) -> Vec<CostRow> {
+    match cost {
+        Cost::Single(cur, amt) => vec![CostRow {
+            currency: cur.clone(),
+            amount: *amt,
+            score: Some(weighted_avg_price / amt),
+            note: None,
+        }],
+        Cost::AnyOf(pairs) => pairs
+            .iter()
+            .map(|(cur, amt)| CostRow {
+                currency: cur.clone(),
+                amount: *amt,
+                score: Some(weighted_avg_price / amt),
+                note: None,
+            })
+            .collect(),
+        Cost::AllOf(pairs) => pairs
+            .iter()
+            .map(|(cur, amt)| {
+                let others: Vec<String> = pairs
+                    .iter()
+                    .filter(|(c, _)| c != cur)
+                    .map(|(c, a)| format!("{a} {c}"))
+                    .collect();
+                let note = if others.is_empty() {
+                    None
+                } else {
+                    Some(format!("also requires: {}", others.join(", ")))
+                };
+                CostRow {
+                    currency: cur.clone(),
+                    amount: *amt,
+                    score: None,
+                    note,
+                }
+            })
+            .collect(),
+        Cost::Unclassified(_) => Vec::new(),
+    }
+}
+
 // ---- Revid caching ----
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2068,6 +2195,151 @@ mod match_report_tests {
         // Matched + unmatched + skipped-by-category == total.
         let skipped = s.total_offerings - s.tradeable_count;
         assert_eq!(s.matched_count + s.unmatched.len() + skipped, s.total_offerings);
+    }
+}
+
+#[cfg(test)]
+mod cost_model_tests {
+    use super::*;
+
+    // ---- E1: classify_cost ----
+
+    #[test]
+    fn single_currency_price_classifies_as_single_regardless_of_cost_mode() {
+        let price = PriceSpec::Single("Credits".to_string(), 5000.0);
+        assert_eq!(
+            classify_cost(&price, &CostMode::Single),
+            Cost::Single("Credits".to_string(), 5000.0)
+        );
+        assert_eq!(
+            classify_cost(&price, &CostMode::AllOf),
+            Cost::Single("Credits".to_string(), 5000.0)
+        );
+    }
+
+    #[test]
+    fn unearth_citrine_style_multi_price_classifies_as_all_of() {
+        let price = PriceSpec::Multi(vec![
+            ("Entrati Standing".to_string(), 5000.0),
+            ("Credits".to_string(), 10000.0),
+        ]);
+        let cost = classify_cost(&price, &CostMode::AllOf);
+        assert_eq!(
+            cost,
+            Cost::AllOf(vec![
+                ("Entrati Standing".to_string(), 5000.0),
+                ("Credits".to_string(), 10000.0),
+            ])
+        );
+    }
+
+    #[test]
+    fn operational_supply_style_multi_price_classifies_as_any_of() {
+        let price = PriceSpec::Multi(vec![
+            ("Cetus Standing".to_string(), 2500.0),
+            ("Credits".to_string(), 5000.0),
+        ]);
+        let cost = classify_cost(&price, &CostMode::AnyOf);
+        assert_eq!(
+            cost,
+            Cost::AnyOf(vec![
+                ("Cetus Standing".to_string(), 2500.0),
+                ("Credits".to_string(), 5000.0),
+            ])
+        );
+    }
+
+    #[test]
+    fn hunhow_style_multi_price_classifies_as_all_of() {
+        let price = PriceSpec::Multi(vec![
+            ("Holdfast Standing".to_string(), 15000.0),
+            ("Credits".to_string(), 25000.0),
+        ]);
+        let cost = classify_cost(&price, &CostMode::AllOf);
+        assert_eq!(
+            cost,
+            Cost::AllOf(vec![
+                ("Holdfast Standing".to_string(), 15000.0),
+                ("Credits".to_string(), 25000.0),
+            ])
+        );
+    }
+
+    #[test]
+    fn unconfigured_multi_currency_offering_comes_out_unclassified() {
+        let price = PriceSpec::Multi(vec![
+            ("Some Standing".to_string(), 1000.0),
+            ("Credits".to_string(), 2000.0),
+        ]);
+        let cost = classify_cost(&price, &CostMode::Single);
+        assert_eq!(
+            cost,
+            Cost::Unclassified(vec![
+                ("Some Standing".to_string(), 1000.0),
+                ("Credits".to_string(), 2000.0),
+            ])
+        );
+    }
+
+    // ---- E2: cost_rows ----
+
+    #[test]
+    fn single_cost_produces_one_scored_row() {
+        let cost = Cost::Single("Credits".to_string(), 5000.0);
+        let rows = cost_rows(&cost, 100.0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].currency, "Credits");
+        assert_eq!(rows[0].amount, 5000.0);
+        assert_eq!(rows[0].score, Some(100.0 / 5000.0));
+        assert_eq!(rows[0].note, None);
+    }
+
+    #[test]
+    fn any_of_cost_produces_one_scored_row_per_currency() {
+        let cost = Cost::AnyOf(vec![
+            ("Cetus Standing".to_string(), 2500.0),
+            ("Credits".to_string(), 5000.0),
+        ]);
+        let rows = cost_rows(&cost, 100.0);
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert!(row.score.is_some());
+            assert_eq!(row.note, None);
+        }
+        assert_eq!(rows[0].score, Some(100.0 / 2500.0));
+        assert_eq!(rows[1].score, Some(100.0 / 5000.0));
+    }
+
+    #[test]
+    fn all_of_cost_produces_noted_unscored_rows_per_currency() {
+        let cost = Cost::AllOf(vec![
+            ("Entrati Standing".to_string(), 5000.0),
+            ("Credits".to_string(), 10000.0),
+        ]);
+        let rows = cost_rows(&cost, 100.0);
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row.score, None, "AllOf rows must not manufacture a fake score");
+            assert!(row.note.is_some());
+        }
+        assert_eq!(
+            rows[0].note.as_deref(),
+            Some("also requires: 10000 Credits")
+        );
+        assert_eq!(
+            rows[1].note.as_deref(),
+            Some("also requires: 5000 Entrati Standing")
+        );
+    }
+
+    #[test]
+    fn unclassified_cost_produces_no_rows() {
+        let cost = Cost::Unclassified(vec![
+            ("Some Standing".to_string(), 1000.0),
+            ("Credits".to_string(), 2000.0),
+        ]);
+        let rows = cost_rows(&cost, 100.0);
+        assert!(rows.is_empty());
     }
 }
 
