@@ -437,17 +437,6 @@ fn quantity_default(is_already_listed: bool, listed_qty: u32, available_qty: u32
     if is_already_listed { listed_qty + available_qty } else { available_qty }
 }
 
-fn arcane_rank_cost(rank: u8) -> u32 {
-    match rank {
-        1 => 3,
-        2 => 6,
-        3 => 10,
-        4 => 15,
-        5 => 21,
-        _ => 1,
-    }
-}
-
 fn ayatan_max_stars(slug: &str) -> (u8, u8) {
     match slug {
         "ayatan_anasa_sculpture"    => (2, 2),
@@ -1070,7 +1059,14 @@ async fn handle_single_candidate(
         return Ok(None);
     }
 
-    let manual_keep = get_keep_quantity(ctx.keeplist, &item.slug, item.rank, item.category());
+    // Mods/arcanes: keep-reservation already happened once, cross-rank, in
+    // `mapping::apply_cross_rank_keep`. Re-running per-rank here would double-reserve against
+    // quantities that are already net of the keep. Everything else still resolves it here.
+    let manual_keep = if item.is_mod || item.is_arcane {
+        0
+    } else {
+        get_keep_quantity(ctx.keeplist, &item.slug, item.rank, item.category())
+    };
     let auto_keep = get_auto_keep(&item, ctx.parent_map, ctx.mastered_set, ctx.owned_built_set);
     let keep_copies = resolve_keep_copies(manual_keep, auto_keep);
     if keep_copies > 0 {
@@ -1095,7 +1091,7 @@ async fn handle_single_candidate(
     let listed_qty: u32 = matching_listings.map_or(0, |listings| {
         listings.iter()
             .map(|l| if item.is_arcane {
-                arcane_rank_cost(l.rank.unwrap_or(0)) * l.quantity()
+              crate::mapping::arcane_rank_cost(l.rank.unwrap_or(0)) * l.quantity()
             } else {
                 l.quantity()
             })
