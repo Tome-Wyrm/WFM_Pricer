@@ -1,6 +1,7 @@
 .git/
 cache/
 config/
+logs/
 target/
 tests/
 .env
