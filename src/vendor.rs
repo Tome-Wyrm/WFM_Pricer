@@ -6,6 +6,8 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
+// Timestamped session logging: see src/logging.rs.
+use crate::{tseprintln, tsprint, tsprintln};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Token {
@@ -507,7 +509,7 @@ pub fn parse_raw_offering(
         let name = match get_string_field(table, "item") {
             Some(n) => n.to_string(),
             None => {
-                eprintln!("Warning: named offering missing 'item', skipping");
+                tseprintln!("Warning: named offering missing 'item', skipping");
                 return Ok(None);
             }
         };
@@ -549,10 +551,10 @@ pub fn parse_raw_offering(
             }
         }
         if values.len() < 3 {
-            eprintln!("Warning: positional offering has fewer than 3 fields, skipping");
-            eprintln!("Table fields: {:?}", table);   // 👈 print the whole table
+            tseprintln!("Warning: positional offering has fewer than 3 fields, skipping");
+            tseprintln!("Table fields: {:?}", table);   // 👈 print the whole table
             for (key, val) in table {
-                eprintln!("  key={:?}, val={:?}", key, val);
+                tseprintln!("  key={:?}, val={:?}", key, val);
             }
             return Ok(None);
         }
@@ -648,7 +650,7 @@ pub fn parse_raw_vendor(
         let fields = match offering_val {
             LuaValue::Table(f) => f.as_slice(),
             _ => {
-                eprintln!("Warning: offering entry is not a table, skipping");
+                tseprintln!("Warning: offering entry is not a table, skipping");
                 skipped += 1;
                 continue;
             }
@@ -657,7 +659,7 @@ pub fn parse_raw_vendor(
             Ok(Some(raw)) => offerings.push(raw),
             Ok(None) => { skipped += 1; }
             Err(e) => {
-                eprintln!("Warning: failed to parse offering: {}", e);
+                tseprintln!("Warning: failed to parse offering: {}", e);
                 skipped += 1;
             }
         }
@@ -1068,7 +1070,7 @@ pub fn compute_match_stats(vendors: &[MappedVendor]) -> Vec<VendorMatchStats> {
 /// those three buckets.
 pub fn print_match_report(vendors: &[MappedVendor]) {
     let stats = compute_match_stats(vendors);
-    println!(
+    tsprintln!(
         "{:<28} {:>6} {:>10} {:>8} {:>10}",
         "Vendor", "Total", "Tradeable", "Matched", "Unmatched"
     );
@@ -1076,12 +1078,12 @@ pub fn print_match_report(vendors: &[MappedVendor]) {
         let unmatched_count = s.unmatched.len();
         let skipped = s.total_offerings - s.tradeable_count;
         debug_assert_eq!(s.matched_count + unmatched_count + skipped, s.total_offerings);
-        println!(
+        tsprintln!(
             "{:<28} {:>6} {:>10} {:>8} {:>10}",
             s.key, s.total_offerings, s.tradeable_count, s.matched_count, unmatched_count
         );
         for name in &s.unmatched {
-            println!("    unmatched: {name}");
+            tsprintln!("    unmatched: {name}");
         }
     }
 }
@@ -1107,12 +1109,12 @@ pub fn dump_category_audit(vendors: &[MappedVendor]) {
             }
         }
     }
-    println!(
+    tsprintln!(
         "{:<20} {:>6} {:>8}  sample unmatched",
         "Category", "Total", "Matched"
     );
     for (cat, (total, matched, samples)) in by_category {
-        println!("{cat:<20} {total:>6} {matched:>8}  {}", samples.join(", "));
+        tsprintln!("{cat:<20} {total:>6} {matched:>8}  {}", samples.join(", "));
     }
 }
 
@@ -1580,11 +1582,11 @@ pub async fn fetch_and_cache_vendors(client: &reqwest::Client) -> Result<(), Box
 
     if let Some(cached) = cached_revid {
         if cached == remote_revid {
-            println!("Vendor data unchanged (revid {}). Skipping fetch.", remote_revid);
+            tsprintln!("Vendor data unchanged (revid {}). Skipping fetch.", remote_revid);
             return Ok(());
         }
     }
-    println!("Vendor data changed (cached: {:?}, remote: {}). Fetching...", cached_revid, remote_revid);
+    tsprintln!("Vendor data changed (cached: {:?}, remote: {}). Fetching...", cached_revid, remote_revid);
 
     let lua_source = fetch_vendors_lua(client).await?;
     let (raw_vendors, skipped) = parse_vendors_from_lua(&lua_source)
@@ -1594,14 +1596,14 @@ pub async fn fetch_and_cache_vendors(client: &reqwest::Client) -> Result<(), Box
     write_cached_revid(remote_revid)?;
 
     if skipped > 0 {
-        println!(
+        tsprintln!(
             "Vendor cache updated ({} vendors, {} offerings parsed, {} skipped).",
             raw_vendors.len(),
             raw_vendors.iter().map(|v| v.offerings.len()).sum::<usize>(),
             skipped
         );
     } else {
-        println!(
+        tsprintln!(
             "Vendor cache updated ({} vendors, {} offerings parsed).",
             raw_vendors.len(),
             raw_vendors.iter().map(|v| v.offerings.len()).sum::<usize>()
@@ -1673,18 +1675,18 @@ fn interactive_picker<'a>(root: &LocTree, vendors: &'a [MappedVendor]) -> Result
         let child_names: Vec<&String> = node.children.keys().collect();
         let leaf_names: Vec<&String> = node.entries.iter().collect();
 
-        println!("\n0. Print all");
+        tsprintln!("\n0. Print all");
         let mut idx = 1;
         for name in &child_names {
-            println!("{idx}. {name}/");
+            tsprintln!("{idx}. {name}/");
             idx += 1;
         }
         for name in &leaf_names {
-            println!("{idx}. {name}");
+            tsprintln!("{idx}. {name}");
             idx += 1;
         }
 
-        print!("\nSelect an option: ");
+        tsprint!("\nSelect an option: ");
         std::io::stdout().flush()?;
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
@@ -1754,18 +1756,18 @@ fn resolve_path<'a>(root: &LocTree, path: &str, vendors: &'a [MappedVendor]) -> 
 fn print_ranked_table(rows: &[RankedOffering]) {
     crate::cli::print_header("Vendor Rankings");
     if rows.is_empty() {
-        println!("  No offerings met the demand-floor/saturation criteria.");
+        tsprintln!("  No offerings met the demand-floor/saturation criteria.");
         return;
     }
-    println!(
+    tsprintln!(
         "{:<28} | {:<32} | {:<10} | {:>10} | {:>8} | {:>10} | {}",
         "Vendor", "Offering", "Currency", "Cost", "Score", "Vol/day", "Note"
     );
-    println!("{}", "-".repeat(120));
+    tsprintln!("{}", "-".repeat(120));
     for row in rows {
         let score_str = row.score.map_or_else(|| "—".to_string(), |s| format!("{s:.2}"));
         let note = row.note.as_deref().unwrap_or("");
-        println!(
+        tsprintln!(
             "{:<28} | {:<32} | {:<10} | {:>10.1} | {:>8} | {:>10.1} | {}",
             row.vendor_name, row.offering_name, row.currency, row.amount, score_str, row.daily_volume, note
         );
@@ -1778,7 +1780,7 @@ fn print_ranked_table(rows: &[RankedOffering]) {
 fn write_rankings_json(rows: &[RankedOffering]) -> Result<(), Box<dyn Error>> {
     let json = serde_json::to_string_pretty(rows)?;
     fs::write("vendor_rankings.json", json)?;
-    println!("Wrote vendor_rankings.json ({} rows).", rows.len());
+    tsprintln!("Wrote vendor_rankings.json ({} rows).", rows.len());
     Ok(())
 }
 
@@ -1800,7 +1802,7 @@ pub async fn run_vendor_cli(
     let client = reqwest::Client::new();
     fetch_and_cache_vendors(&client).await?;
     let vendors = build_and_write_vendor_cache()?;
-    println!("Loaded {} vendors.", vendors.len());
+    tsprintln!("Loaded {} vendors.", vendors.len());
 
     if match_report {
         print_match_report(&vendors);
@@ -1814,7 +1816,7 @@ pub async fn run_vendor_cli(
     };
 
     if selected.is_empty() {
-        println!("No vendors matched that selection.");
+        tsprintln!("No vendors matched that selection.");
         return Ok(());
     }
 
@@ -2229,7 +2231,7 @@ return {
     fn parse_full_vendors_cache() {
         let cache_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
         if !cache_path.exists() {
-            eprintln!("Skipping full cache test – cache file not found. Run the fetch step first.");
+            tseprintln!("Skipping full cache test – cache file not found. Run the fetch step first.");
             return;
         }
         let vendors = load_vendor_data().expect("Failed to load vendor data");
@@ -2246,7 +2248,7 @@ return {
         let cache_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
         let config_path = std::path::Path::new(config::VENDORS_CONFIG_FILE);
         if !cache_path.exists() || !config_path.exists() {
-            eprintln!("Skipping tripwire – cache or config file not found.");
+            tseprintln!("Skipping tripwire – cache or config file not found.");
             return;
         }
         let vendors = load_vendor_data().expect("Failed to load vendor data");
@@ -2283,7 +2285,7 @@ return {
 
         let config_path = std::path::Path::new(config::VENDORS_CONFIG_FILE);
         if !config_path.exists() {
-            eprintln!("Skipping pool consistency check – vendors.toml not found.");
+            tseprintln!("Skipping pool consistency check – vendors.toml not found.");
             return;
         }
         let meta = load_vendor_metadata().expect("Failed to load vendor metadata");
@@ -2394,7 +2396,7 @@ mod category_tests {
     fn all_cached_categories_are_classified() {
         let cache_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
         if !cache_path.exists() {
-            eprintln!("Skipping category tripwire – cache file not found.");
+            tseprintln!("Skipping category tripwire – cache file not found.");
             return;
         }
         let vendors = load_vendor_data().expect("Failed to load vendor data");
@@ -2454,7 +2456,7 @@ mod slug_matching_tests {
         let wfm_path = std::path::Path::new(config::WFM_CACHE_FILE);
         let wfcd_path = std::path::Path::new(config::WFCD_CACHE_FILE);
         if !raw_path.exists() || !wfm_path.exists() || !wfcd_path.exists() {
-            eprintln!("Skipping spot-check – caches not present. Run update-caches first.");
+            tseprintln!("Skipping spot-check – caches not present. Run update-caches first.");
             return;
         }
         let mapped = build_and_write_vendor_cache().expect("failed to build vendor cache");
@@ -2473,7 +2475,7 @@ mod slug_matching_tests {
 
         for (vendor_key, item_name) in KNOWN_GOOD {
             if *vendor_key == "PLACEHOLDER" {
-                eprintln!("Skipping unfilled KNOWN_GOOD placeholder — fill in real (vendor, item) pairs.");
+                tseprintln!("Skipping unfilled KNOWN_GOOD placeholder — fill in real (vendor, item) pairs.");
                 continue;
             }
             let vendor = mapped
@@ -2501,7 +2503,7 @@ mod slug_matching_tests {
         let wfm_path = std::path::Path::new(config::WFM_CACHE_FILE);
         let wfcd_path = std::path::Path::new(config::WFCD_CACHE_FILE);
         if !raw_path.exists() || !wfm_path.exists() || !wfcd_path.exists() {
-            eprintln!("Skipping category audit – caches not present. Run update-caches first.");
+            tseprintln!("Skipping category audit – caches not present. Run update-caches first.");
             return;
         }
         let mapped = build_and_write_vendor_cache().expect("failed to build vendor cache");
@@ -2984,6 +2986,6 @@ mod network_tests {
         // A plausible revision ID for a popular module is > 1000000 and < 10^10
         assert!(revid > 1_000_000);
         assert!(revid < 10_000_000_000);
-        println!("Latest revid: {}", revid);
+        tsprintln!("Latest revid: {}", revid);
     }
 }

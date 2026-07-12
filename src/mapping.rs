@@ -13,6 +13,8 @@ use crate::config::{
 };
 use crate::models::{MappedItem, WfcdItem, WfmItem, WfmV2Response, KeepConfig, BlacklistConfig};
 use crate::vendor;
+// Timestamped session logging: see src/logging.rs.
+use crate::{tseprintln, tsprintln};
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,7 +237,7 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(CACHE_DIR)?;
 
     let client = reqwest::Client::new();
-    println!("Checking latest WFCD commit hash...");
+    tsprintln!("Checking latest WFCD commit hash...");
     let response = client
         .get("https://api.github.com/repos/WFCD/warframe-items/commits/master")
         .header(USER_AGENT, "wfm-pricer-cli")
@@ -252,7 +254,7 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
         .ok_or("Could not parse commit sha from GitHub response")?
         .to_string();
 
-    println!("Latest WFCD Commit SHA: {latest_sha}");
+    tsprintln!("Latest WFCD Commit SHA: {latest_sha}");
 
     let mut cache_invalidated = true;
     if Path::new(METADATA_FILE).exists()
@@ -263,13 +265,13 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
         && metadata.wfcd_commit_hash == latest_sha
     {
         cache_invalidated = false;
-        println!("Cache is up to date (SHA matches).");
+        tsprintln!("Cache is up to date (SHA matches).");
     }
 
     if cache_invalidated {
-        println!("Cache is missing or stale. Re-fetching data...");
+        tsprintln!("Cache is missing or stale. Re-fetching data...");
 
-        println!("Fetching WFCD All.json...");
+        tsprintln!("Fetching WFCD All.json...");
         let wfcd_resp = client
             .get("https://raw.githubusercontent.com/WFCD/warframe-items/master/data/json/All.json")
             .header(USER_AGENT, "wfm-pricer-cli")
@@ -282,9 +284,9 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
 
         let all_json_bytes = wfcd_resp.bytes().await?;
         fs::write(WFCD_CACHE_FILE, all_json_bytes)?;
-        println!("WFCD All.json cached successfully.");
+        tsprintln!("WFCD All.json cached successfully.");
 
-        println!("Fetching WFM v2 items list...");
+        tsprintln!("Fetching WFM v2 items list...");
         let wfm_resp_result = client
             .get("https://api.warframe.market/v2/items")
             .header(USER_AGENT, "wfm-pricer-cli")
@@ -301,7 +303,7 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
         };
 
         fs::write(WFM_CACHE_FILE, wfm_bytes)?;
-        println!("WFM items list cached successfully.");
+        tsprintln!("WFM items list cached successfully.");
 
         let metadata = CacheMetadata {
             wfcd_commit_hash: latest_sha,
@@ -309,17 +311,17 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
         };
         let metadata_str = serde_json::to_string_pretty(&metadata)?;
         fs::write(METADATA_FILE, metadata_str)?;
-        println!("Cache metadata updated.");
+        tsprintln!("Cache metadata updated.");
     }
 
         // Vendor cache (from wiki Module:Vendors/data)
-        println!("Updating vendor cache...");
+        tsprintln!("Updating vendor cache...");
         vendor::fetch_and_cache_vendors(&client).await?;
-        println!("Vendor cache updated.");
+        tsprintln!("Vendor cache updated.");
 
     let needs_relics_refresh = cache_invalidated || !Path::new(RELICS_CACHE_FILE).exists();
     if needs_relics_refresh {
-        println!("Fetching WFCD Relics.json...");
+        tsprintln!("Fetching WFCD Relics.json...");
         match client
             .get("https://raw.githubusercontent.com/WFCD/warframe-items/refs/heads/master/data/json/Relics.json")
             .header(USER_AGENT, "wfm-pricer-cli")
@@ -329,13 +331,13 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
             Ok(resp) if resp.status().is_success() => {
                 let bytes = resp.bytes().await?;
                 fs::write(RELICS_CACHE_FILE, bytes)?;
-                println!("Relics.json cached successfully.");
+                tsprintln!("Relics.json cached successfully.");
             }
             Ok(resp) => {
-                eprintln!("Warning: Failed to fetch Relics.json ({}). Relics will not be mapped.", resp.status());
+                tseprintln!("Warning: Failed to fetch Relics.json ({}). Relics will not be mapped.", resp.status());
             }
             Err(e) => {
-                eprintln!("Warning: Error fetching Relics.json: {e}. Relics will not be mapped.");
+                tseprintln!("Warning: Error fetching Relics.json: {e}. Relics will not be mapped.");
             }
         }
     }
@@ -459,12 +461,12 @@ fn is_relic(game_ref: &str) -> bool {
 
 fn load_relic_map() -> HashMap<String, String> {
     let Ok(raw) = fs::read_to_string(RELICS_CACHE_FILE) else {
-        eprintln!("Warning: Relics cache not found at {RELICS_CACHE_FILE}. Relics will not be mapped.");
+        tseprintln!("Warning: Relics cache not found at {RELICS_CACHE_FILE}. Relics will not be mapped.");
         return HashMap::new();
     };
 
     let Ok(entries) = serde_json::from_str::<Vec<RelicEntry>>(&raw) else {
-        eprintln!("Warning: Failed to parse Relics.json cache. Relics will not be mapped.");
+        tseprintln!("Warning: Failed to parse Relics.json cache. Relics will not be mapped.");
         return HashMap::new();
     };
 
@@ -973,7 +975,7 @@ pub async fn map_inventory(
         return Err("Cache files missing. Please run update_caches first.".into());
     }
 
-    println!("Loading caches from disk for mapping...");
+    tsprintln!("Loading caches from disk for mapping...");
     let mut full_cache = load_full_items_cache()?;
     let (wfcd_by_ref, wfm_by_ref, wfm_by_name, wfm_by_slug) = load_lookup_tables()?;
     let (keep_map, blacklist) = load_keep_blacklist()?;
@@ -1005,7 +1007,7 @@ pub async fn map_inventory(
                 for element in arr {
                     processed += 1;
                     if processed % 50 == 0 {
-                        println!("Fetching item details... ({processed}/{total_items})");
+                        tsprintln!("Fetching item details... ({processed}/{total_items})");
                     }
                     if let Some(mut mapped) = process_item(
                         element,
@@ -1022,7 +1024,7 @@ pub async fn map_inventory(
                                 mapped.subtypes = full.subtypes;
                             }
                             Err(e) => {
-                                eprintln!(
+                                tseprintln!(
                                     "Warning: Could not fetch full item for {}: {}",
                                     mapped.slug, e
                                 );

@@ -8,6 +8,7 @@ use reqwest::header::USER_AGENT;
 use tokio::time::{sleep, Duration};
 
 use crate::models::{WfmStatsItem, WfmStatsResponse};
+use crate::{tseprintln, tsprintln};
 
 pub const STATS_CACHE_DIR: &str = "cache/statistics";
 
@@ -62,7 +63,7 @@ pub async fn fetch_statistics(slug: &str) -> Result<WfmStatsResponse, Box<dyn Er
 
     sleep(Duration::from_millis(400)).await;
 
-    println!("Fetching market statistics for '{slug}'...");
+    tsprintln!("Fetching market statistics for '{slug}'...");
     let url = format!("https://api.warframe.market/v1/items/{slug}/statistics");
     let client = stats_http_client();
 
@@ -99,7 +100,7 @@ pub async fn fetch_statistics(slug: &str) -> Result<WfmStatsResponse, Box<dyn Er
 
         if attempt < STATS_MAX_ATTEMPTS {
             let backoff = Duration::from_secs(2u64.pow(attempt - 1)); // 1s, 2s, 4s
-            eprintln!(
+            tseprintln!(
                 "  '{slug}' attempt {attempt}/{STATS_MAX_ATTEMPTS} failed ({last_err}), retrying in {}s...",
                 backoff.as_secs()
             );
@@ -305,11 +306,11 @@ pub fn calculate_saturation_ratio(
 async fn collect_calibration_rates() -> Vec<f64> {
     let wfm_cache_path = crate::config::WFM_CACHE_FILE;
     let Ok(wfm_str) = fs::read_to_string(wfm_cache_path) else {
-        eprintln!("[ENDO] Could not read WFM cache, using fallback rate 0.0035");
+        tseprintln!("[ENDO] Could not read WFM cache, using fallback rate 0.0035");
         return Vec::new();
     };
     let Ok(wfm_response) = serde_json::from_str::<crate::models::WfmV2Response>(&wfm_str) else {
-        eprintln!("[ENDO] Failed to parse WFM cache, using fallback rate 0.0035");
+        tseprintln!("[ENDO] Failed to parse WFM cache, using fallback rate 0.0035");
         return Vec::new();
     };
 
@@ -373,18 +374,18 @@ async fn collect_calibration_rates() -> Vec<f64> {
     for (display_name, rarity, target_rank) in calibration_mods {
         let name_lower = display_name.to_lowercase();
         let Some((slug, max_rank, _tags)) = name_to_slug.get(&name_lower) else {
-            println!("[ENDO] Skipping {display_name}: not found in WFM cache");
+            tsprintln!("[ENDO] Skipping {display_name}: not found in WFM cache");
             continue;
         };
         if max_rank.is_some_and(|mr| mr < target_rank.into()) {
-            println!("[ENDO] Skipping {display_name}: max_rank {} < required {target_rank}", max_rank.unwrap_or(0));
+            tsprintln!("[ENDO] Skipping {display_name}: max_rank {} < required {target_rank}", max_rank.unwrap_or(0));
             continue;
         }
 
         let stats = match fetch_statistics(slug).await {
             Ok(s) => s,
             Err(e) => {
-                println!("[ENDO] Skipping {display_name} ({slug}): fetch failed: {e}");
+                tsprintln!("[ENDO] Skipping {display_name} ({slug}): fetch failed: {e}");
                 continue;
             }
         };
@@ -406,7 +407,7 @@ async fn collect_calibration_rates() -> Vec<f64> {
 pub async fn derive_endo_to_plat_from_mods() -> f64 {
     let rates = collect_calibration_rates().await;
     if rates.is_empty() {
-        eprintln!("[ENDO] No valid calibration mods, using fallback rate 0.0035");
+        tseprintln!("[ENDO] No valid calibration mods, using fallback rate 0.0035");
         return 0.0035;
     }
     median_of(&rates)

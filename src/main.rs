@@ -7,6 +7,7 @@ pub mod cli;
 pub mod config;
 pub mod decryption;
 pub mod ingestion;
+pub mod logging;
 pub mod mapping;
 pub mod models;
 pub mod pricing;
@@ -16,6 +17,8 @@ pub mod wfm_client;
 use clap::{Parser, Subcommand};
 use std::error::Error;
 use std::path::{Path, PathBuf};
+// Timestamped session logging: see src/logging.rs. tsprintln!/tseprintln! behave exactly
+// like println!/eprintln! but also mirror into logs/session_<timestamp>.log.
 
 /// `wfm-pricer` — Warframe.Market pricing/inventory advisor, plus the `vendor` command
 /// for ranking vendor offerings by plat-efficiency.
@@ -109,7 +112,7 @@ fn run_debug_mastery_checklist(
         if is_eligible_for_mastery_checklist(unique) {
             let norm = item.name.to_lowercase();
             if let Some(existing) = name_to_unique.get(&norm) {
-                eprintln!(
+                tseprintln!(
                     "WARNING: Ambiguous display name '{}' maps to both '{}' and '{}' — picking first.",
                     item.name, existing, unique
                 );
@@ -132,16 +135,16 @@ fn run_debug_mastery_checklist(
     // ---- Read checklist ----
     let checklist_path = "config/mastery_checklist.txt";
     if !std::path::Path::new(checklist_path).exists() {
-        eprintln!("Debug mastery checklist file not found: {checklist_path}");
-        eprintln!("Please create it with one item name per line.");
+        tseprintln!("Debug mastery checklist file not found: {checklist_path}");
+        tseprintln!("Please create it with one item name per line.");
         return Ok(());
     }
     let content = std::fs::read_to_string(checklist_path)?;
     let items: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
-    println!("\n=== Mastery Checklist Debug (with XP details) ===");
-    println!("{:<40} | {:<30} | MaxRank | Req XP | XP     | Status", "Item", "uniqueName");
-    println!("{}", "-".repeat(110));
+    tsprintln!("\n=== Mastery Checklist Debug (with XP details) ===");
+    tsprintln!("{:<40} | {:<30} | MaxRank | Req XP | XP     | Status", "Item", "uniqueName");
+    tsprintln!("{}", "-".repeat(110));
 
     for name in items {
         let name = name.trim();
@@ -184,14 +187,14 @@ fn run_debug_mastery_checklist(
                 "Not Mastered"
             };
             let set_status = if mastered_set.contains(&unique) { "in set" } else { "not in set" };
-            println!(
+            tsprintln!(
                 "{name:<40} | {unique:<30} | {max_rank:>3}    | {required:>6} | {xp:>6} | {status:<10} ({set_status})"
             );
         } else {
-            println!("{name:<40} | Not found in WFCD/WFM");
+            tsprintln!("{name:<40} | Not found in WFCD/WFM");
         }
     }
-    println!("=== End of Checklist ===\n");
+    tsprintln!("=== End of Checklist ===\n");
     Ok(())
 }
 
@@ -199,14 +202,14 @@ fn run_debug_mastery_checklist(
 /// `inventory.json` in the cwd if present, else the AlecaFrame `lastData.dat` fallback.
 fn resolve_inventory_path(override_path: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>> {
     if let Some(p) = override_path {
-        println!("Using --inventory override: {}", p.display());
+        tsprintln!("Using --inventory override: {}", p.display());
         return Ok(p);
     }
     if Path::new("inventory.json").exists() {
-        println!("Found inventory.json, using it directly.");
+        tsprintln!("Found inventory.json, using it directly.");
         return Ok(PathBuf::from("inventory.json"));
     }
-    println!("inventory.json not found, falling back to AlecaFrame lastData.dat");
+    tsprintln!("inventory.json not found, falling back to AlecaFrame lastData.dat");
     Ok(ingestion::get_inventory_path()?)
 }
 
@@ -215,28 +218,28 @@ fn resolve_inventory_path(override_path: Option<PathBuf>) -> Result<PathBuf, Box
 /// before the Phase G clap migration, aside from `inventory_override` replacing the
 /// old `inventory.json`-or-bust check.
 async fn run_default_pipeline(inventory_override: Option<PathBuf>, debug_mastery: bool) -> Result<(), Box<dyn Error>> {
-    println!("--- WFM Pricer System Startup ---");
+    tsprintln!("--- WFM Pricer System Startup ---");
 
     // 1. Update caches (fail fast if this doesn't work)
     mapping::update_caches().await?;
 
     // 2. Ingest inventory
-    println!("Ingesting inventory...");
+    tsprintln!("Ingesting inventory...");
     let inventory_path = resolve_inventory_path(inventory_override)?;
     let inventory = ingestion::ingest_inventory(&inventory_path)?;
 
     // 3. Map inventory to WFM items
-    println!("Mapping inventory items to Warframe.Market tradeable items...");
+    tsprintln!("Mapping inventory items to Warframe.Market tradeable items...");
     let client = reqwest::Client::new();
     let mapped = mapping::map_inventory(&inventory, &client).await?;
 
     // 4. Load build maps and mastery status (needed for auto‑keep logic)
-    println!("Loading build maps and mastery status...");
+    tsprintln!("Loading build maps and mastery status...");
     let (parent_map, requirements) = mapping::load_build_maps()?;
     let (wfcd_by_ref, wfm_by_ref, wfm_by_name, _wfm_by_slug) = mapping::load_lookup_tables()?;
     let (mastered_set, owned_built_set, frame_tier_uniques) = mapping::load_mastery_and_ownership(&inventory, &wfcd_by_ref);
 
-    println!("Successfully mapped {} items!", mapped.len());
+    tsprintln!("Successfully mapped {} items!", mapped.len());
 
     if debug_mastery {
         run_debug_mastery_checklist(&inventory, &wfcd_by_ref, &wfm_by_ref, &wfm_by_name, &mastered_set, &frame_tier_uniques)?;
@@ -260,6 +263,15 @@ async fn run_default_pipeline(inventory_override: Option<PathBuf>, debug_mastery
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Must run before anything else prints: this is what populates
+    // logs/session_<timestamp>.log for every tsprintln!/tsprint!/tseprintln! call below (and
+    // throughout cli.rs/mapping.rs/vendor.rs/pricing.rs), with no need to pipe `cargo run`
+    // through an external wrapper anymore. If this fails (e.g. read-only filesystem), we just
+    // carry on without file logging rather than aborting the whole run over it.
+    if let Err(e) = logging::init() {
+        tseprintln!("Warning: could not initialize session log file: {e}");
+    }
+
     dotenvy::dotenv().ok();
 
     // Ensure config directories exist

@@ -12,6 +12,8 @@ use crate::pricing::{
     calculate_saturation_ratio, calculate_weighted_average, derive_endo_to_plat_from_mods,
     fetch_statistics, get_ayatan_endo_yield, is_antique, get_fusion_cost_from_zero, recent_volume,
 };
+// Timestamped session logging: see src/logging.rs.
+use crate::{tseprintln, tsprint, tsprintln};
 
 /// How far a recalculated price can drift from the currently-listed price before we bother
 /// showing it to the user. Keeps a continuously-recalculated weighted-average price from
@@ -464,22 +466,22 @@ fn ayatan_max_stars(slug: &str) -> (u8, u8) {
 }
 
 pub(crate) fn print_header(title: &str) {
-    println!("\x1B[1;36m================================================================================\x1B[0m");
-    println!("\x1B[1;35m   {}   \x1B[0m", title.to_uppercase());
-    println!("\x1B[1;36m================================================================================\x1B[0m");
+    tsprintln!("\x1B[1;36m================================================================================\x1B[0m");
+    tsprintln!("\x1B[1;35m   {}   \x1B[0m", title.to_uppercase());
+    tsprintln!("\x1B[1;36m================================================================================\x1B[0m");
 }
 
 pub(crate) fn print_info(label: &str, value: &str) {
-    println!("\x1B[1;34m  {label:<25}\x1B[0m : \x1B[32m{value}\x1B[0m");
+    tsprintln!("\x1B[1;34m  {label:<25}\x1B[0m : \x1B[32m{value}\x1B[0m");
 }
 
 fn print_warning(msg: &str) {
-    println!("\x1B[1;33m  [WARNING] {msg}\x1B[0m");
+    tsprintln!("\x1B[1;33m  [WARNING] {msg}\x1B[0m");
 }
 
 #[allow(dead_code)]
 fn print_error_ui(msg: &str) {
-    println!("\x1B[1;31m  [ERROR] {msg}\x1B[0m");
+    tsprintln!("\x1B[1;31m  [ERROR] {msg}\x1B[0m");
 }
 
 // ── Helper functions for `run_cli` ──────────────────────────────────────────
@@ -496,7 +498,7 @@ fn load_credentials() -> Result<(String, String), Box<dyn Error + Send + Sync>> 
 }
 
 async fn fetch_user_listings(wfm_client: &WfmClient) -> Result<(Vec<OwnedOrder>, HashMap<ListingKey, Vec<OwnedOrder>>), Box<dyn Error + Send + Sync>> {
-    println!("Fetching your active listings from Warframe.Market...");
+    tsprintln!("Fetching your active listings from Warframe.Market...");
     let all_orders = wfm_client.my_orders().await?;
     let user_listings: Vec<OwnedOrder> = all_orders.into_iter().filter(OwnedOrder::is_sell).collect();
     let current_count = user_listings.len();
@@ -639,7 +641,7 @@ fn aggregate_sets_with_prices(
 }
 
 fn filter_candidates(mapped_items: Vec<MappedItem>) -> Vec<MappedItem> {
-    println!("Filtering high-value candidates for trade review...");
+    tsprintln!("Filtering high-value candidates for trade review...");
     mapped_items
         .into_iter()
         .filter(|item| {
@@ -763,7 +765,7 @@ async fn build_priced_candidates<S: StatsSource>(
             Ok(stats) => {
                 stats_map.insert(slug.clone(), stats);
             }
-            Err(e) => eprintln!("Warning: failed to fetch stats for {slug}: {e}"),
+            Err(e) => tseprintln!("Warning: failed to fetch stats for {slug}: {e}"),
         }
     }
 
@@ -1021,13 +1023,13 @@ fn print_upgrade_suggestions(suggestions: &[(String, f64, u32, u32, f64)]) {
     sorted.truncate(15);
 
     print_header("Mod Upgrade Suggestions (Best Endo Value × Volume)");
-    println!("\x1B[1m  {:<35} | {:<14} | {:<12} | {:<10} | Score\x1B[0m",
+    tsprintln!("\x1B[1m  {:<35} | {:<14} | {:<12} | {:<10} | Score\x1B[0m",
         "Mod", "Δ Plat (→max)", "Endo Cost", "30d Vol");
-    println!("  {}", "-".repeat(82));
+    tsprintln!("  {}", "-".repeat(82));
     for (name, delta, endo, vol, score) in &sorted {
-        println!("  {name:<35} | {delta:<14.1} | {endo:<12} | {vol:<10} | {score:.4}");
+        tsprintln!("  {name:<35} | {delta:<14.1} | {endo:<12} | {vol:<10} | {score:.4}");
     }
-    println!();
+    tsprintln!();
 }
 
 fn sort_candidates(
@@ -1079,7 +1081,7 @@ async fn handle_single_candidate(
     if item.is_ayatan && let Some(endo_yield) = get_ayatan_endo_yield(&item.slug) {
         let endo_value = f64::from(endo_yield) * ctx.endo_rate;
         if wa_price < endo_value * 1.15 {
-            println!("[SKIP] {} worth {:.1}p as Endo (vs {:.1}p market)", item.name, endo_value, wa_price);
+            tsprintln!("[SKIP] {} worth {:.1}p as Endo (vs {:.1}p market)", item.name, endo_value, wa_price);
             return Ok(None);
         }
     }
@@ -1134,7 +1136,7 @@ async fn handle_single_candidate(
                     // Silently update the listing with the new quantity, keeping the price exactly as-is.
                     let update = UpdateOrder::new().platinum(keep_price).quantity(new_quantity);
                     if let Err(e) = ctx.wfm_client.update_order(existing.id(), update).await {
-                        eprintln!("\x1B[31m[SYNC_ERROR] Failed to sync quantity for {}: {}\x1B[0m", item.name, e);
+                        tseprintln!("\x1B[31m[SYNC_ERROR] Failed to sync quantity for {}: {}\x1B[0m", item.name, e);
                         return Ok(None);
                     }
                     // Return a report item so the session report records the sync.
@@ -1154,19 +1156,19 @@ async fn handle_single_candidate(
         }
     }
 
-    println!("\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m");
-    println!("\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}", item.name, item.slug, available_qty);
-    println!("  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m", item.rank.unwrap_or(0), vol_30d, wa_price);
-    println!("  Saturation Ratio: {saturation:.3} (sell volume vs closed volume)");
-    println!("  Already Listed on WFM: {}", if is_already_listed { "\x1B[1;32mYES\x1B[0m" } else { "\x1B[31mNO\x1B[0m" });
+    tsprintln!("\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m");
+    tsprintln!("\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}", item.name, item.slug, available_qty);
+    tsprintln!("  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m", item.rank.unwrap_or(0), vol_30d, wa_price);
+    tsprintln!("  Saturation Ratio: {saturation:.3} (sell volume vs closed volume)");
+    tsprintln!("  Already Listed on WFM: {}", if is_already_listed { "\x1B[1;32mYES\x1B[0m" } else { "\x1B[31mNO\x1B[0m" });
 
     if is_already_listed && let Some(listings) = ctx.existing_listings_map.get(&listing_key) {
         for (idx, listing) in listings.iter().enumerate() {
-            println!("    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}", idx + 1, listing.platinum(), listing.quantity(), listing.is_visible());
+            tsprintln!("    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}", idx + 1, listing.platinum(), listing.quantity(), listing.is_visible());
         }
     }
 
-    print!("\x1B[1;35m  Action? [Enter/Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m");
+    tsprint!("\x1B[1;35m  Action? [Enter/Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m");
     let _ = ctx.stdout.flush();
     let mut choice = String::new();
     io::stdin().read_line(&mut choice)?;
@@ -1177,20 +1179,20 @@ async fn handle_single_candidate(
     }
 
     if choice == "B" {
-        println!("Blacklisting {} permanently...", item.name);
+        tsprintln!("Blacklisting {} permanently...", item.name);
         ctx.blacklist_set.slugs.insert(item.slug.clone());
         save_blacklist(ctx.blacklist_set)?;
         return Ok(None);
     }
 
     if choice == "K" {
-        print!("\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m", item.name, item.rank.unwrap_or(0));
+        tsprint!("\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m", item.name, item.rank.unwrap_or(0));
         let _ = ctx.stdout.flush();
         let mut keep_str = String::new();
         io::stdin().read_line(&mut keep_str)?;
         if let Ok(keep_qty) = keep_str.trim().parse::<u32>() {
             add_to_keeplist(ctx.keeplist, &item.slug, item.rank, keep_qty)?;
-            println!("Saved to keeplist.json!");
+            tsprintln!("Saved to keeplist.json!");
         }
         return Ok(None);
     }
@@ -1224,7 +1226,7 @@ async fn handle_list_or_update(
     ctx: &mut CandidateContext<'_>,
 ) -> Result<Option<SessionReportItem>, Box<dyn Error + Send + Sync>> {
     // Price prompt
-    print!("  Price to list (default {wa_price:.1}): ");
+    tsprint!("  Price to list (default {wa_price:.1}): ");
     let _ = ctx.stdout.flush();
     let mut price_str = String::new();
     io::stdin().read_line(&mut price_str)?;
@@ -1234,7 +1236,7 @@ async fn handle_list_or_update(
 
     // Quantity prompt
     let quantity_default = quantity_default(is_already_listed, listed_qty, available_qty);
-    print!("  Quantity to list (default {quantity_default}): ");
+    tsprint!("  Quantity to list (default {quantity_default}): ");
     let _ = ctx.stdout.flush();
     let mut qty_str = String::new();
     io::stdin().read_line(&mut qty_str)?;
@@ -1253,12 +1255,12 @@ async fn handle_list_or_update(
     );
 
     if let Some(order) = existing_same_price_order {
-        println!("\x1B[33m[SYNC] Found an existing order for {} at the same price ({} plat). Updating its quantity to {}...\x1B[0m",
+        tsprintln!("\x1B[33m[SYNC] Found an existing order for {} at the same price ({} plat). Updating its quantity to {}...\x1B[0m",
             item.name, price, quantity);
         let update = UpdateOrder::new().platinum(price).quantity(quantity);
         match ctx.wfm_client.update_order(order.id(), update).await {
             Ok(()) => {
-                println!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", item.name);
+                tsprintln!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", item.name);
                 return Ok(Some(SessionReportItem {
                     name: item.name.clone(),
                     slug: item.slug.clone(),
@@ -1269,7 +1271,7 @@ async fn handle_list_or_update(
                 }));
             }
             Err(e) => {
-                eprintln!("\x1B[31m[SYNC_ERROR] Failed to update existing order: {e}\x1B[0m");
+                tseprintln!("\x1B[31m[SYNC_ERROR] Failed to update existing order: {e}\x1B[0m");
                 return Ok(None);
             }
         }
@@ -1280,13 +1282,13 @@ async fn handle_list_or_update(
         per_trade = Some(1);
         if item.slug.ends_with("_sculpture") {
             let (max_cyan, max_amber) = ayatan_max_stars(&item.slug);
-            print!("  Cyan Stars installed (default {max_cyan}): ");
+            tsprint!("  Cyan Stars installed (default {max_cyan}): ");
             let _ = ctx.stdout.flush();
             let mut c_str = String::new();
             io::stdin().read_line(&mut c_str)?;
             cyan_stars = Some(c_str.trim().parse::<u8>().unwrap_or(max_cyan));
 
-            print!("  Amber Stars installed (default {max_amber}): ");
+            tsprint!("  Amber Stars installed (default {max_amber}): ");
             let _ = ctx.stdout.flush();
             let mut a_str = String::new();
             io::stdin().read_line(&mut a_str)?;
@@ -1299,12 +1301,12 @@ async fn handle_list_or_update(
         if let Some(listings) = ctx.existing_listings_map.get(listing_key)
             && let Some(first_listing) = listings.first()
         {
-            println!("\x1B[33m[SYNC] Updating listing: {} to {} plat...\x1B[0m", item.name, price);
+            tsprintln!("\x1B[33m[SYNC] Updating listing: {} to {} plat...\x1B[0m", item.name, price);
             sleep(Duration::from_millis(400)).await;
             let update = UpdateOrder::new().platinum(price).quantity(quantity);
             match ctx.wfm_client.update_order(first_listing.id(), update).await {
                 Ok(()) => {
-                    println!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", item.name);
+                    tsprintln!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", item.name);
                     return Ok(Some(SessionReportItem {
                         name: item.name.clone(),
                         slug: item.slug.clone(),
@@ -1315,14 +1317,14 @@ async fn handle_list_or_update(
                     }));
                 }
                 Err(e) => {
-                    eprintln!("\x1B[31m[SYNC_ERROR] Failed to update listing {}: {}\x1B[0m", first_listing.id(), e);
+                    tseprintln!("\x1B[31m[SYNC_ERROR] Failed to update listing {}: {}\x1B[0m", first_listing.id(), e);
                     return Ok(None);
                 }
             }
         }
     } else {
         let rank_opt = if item.is_mod || item.is_arcane { item.rank } else { None };
-        println!("\x1B[33m[SYNC] Posting listing: {} (rank: {:?}) for {} plat...\x1B[0m", item.name, rank_opt, price);
+        tsprintln!("\x1B[33m[SYNC] Posting listing: {} (rank: {:?}) for {} plat...\x1B[0m", item.name, rank_opt, price);
         sleep(Duration::from_millis(400)).await;
 
         // ── Build order using item ID ──────────────────────────────────────
@@ -1336,8 +1338,8 @@ async fn handle_list_or_update(
             // Default to the first subtype. Uncomment the block below to prompt the user.
             order = order.with_subtype(&item.subtypes[0]);
             /*
-            println!("This item supports subtypes: {:?}", item.subtypes);
-            print!("Choose subtype (default {}): ", item.subtypes[0]);
+            tsprintln!("This item supports subtypes: {:?}", item.subtypes);
+            tsprint!("Choose subtype (default {}): ", item.subtypes[0]);
             let _ = ctx.stdout.flush();
             let mut choice = String::new();
             io::stdin().read_line(&mut choice)?;
@@ -1369,7 +1371,7 @@ async fn handle_list_or_update(
 
         match ctx.wfm_client.create_order(order).await {
             Ok(()) => {
-                println!("\x1B[32m[SYNC] Successfully listed {} x{}!\x1B[0m", item.name, quantity);
+                tsprintln!("\x1B[32m[SYNC] Successfully listed {} x{}!\x1B[0m", item.name, quantity);
                 *ctx.active_slots_count += 1;
                 return Ok(Some(SessionReportItem {
                     name: item.name.clone(),
@@ -1381,7 +1383,7 @@ async fn handle_list_or_update(
                 }));
             }
             Err(e) => {
-                eprintln!("\x1B[31m[SYNC_ERROR] Failed to list {}: {}\x1B[0m", item.name, e);
+                tseprintln!("\x1B[31m[SYNC_ERROR] Failed to list {}: {}\x1B[0m", item.name, e);
                 return Ok(None);
             }
         }
@@ -1474,14 +1476,14 @@ pub async fn run_cli(
 
     let (user_listings, existing_listings_map) = fetch_user_listings(&wfm_client).await?;
     let candidates = filter_candidates(mapped_items);
-    println!("Identified {} tradeable high-value candidates.", candidates.len());
+    tsprintln!("Identified {} tradeable high-value candidates.", candidates.len());
 
-    println!("Deriving dynamic Endo exchange rate from Ayatan prices...");
+    tsprintln!("Deriving dynamic Endo exchange rate from Ayatan prices...");
     let endo_rate = derive_endo_to_plat_from_mods().await;
     print_info("Derived Endo Rate", &format!("{:.5} plat/endo (or {:.1} plat per 1000 endo)", endo_rate, endo_rate * 1000.0));
 
     print_header("Trade Candidate Evaluation");
-    println!("Fetching WFM pricing and volume stats dynamically for candidates...");
+    tsprintln!("Fetching WFM pricing and volume stats dynamically for candidates...");
 
     let (priced_candidates, upgrade_suggestions) = build_priced_candidates(
             candidates,
@@ -1521,7 +1523,7 @@ pub async fn run_cli(
     write_session_report(&report)?;
 
     print_header("WFM Pricer Session Completed Successfully");
-    println!("Session report written to: 'session_report.json'");
+    tsprintln!("Session report written to: 'session_report.json'");
 
     Ok(())
 }
@@ -1529,7 +1531,7 @@ pub async fn run_cli(
 pub async fn run_primed_mod_prices() -> Result<(), Box<dyn Error>> {
     print_header("Primed Mod Prices");
 
-    println!("Fetching current market statistics...\n");
+    tsprintln!("Fetching current market statistics...\n");
 
     let mut prices = Vec::<PrimedPrice>::new();
 
@@ -1547,7 +1549,7 @@ pub async fn run_primed_mod_prices() -> Result<(), Box<dyn Error>> {
             }
 
             Err(err) => {
-                eprintln!(
+                tseprintln!(
                     "[WARNING] Failed to fetch {}: {}",
                     primed.name,
                     err
@@ -1562,7 +1564,7 @@ pub async fn run_primed_mod_prices() -> Result<(), Box<dyn Error>> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    println!(
+    tsprintln!(
         "{:<4} {:<34} {:>10} {:>10}",
         "#",
         "Mod",
@@ -1570,10 +1572,10 @@ pub async fn run_primed_mod_prices() -> Result<(), Box<dyn Error>> {
         "30d Vol"
     );
 
-    println!("{}", "-".repeat(64));
+    tsprintln!("{}", "-".repeat(64));
 
     for (i, mod_price) in prices.iter().enumerate() {
-        println!(
+        tsprintln!(
             "{:<4} {:<34} {:>10.1} {:>10}",
             i + 1,
             mod_price.name,
