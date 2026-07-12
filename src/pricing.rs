@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 use reqwest::header::USER_AGENT;
 use tokio::time::{sleep, Duration};
@@ -10,13 +11,40 @@ use crate::models::{WfmStatsItem, WfmStatsResponse};
 
 pub const STATS_CACHE_DIR: &str = "cache/statistics";
 
+/// Number of attempts (including the first) made per slug before giving up.
+const STATS_MAX_ATTEMPTS: u32 = 4;
+/// Per-request timeout. Without this, a stalled connection to WFM (or an intermediary
+/// proxy that accepts the connection but never responds) hangs on the OS-level TCP
+/// timeout instead of failing fast — this is what was showing up as requests randomly
+/// taking 70-90s instead of ~400ms.
+const STATS_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const STATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Shared, connection-pooling HTTP client for statistics requests. Previously
+/// `fetch_statistics` built a brand-new `reqwest::Client` on every single call, which
+/// discarded keep-alive/connection-pooling (paying a fresh TCP+TLS handshake per request
+/// across the ~900+ requests in a session) and had no timeout configured at all.
+fn stats_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(STATS_REQUEST_TIMEOUT)
+            .connect_timeout(STATS_CONNECT_TIMEOUT)
+            .build()
+            .expect("failed to build reqwest client for statistics requests")
+    })
+}
+
 // ── fetch_statistics ────────────────────────────────────────────────────────
 
 /// Fetches statistics for a given item slug from WFM.
 /// Respects a 400ms rate limit and caches the response locally to avoid repeated requests.
+/// Retries transient failures (connection errors, timeouts, 429, and 5xx responses) with
+/// exponential backoff before giving up; non-transient 4xx responses fail immediately.
 ///
 /// # Errors
-/// Returns an error if file operations fail, JSON parsing fails, or network requests fail.
+/// Returns an error if file operations fail, JSON parsing fails, or all retry attempts
+/// are exhausted without a successful response.
 pub async fn fetch_statistics(slug: &str) -> Result<WfmStatsResponse, Box<dyn Error>> {
     fs::create_dir_all(STATS_CACHE_DIR)?;
     let cache_path = PathBuf::from(STATS_CACHE_DIR).join(format!("{slug}.json"));
@@ -35,25 +63,54 @@ pub async fn fetch_statistics(slug: &str) -> Result<WfmStatsResponse, Box<dyn Er
     sleep(Duration::from_millis(400)).await;
 
     println!("Fetching market statistics for '{slug}'...");
-    let client = reqwest::Client::new();
     let url = format!("https://api.warframe.market/v1/items/{slug}/statistics");
-    let response = client
-        .get(&url)
-        .header(USER_AGENT, "wfm-pricer-cli")
-        .send()
-        .await?;
+    let client = stats_http_client();
 
-    if !response.status().is_success() {
-        return Err(format!("Failed to fetch stats for {}: {}", slug, response.status()).into());
+    let mut last_err = String::new();
+
+    for attempt in 1..=STATS_MAX_ATTEMPTS {
+        let send_result = client
+            .get(&url)
+            .header(USER_AGENT, "wfm-pricer-cli")
+            .send()
+            .await;
+
+        match send_result {
+            Ok(response) if response.status().is_success() => {
+                let stats: WfmStatsResponse = response.json().await?;
+                if let Ok(serialized) = serde_json::to_string_pretty(&stats) {
+                    let _ = fs::write(&cache_path, serialized);
+                }
+                return Ok(stats);
+            }
+            Ok(response) => {
+                let status = response.status();
+                last_err = format!("{status}");
+                // 4xx other than 429 (rate limited) means the request itself is wrong
+                // (bad slug, etc.) — retrying won't help, so fail fast.
+                if status.is_client_error() && status.as_u16() != 429 {
+                    return Err(format!("Failed to fetch stats for {slug}: {status}").into());
+                }
+            }
+            Err(e) => {
+                last_err = e.to_string();
+            }
+        }
+
+        if attempt < STATS_MAX_ATTEMPTS {
+            let backoff = Duration::from_secs(2u64.pow(attempt - 1)); // 1s, 2s, 4s
+            eprintln!(
+                "  '{slug}' attempt {attempt}/{STATS_MAX_ATTEMPTS} failed ({last_err}), retrying in {}s...",
+                backoff.as_secs()
+            );
+            sleep(backoff).await;
+        }
     }
 
-    let stats: WfmStatsResponse = response.json().await?;
-
-    if let Ok(serialized) = serde_json::to_string_pretty(&stats) {
-        let _ = fs::write(&cache_path, serialized);
-    }
-
-    Ok(stats)
+    Err(format!(
+        "Failed to fetch stats for {slug} after {STATS_MAX_ATTEMPTS} attempts: {last_err}"
+    )
+    .into())
 }
 
 // ── Outlier-filtering helpers ────────────────────────────────────────────────

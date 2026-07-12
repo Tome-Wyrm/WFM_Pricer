@@ -759,10 +759,11 @@ async fn build_priced_candidates<S: StatsSource>(
     // ---- 2. Fetch stats for all slugs, store in a map ----
     let mut stats_map = HashMap::new();
     for slug in &slugs_to_fetch {
-        if let Ok(stats) = stats_source.fetch(slug).await {
-            stats_map.insert(slug.clone(), stats);
-        } else {
-            eprintln!("Warning: failed to fetch stats for {slug}");
+        match stats_source.fetch(slug).await {
+            Ok(stats) => {
+                stats_map.insert(slug.clone(), stats);
+            }
+            Err(e) => eprintln!("Warning: failed to fetch stats for {slug}: {e}"),
         }
     }
 
