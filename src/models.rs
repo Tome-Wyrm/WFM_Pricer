@@ -113,6 +113,10 @@ pub struct MappedItem {
     pub is_ayatan: bool,
     pub game_ref: String,
     pub subtypes: Vec<String>,
+    /// Mirrors WFM's `bulkTradable` flag. Bulk-tradable items (e.g. Endo, boosters, some
+    /// stackable resources) require a `perTrade` value on order creation — WFM rejects the
+    /// request with `"perTrade":"app.field.required"` otherwise.
+    pub bulk_tradable: bool,
 }
 
 impl MappedItem {

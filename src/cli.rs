@@ -603,6 +603,7 @@ fn aggregate_sets_with_prices(
             is_ayatan: false,
             game_ref: build_unique.clone(),
             subtypes: set_item.subtypes.clone(),
+            bulk_tradable: set_item.bulk_tradable,
         };
         set_items.push(set_mapped);
 
@@ -910,6 +911,7 @@ mod build_priced_candidates_tests {
             is_ayatan: false,
             game_ref: "/Lotus/Upgrades/Mods/TestMod".to_string(),
             subtypes: vec![],
+            bulk_tradable: false,
         }
     }
 
@@ -1273,9 +1275,17 @@ async fn handle_list_or_update(
         }
     }
 
+    // ── perTrade ──────────────────────────────────────────────────────────────
+    // WFM requires `perTrade` on order creation for any bulk-tradable item (this includes
+    // ayatan stars/sculptures, but also plain stackable resources like Endo) — omitting it
+    // fails with `"perTrade":"app.field.required"`. We always list 1 unit per trade; the
+    // `quantity` field is what actually controls how many are offered overall.
+    if item.bulk_tradable {
+        per_trade = Some(1);
+    }
+
     // ── Ayatan star prompts ───────────────────────────────────────────────────
     if item.is_ayatan {
-        per_trade = Some(1);
         if item.slug.ends_with("_sculpture") {
             let (max_cyan, max_amber) = ayatan_max_stars(&item.slug);
             tsprint!("  Cyan Stars installed (default {max_cyan}): ");
@@ -1360,9 +1370,9 @@ async fn handle_list_or_update(
             {
                 order = order.with_sculpture_stars(a, c);
             }
-            if let Some(pt) = per_trade {
-                order = order.with_per_trade(pt);
-            }
+        }
+        if let Some(pt) = per_trade {
+            order = order.with_per_trade(pt);
         }
 
         match ctx.wfm_client.create_order(order).await {
@@ -1841,6 +1851,7 @@ mod set_aggregation_tests {
             is_ayatan: false,
             game_ref: game_ref.to_string(),
             subtypes: vec![],
+            bulk_tradable: false,
         }
     }
 

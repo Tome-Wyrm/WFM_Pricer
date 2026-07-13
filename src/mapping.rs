@@ -578,6 +578,7 @@ fn map_single(
             is_ayatan: true,
             game_ref: game_ref.to_string(),
             subtypes: Vec::new(),
+            bulk_tradable: wfm_item.bulk_tradable,
         });
     }
 
@@ -597,6 +598,7 @@ fn map_single(
                 is_ayatan: true,
                 game_ref: game_ref.to_string(),
                 subtypes: Vec::new(),
+                bulk_tradable: wfm_item.bulk_tradable,
             });
         }
     }
@@ -639,6 +641,7 @@ fn map_single(
         is_ayatan: false,
         game_ref: game_ref.to_string(),
         subtypes: Vec::new(),
+        bulk_tradable: wfm_item.bulk_tradable,
     })
 }
 
@@ -657,6 +660,7 @@ fn process_legendary_core(item_type: &str, qty: u32) -> Option<MappedItem> {
             is_ayatan: false,
             game_ref: item_type.to_string(),
             subtypes: Vec::new(),
+            bulk_tradable: false,
         })
     } else {
         None
@@ -698,6 +702,7 @@ fn process_veiled_riven(
             is_ayatan: false,
             game_ref: item_type.to_string(),
             subtypes: Vec::new(),
+            bulk_tradable: wfm_item.bulk_tradable,
         });
     }
     None
@@ -726,6 +731,7 @@ fn process_relic(
             is_ayatan: false,
             game_ref: item_type.to_string(),
             subtypes: Vec::new(),
+            bulk_tradable: wfm_item.bulk_tradable,
         });
     }
     None
@@ -1177,6 +1183,12 @@ pub async fn map_inventory(
                         match fetch_full_item(&mapped.slug, client, &mut full_cache).await {
                             Ok(full) => {
                                 mapped.subtypes = full.subtypes;
+                                // The lookup tables built at startup can be stale relative to
+                                // the live per-item endpoint, and `bulkTradable` determines
+                                // whether WFM requires `perTrade` on order creation — trust the
+                                // freshly-fetched value over whatever map_single/process_item
+                                // guessed from the cached tables.
+                                mapped.bulk_tradable = full.bulk_tradable;
                             }
                             Err(e) => {
                                 tseprintln!(
