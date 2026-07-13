@@ -206,7 +206,6 @@ pub struct WfmStatsItem {
     /// Used in outlier detection: if present and non-zero, prefer it over `wa_price`
     /// and flag days where `wa_price` > `moving_avg` * 5 as outliers.
     pub moving_avg: Option<f64>,
-    #[serde(rename = "mod_rank")]
-    pub mod_rank: Option<u32>,
+    pub rank: Option<u32>,
     pub order_type: Option<String>,
 }

@@ -177,7 +177,7 @@ pub fn recent_volume(
         .statistics_closed
         .ninety_days
         .iter()
-        .filter(|d| d.mod_rank == target_rank.map(u32::from))
+        .filter(|d| d.rank == target_rank.map(u32::from))
         .collect();
 
     let Some(latest_dt) = days_for_rank
@@ -215,7 +215,7 @@ pub fn calculate_weighted_average(
         .statistics_closed
         .ninety_days
         .iter()
-        .filter(|d| d.mod_rank == target_rank.map(u32::from))
+        .filter(|d| d.rank == target_rank.map(u32::from))
         .collect();
 
     if days_for_rank.is_empty() {
@@ -264,7 +264,7 @@ pub fn calculate_saturation_ratio(
         .ninety_days
         .iter()
         .filter(|d| {
-            d.mod_rank == target_rank.map(u32::from)
+            d.rank == target_rank.map(u32::from)
                 && d.order_type.as_deref() == Some("sell")
         })
         .collect();
@@ -291,7 +291,7 @@ pub fn calculate_saturation_ratio(
         .statistics_closed
         .ninety_days
         .iter()
-        .rfind(|d| d.mod_rank == target_rank.map(u32::from));
+        .rfind(|d| d.rank == target_rank.map(u32::from));
 
     match (latest_live_sell, latest_closed) {
         (Some(live), Some(closed)) if closed.volume > 0 => {

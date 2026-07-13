@@ -883,7 +883,7 @@ mod build_priced_candidates_tests {
             wa_price,
             median: wa_price,
             moving_avg: None,
-            mod_rank: Some(mod_rank),
+            rank: Some(mod_rank),
             order_type: Some("sell".to_string()),
         }
     }
