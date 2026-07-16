@@ -620,6 +620,16 @@ fn aggregate_sets_with_prices(
         let used = consumed.get(&comp_unique).copied().unwrap_or(0);
         let leftover = total_qty.saturating_sub(used);
         if leftover > 0 {
+            // Same "worth a listing slot" heuristic that filter_candidates used to apply
+            // pre-aggregation. Applied here — after consumption is accounted for — it only
+            // prunes genuinely orphaned components (no completable set exists for them, or
+            // they weren't needed for the sets we did form), rather than the raw parts an
+            // in-progress set still needs, which must reach aggregation first.
+            let name_lower = comp_item_template.name.to_lowercase();
+            let worth_reviewing = name_lower.contains("prime") || name_lower.contains("set") || name_lower.contains("blueprint");
+            if !worth_reviewing {
+                continue;
+            }
             let mut leftover_item = comp_item_template.clone();
             leftover_item.quantity = leftover;
             result.push(leftover_item);
@@ -630,7 +640,7 @@ fn aggregate_sets_with_prices(
     result
 }
 
-fn filter_candidates(mapped_items: Vec<MappedItem>) -> Vec<MappedItem> {
+fn filter_candidates(mapped_items: Vec<MappedItem>, parent_map: &BuildParentMap) -> Vec<MappedItem> {
     tsprintln!("Filtering high-value candidates for trade review...");
     mapped_items
         .into_iter()
@@ -640,6 +650,22 @@ fn filter_candidates(mapped_items: Vec<MappedItem>) -> Vec<MappedItem> {
             }
             if item.is_mod {
                 return item.max_rank.is_some();
+            }
+            // Known build components (Barrels, Receivers, Stocks, Chassis, Systems,
+            // Neuroptics, Hilts, Blades, Links, Guards, Gauntlets, ...) must always reach
+            // aggregate_sets_with_prices intact, even though their display names usually
+            // contain none of "prime"/"set"/"blueprint" (only non-Prime part names lack
+            // "prime"; only the blueprint itself contains "blueprint"). Dropping them here
+            // silently starved the set-aggregator of exactly the pieces it needs to detect a
+            // completed set — e.g. a Barrel/Receiver pair with no "prime" or "blueprint" in
+            // their names would vanish before aggregation ever saw them, so a genuinely
+            // complete set never got formed and its Blueprint sat as a 100% "leftover"
+            // instead of being partially consumed. Post-aggregation, true junk components
+            // (parts of builds we'll never complete) still get pruned as unconsumed leftovers
+            // further down the pipeline via the name filter below — this only protects them
+            // from being discarded *before* aggregation gets a chance to use them.
+            if parent_map.contains_key(&item.game_ref) {
+                return true;
             }
             let name_lower = item.name.to_lowercase();
             name_lower.contains("prime") || name_lower.contains("set") || name_lower.contains("blueprint")
@@ -805,9 +831,27 @@ async fn build_priced_candidates<S: StatsSource>(
             (0, 0)
         };
 
+        // For mods, also check volume *at max rank*. An unranked (rank 0) mod is a perfectly
+        // good upgrade candidate even if the unranked market itself is thin — what actually
+        // matters for "is it worth leveling this up" is whether the *maxed* copy sells, since
+        // that's the form you'd list it in after upgrading. Previously the demand floor below
+        // used only `vol_30d` (volume at the item's *current* rank), which silently zeroed out
+        // upgrade suggestions for every mod sitting at rank 0 with a quiet unranked market —
+        // even wildly popular mods, since most owned drops are unranked and unranked copies
+        // trade far less than maxed ones.
+        let vol_30d_max = if item.is_mod && !item.is_arcane
+            && let Some(max_rank) = item.max_rank
+            && let Some(stats) = stats_opt {
+                recent_volume(stats, Some(max_rank), 30).0
+            } else {
+                vol_30d
+            };
+
         // ---- Demand floor for mods/arcanes ----
+        // Use whichever rank (current or max) has better liquidity — only drop the item if
+        // it's illiquid in both forms.
         if item.is_mod || item.is_arcane {
-            let vol_per_day = f64::from(vol_30d) / 30.0;
+            let vol_per_day = f64::from(vol_30d.max(vol_30d_max)) / 30.0;
             if vol_per_day < MIN_DAILY_VOLUME {
                 continue; // below demand floor, skip entirely
             }
@@ -831,10 +875,12 @@ async fn build_priced_candidates<S: StatsSource>(
                 let max_rank_u32 = u32::from(max_rank);
                 let is_antique = is_antique(&item.slug, &item.game_ref);
                 let (max_price, _) = calculate_weighted_average(stats, Some(max_rank));
+                // Use vol_30d_max here (not vol_30d): the score/volume shown should reflect
+                // demand for the mod in the form it'll actually be sold in after upgrading.
                 if let Some((delta, endo_to_max, upgrade_score)) = upgrade_suggestion(
-                    &item.rarity, current_rank_u32, max_rank_u32, is_antique, wa_price, max_price, vol_30d,
+                    &item.rarity, current_rank_u32, max_rank_u32, is_antique, wa_price, max_price, vol_30d_max,
                 ) {
-                    upgrades.push((item.name.clone(), delta, endo_to_max, vol_30d, upgrade_score));
+                    upgrades.push((item.name.clone(), delta, endo_to_max, vol_30d_max, upgrade_score));
                 }
             }
 
@@ -1006,6 +1052,43 @@ mod build_priced_candidates_tests {
         assert!(priced.is_empty(), "below the demand floor, the candidate should be dropped entirely");
         assert!(upgrades.is_empty());
     }
+
+    #[tokio::test]
+    async fn quiet_unranked_but_liquid_maxed_mod_still_surfaces_an_upgrade() {
+        // Regression test: most owned mod copies sit at rank 0 (fresh drops), and the
+        // *unranked* market for a mod is routinely much quieter than its maxed market even
+        // for mods that are extremely popular once leveled (e.g. Serration-tier mods — nobody
+        // farms endo to buy an unranked one, everyone wants it maxed). Gating the demand floor
+        // (and the upgrade score) on current-rank volume alone silently dropped exactly this
+        // case. Volume at rank 0 is below the floor; volume at max rank is well above it — the
+        // item must still be priced and must still surface an upgrade suggestion.
+        let candidate = unranked_mod_candidate("popular_when_maxed", 10);
+
+        let mut fixtures = HashMap::new();
+        fixtures.insert(
+            "popular_when_maxed".to_string(),
+            stats_response(vec![
+                stats_item(0, 10.0, 2),     // unranked: 2 sales/30d, well under the floor
+                stats_item(10, 80.0, 900),  // maxed: 900 sales/30d, comfortably liquid
+            ]),
+        );
+        let stats_source = FixtureStatsSource(fixtures);
+
+        let (priced, upgrades) = build_priced_candidates(
+            vec![candidate],
+            0.0,
+            &BuildParentMap::new(),
+            &BuildRequirements::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &stats_source,
+        )
+        .await;
+
+        assert_eq!(priced.len(), 1, "liquid-when-maxed candidate should still be priced");
+        assert!(!upgrades.is_empty(), "should still surface an upgrade suggestion despite thin unranked volume");
+        assert_eq!(upgrades[0].0, "Test Mod");
+    }
 }
 
 fn print_upgrade_suggestions(suggestions: &[(String, f64, u32, u32, f64)]) {
@@ -1092,12 +1175,8 @@ async fn handle_single_candidate(
     let matching_listings = ctx.existing_listings_map.get(&listing_key);
     let listed_qty: u32 = matching_listings.map_or(0, |listings| {
         listings.iter()
-            .map(|l| if item.is_arcane {
-              crate::mapping::arcane_rank_cost(l.rank.unwrap_or(0)) * l.quantity()
-            } else {
-                l.quantity()
-            })
-            .sum()
+          .map(|l| l.quantity())
+          .sum()
     });
 
     let available_qty = item.quantity.saturating_sub(listed_qty);
@@ -1481,7 +1560,7 @@ pub async fn run_cli(
     let username = wfm_client.get_username().await?;
 
     let (user_listings, existing_listings_map) = fetch_user_listings(&wfm_client).await?;
-    let candidates = filter_candidates(mapped_items);
+    let candidates = filter_candidates(mapped_items, parent_map);
     tsprintln!("Identified {} tradeable high-value candidates.", candidates.len());
 
     tsprintln!("Deriving dynamic Endo exchange rate from Ayatan prices...");
@@ -2118,5 +2197,84 @@ mod set_aggregation_tests {
         // No set, all parts remain separate
         assert_eq!(result.len(), 4);
         assert!(!result.iter().any(|i| i.slug == "mag_prime_set"));
+    }
+
+    #[test]
+    fn filter_candidates_does_not_starve_aggregation_of_plainly_named_parts() {
+        // Regression test for the Lato Vandal bug: Barrel/Receiver components whose display
+        // names contain none of "prime"/"set"/"blueprint" (true of most non-Prime weapon
+        // parts) used to get dropped by filter_candidates() before aggregate_sets_with_prices
+        // ever ran, so a genuinely complete set could never be detected — its Blueprint (the
+        // one component whose name happens to say "blueprint") would sit as a 100%
+        // "unconsumed" leftover forever, and the Barrel/Receiver vanished entirely, never
+        // shown at all. This exercises the real pipeline: filter_candidates() -> the aggregator.
+        let build_name = "Lato Vandal";
+        let build_unique = "/Lotus/Weapons/Tenno/Pistol/LatoVandal".to_string();
+
+        let mut wfcd_by_ref = HashMap::new();
+        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
+            unique_name: build_unique.clone(),
+            name: build_name.to_string(),
+            level_stats: None,
+            category: None,
+            rarity: None,
+            fusion_limit: None,
+            components: None,
+        });
+
+        let recipe = vec![
+            ("/Lotus/Types/Recipes/Weapons/LatoVandalBlueprint".to_string(), 1),
+            ("/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalBarrel".to_string(), 1),
+            ("/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalReceiver".to_string(), 1),
+        ];
+        let mut requirements = BuildRequirements::new();
+        requirements.insert(build_unique.clone(), recipe.clone());
+
+        let mut wfm_by_name = HashMap::new();
+        wfm_by_name.insert("lato vandal set".to_string(), build_test_wfm_item("lato_vandal_set", "Lato Vandal Set"));
+
+        let mut parent_map = BuildParentMap::new();
+        for (comp, _) in &recipe {
+            parent_map.insert(comp.clone(), build_unique.clone());
+        }
+
+        // Matches the real report exactly: Barrel x1, Receiver x3, Blueprint x4 — none of
+        // "Barrel"/"Receiver" contain prime/set/blueprint in their names.
+        let owned = vec![
+            build_test_candidate("lato_vandal_blueprint", "Lato Vandal Blueprint", "/Lotus/Types/Recipes/Weapons/LatoVandalBlueprint", 4),
+            build_test_candidate("lato_vandal_barrel", "Lato Vandal Barrel", "/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalBarrel", 1),
+            build_test_candidate("lato_vandal_receiver", "Lato Vandal Receiver", "/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalReceiver", 3),
+        ];
+
+        // Run through filter_candidates() first, exactly like the real pipeline does.
+        let filtered = filter_candidates(owned, &parent_map);
+
+        let mut prices = HashMap::new();
+        prices.insert("lato_vandal_set".to_string(), 30.0);
+        prices.insert("lato_vandal_blueprint".to_string(), 9.0);
+        prices.insert("lato_vandal_barrel".to_string(), 9.0);
+        prices.insert("lato_vandal_receiver".to_string(), 9.0);
+
+        let result = aggregate_sets_with_prices(
+            filtered,
+            &parent_map,
+            &requirements,
+            &wfcd_by_ref,
+            &wfm_by_name,
+            &prices,
+        );
+
+        // Exactly 1 complete set formed (Barrel is the bottleneck at qty 1), plus 3 leftover
+        // Blueprints (4 owned - 1 consumed). Leftover Receivers (2 spare) are pruned by the
+        // post-aggregation "worth reviewing" heuristic, same as before this fix — the point of
+        // this test is that the Set itself now forms and the Blueprint leftover is correctly
+        // reduced, not left at the full unconsumed count of 4.
+        let sets: Vec<_> = result.iter().filter(|i| i.slug == "lato_vandal_set").collect();
+        assert_eq!(sets.len(), 1, "a complete Lato Vandal Set must be detected");
+        assert_eq!(sets[0].quantity, 1);
+
+        let blueprint_leftover: Vec<_> = result.iter().filter(|i| i.slug == "lato_vandal_blueprint").collect();
+        assert_eq!(blueprint_leftover.len(), 1);
+        assert_eq!(blueprint_leftover[0].quantity, 3, "3 spare blueprints should remain after 1 is consumed into the set");
     }
 }
