@@ -96,6 +96,17 @@ pub struct WfcdComponent {
     pub unique_name: String,
     #[serde(rename = "itemCount")]
     pub item_count: u32,
+    /// Whether this component is itself a market-tradeable item (Barrel/Receiver/Stock/
+    /// Blueprint/Chassis/Systems/Neuroptics/Link/...). WFCD's `components` array also lists
+    /// raw crafting resources needed to build the parent (Orokin Cell, Neurode, Nanospores,
+    /// Salvage, ...), which are never tradeable and never show up as inventory candidates —
+    /// if those stay in the recipe, `aggregate_sets_with_prices` can never find them in
+    /// `component_qty` and every build that needs a resource (i.e. almost all of them)
+    /// silently never forms a Set. See `build_maps_from_items`, which filters on this.
+    /// Defaults to `false` so a component missing this field from the cache is excluded
+    /// rather than incorrectly treated as tradeable.
+    #[serde(default)]
+    pub tradable: bool,
     // We can ignore other fields like name, description, etc.
 }
 

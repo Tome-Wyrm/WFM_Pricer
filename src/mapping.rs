@@ -189,15 +189,33 @@ pub fn build_maps_from_items(wfcd_items: Vec<WfcdItem>) -> (BuildParentMap, Buil
 
     for item in wfcd_items {
         if let Some(components) = item.components {
+            // WFCD's `components` array lists everything needed to build the parent, not just
+            // the market-sellable parts — raw crafting resources (Orokin Cell, Neurode,
+            // Nanospores, Salvage, ...) are included too, and those are never tradable and
+            // never appear as owned "candidate" items. Left in, they poison the recipe: a
+            // build needing 10 Orokin Cell can never find that quantity in component_qty
+            // during aggregation, so `possible_sets` hits 0 immediately regardless of whether
+            // every real Barrel/Receiver/Stock/Blueprint is owned. Filtering to only
+            // `tradable` components keeps exactly the parts that can actually be assembled
+            // into (and sold as) a Set — see `WfcdComponent::tradable`.
+            let tradable_components: Vec<_> = components
+                .into_iter()
+                .filter(|comp| comp.tradable)
+                .collect();
+
+            if tradable_components.is_empty() {
+                continue;
+            }
+
             // Store the requirements for this build
-            let reqs: Vec<(String, u32)> = components
+            let reqs: Vec<(String, u32)> = tradable_components
                 .iter()
                 .map(|comp| (comp.unique_name.clone(), comp.item_count))
                 .collect();
             requirements_map.insert(item.unique_name.clone(), reqs);
 
             // For each component, map it back to this build
-            for comp in components {
+            for comp in tradable_components {
                 parent_map.insert(comp.unique_name, item.unique_name.clone());
             }
         }
@@ -1318,10 +1336,11 @@ mod resolve_and_recipe_tests {
                 "uniqueName": "/Lotus/Powersuits/Mag/MagPrime",
                 "name": "Mag Prime",
                 "components": [
-                    {"uniqueName": "/Lotus/Weapons/Tenno/Blueprints/MagPrimeBlueprint", "itemCount": 1},
-                    {"uniqueName": "/Lotus/Powersuits/Mag/MagPrimeChassis", "itemCount": 1},
-                    {"uniqueName": "/Lotus/Powersuits/Mag/MagPrimeNeuroptics", "itemCount": 1},
-                    {"uniqueName": "/Lotus/Powersuits/Mag/MagPrimeSystems", "itemCount": 1}
+                    {"uniqueName": "/Lotus/Weapons/Tenno/Blueprints/MagPrimeBlueprint", "itemCount": 1, "tradable": true},
+                    {"uniqueName": "/Lotus/Powersuits/Mag/MagPrimeChassis", "itemCount": 1, "tradable": true},
+                    {"uniqueName": "/Lotus/Powersuits/Mag/MagPrimeNeuroptics", "itemCount": 1, "tradable": true},
+                    {"uniqueName": "/Lotus/Powersuits/Mag/MagPrimeSystems", "itemCount": 1, "tradable": true},
+                    {"uniqueName": "/Lotus/Types/Items/MiscItems/OrokinCell", "itemCount": 10, "tradable": false}
                 ]
             }
         ]"#;
