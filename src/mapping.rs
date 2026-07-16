@@ -183,7 +183,12 @@ type LookupTables = (
 /// items. Split out from `load_build_maps` so the parsing logic can be unit tested against a
 /// small fixture slice without touching the filesystem.
 #[must_use]
-pub fn build_maps_from_items(wfcd_items: Vec<WfcdItem>) -> (BuildParentMap, BuildRequirements) {
+pub fn build_maps_from_items(
+    wfcd_items: Vec<WfcdItem>,
+    wfm_by_ref: Option<&HashMap<String, WfmItem>>,
+    wfm_by_name: Option<&HashMap<String, WfmItem>>,
+    wfcd_by_ref: Option<&HashMap<String, WfcdItem>>,
+) -> (BuildParentMap, BuildRequirements) {
     let mut parent_map = BuildParentMap::new();
     let mut requirements_map = BuildRequirements::new();
 
@@ -198,9 +203,21 @@ pub fn build_maps_from_items(wfcd_items: Vec<WfcdItem>) -> (BuildParentMap, Buil
             // every real Barrel/Receiver/Stock/Blueprint is owned. Filtering to only
             // `tradable` components keeps exactly the parts that can actually be assembled
             // into (and sold as) a Set — see `WfcdComponent::tradable`.
+            //
+            // UPDATE: Check warframe.market items cache first if lookups are available,
+            // as WFCD's `tradable` field can be incorrect or out of date.
             let tradable_components: Vec<_> = components
                 .into_iter()
-                .filter(|comp| comp.tradable)
+                .filter(|comp| {
+                    if let (Some(wfm_ref), Some(wfm_name), Some(wfcd_ref)) = (wfm_by_ref, wfm_by_name, wfcd_by_ref) {
+                        wfm_ref.contains_key(&comp.unique_name)
+                            || wfcd_ref.get(&comp.unique_name).and_then(|wfcd_item| {
+                                find_wfm_match(&wfcd_item.name, wfm_name)
+                            }).is_some()
+                    } else {
+                        comp.tradable
+                    }
+                })
                 .collect();
 
             if tradable_components.is_empty() {
@@ -238,7 +255,14 @@ pub fn load_build_maps() -> Result<(BuildParentMap, BuildRequirements), Box<dyn 
     let raw = std::fs::read_to_string(cache_path)?;
     let wfcd_items: Vec<WfcdItem> = serde_json::from_str(&raw)?;
 
-    Ok(build_maps_from_items(wfcd_items))
+    let (wfcd_by_ref, wfm_by_ref, wfm_by_name, _) = load_lookup_tables()?;
+
+    Ok(build_maps_from_items(
+        wfcd_items,
+        Some(&wfm_by_ref),
+        Some(&wfm_by_name),
+        Some(&wfcd_by_ref),
+    ))
 }
 
 // ── Cache management ─────────────────────────────────────────────────────────
@@ -1345,7 +1369,7 @@ mod resolve_and_recipe_tests {
             }
         ]"#;
         let wfcd_items: Vec<WfcdItem> = serde_json::from_str(fixture).expect("fixture should parse");
-        let (parent_map, requirements_map) = build_maps_from_items(wfcd_items);
+        let (parent_map, requirements_map) = build_maps_from_items(wfcd_items, None, None, None);
 
         let recipe = requirements_map
             .get("/Lotus/Powersuits/Mag/MagPrime")
