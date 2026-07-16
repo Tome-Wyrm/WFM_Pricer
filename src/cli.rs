@@ -573,12 +573,18 @@ fn aggregate_sets_with_prices(
             continue;
         }
 
+        // Instead of an all-or-nothing kill switch per component:
         let mut guard_failed = false;
         for (comp_unique, _) in recipe {
             if let Some((_, comp_item)) = component_qty.get(comp_unique) {
                 let comp_price = *prices.get(&comp_item.slug).unwrap_or(&0.0);
                 if comp_price > set_price * SET_BUNDLE_PART_VALUE_GUARD_RATIO {
                     guard_failed = true;
+                    tseprintln!(
+                        "Set '{}' skipped: component '{}' priced {:.1}p exceeds {:.0}% of set price {:.1}p",
+                        wfcd_item.name, comp_item.name, comp_price,
+                        SET_BUNDLE_PART_VALUE_GUARD_RATIO * 100.0, set_price
+                    );
                     break;
                 }
             }
