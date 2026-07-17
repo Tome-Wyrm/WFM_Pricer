@@ -343,6 +343,102 @@ const PRIMED_MODS: &[PrimedMod] = &[
         name: "Primed Venomous Clip",
         slug: "primed_venomous_clip",
     },
+    PrimedMod {
+        name: "Astral Twilight",
+        slug: "astral_twilight",
+    },
+    PrimedMod {
+        name: "Buzz Kill",
+        slug: "buzz_kill",
+    },
+    PrimedMod {
+        name: "Collision Force",
+        slug: "collision_force",
+    },
+    PrimedMod {
+        name: "Combo Fury",
+        slug: "combo_fury",
+    },
+    PrimedMod {
+        name: "Combo Killer",
+        slug: "combo_killer",
+    },
+    PrimedMod {
+        name: "Crash Course",
+        slug: "crash_course",
+    },
+    PrimedMod {
+        name: "Fanged Fusillade",
+        slug: "fanged_fusillade",
+    },
+    PrimedMod {
+        name: "Full Contact",
+        slug: "full_contact",
+    },
+    PrimedMod {
+        name: "High Voltage",
+        slug: "high_voltage",
+    },
+    PrimedMod {
+        name: "Jolt",
+        slug: "jolt",
+    },
+    PrimedMod {
+        name: "Maim",
+        slug: "maim",
+    },
+    PrimedMod {
+        name: "Mark of the Beast",
+        slug: "mark_of_the_beast",
+    },
+    PrimedMod {
+        name: "Pummel",
+        slug: "pummel",
+    },
+    PrimedMod {
+        name: "Scattering Inferno",
+        slug: "scattering_inferno",
+    },
+    PrimedMod {
+        name: "Scorch",
+        slug: "scorch",
+    },
+    PrimedMod {
+        name: "Shell Shock",
+        slug: "shell_shock",
+    },
+    PrimedMod {
+        name: "Split Flights",
+        slug: "split_flights",
+    },
+    PrimedMod {
+        name: "Sweeping Serration",
+        slug: "sweeping_serration",
+    },
+    PrimedMod {
+        name: "Tempo Royale",
+        slug: "tempo_royale",
+    },
+    PrimedMod {
+        name: "Thermite Rounds",
+        slug: "thermite_rounds",
+    },
+    PrimedMod {
+        name: "Vermillion Storm",
+        slug: "vermillion_storm",
+    },
+    PrimedMod {
+        name: "Volcanic Edge",
+        slug: "volcanic_edge",
+    },
+    PrimedMod {
+        name: "Voltaic Strike",
+        slug: "voltaic_strike",
+    },
+    PrimedMod {
+        name: "Peculiar Audience",
+        slug: "peculiar_audience",
+    },
 ];
 
 fn get_auto_keep(
