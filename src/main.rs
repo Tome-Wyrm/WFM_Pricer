@@ -62,7 +62,11 @@ enum Commands {
     /// `config/mastery_checklist.txt`) and exit.
     DebugMastery,
     /// Display current prices of all max-rank Primed mods.
-    PrimedMods,
+    PrimedMods {
+        /// Price at minimum (unranked) instead of maximum rank.
+        #[arg(long)]
+        min_rank: bool,
+    },
 }
 
 fn is_eligible_for_mastery_checklist(unique_name: &str) -> bool {
@@ -286,7 +290,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             vendor::run_vendor_cli(path.as_deref(), match_report, write_json, max_saturation).await
         }
         Some(Commands::UpdateCaches) => mapping::update_caches().await,
-        Some(Commands::PrimedMods) => cli::run_primed_mod_prices().await,
+        Some(Commands::PrimedMods { min_rank }) => cli::run_primed_mod_prices(min_rank).await,
         Some(Commands::DebugMastery) => run_default_pipeline(cli_args.inventory, true).await,
         None => run_default_pipeline(cli_args.inventory, false).await,
     }
