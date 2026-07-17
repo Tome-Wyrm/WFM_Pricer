@@ -24,7 +24,6 @@ const PRICE_TOLERANCE_PCT: f64 = 0.03;
 /// Set's own market price, sell that component standalone instead of folding it into the Set
 /// bundle — otherwise you're giving away a disproportionately valuable part inside a cheaper
 /// bundle price.
-const SET_BUNDLE_PART_VALUE_GUARD_RATIO: f64 = 0.5;
 
 enum NoOpDecision {
     TrueNoOp,
@@ -507,9 +506,14 @@ async fn fetch_user_listings(wfm_client: &WfmClient) -> Result<(Vec<OwnedOrder>,
 
 /// Core set‑aggregation logic: takes a list of candidate items (which may include components),
 /// the build maps, and a price map (slug → `wa_price`). Returns a new list of items where complete
-/// sets are combined into a single `MappedItem` and their parts are removed. The guard check
-/// prevents bundling if any part is worth more than `SET_BUNDLE_PART_VALUE_GUARD_RATIO` of the
-/// set price.
+/// sets are combined into a single `MappedItem` and their parts are removed.
+///
+/// Deliberately has no "part is worth too much relative to the set" guard: Warframe's Prime
+/// part market routinely prices one component (usually the one from the rarest-tier relic)
+/// above half the assembled set's price — that's normal relic-scarcity pricing, not a signal
+/// that bundling is a bad trade. An earlier version of this function had such a guard and it
+/// silently dropped entire sets (Corinth Prime, Akvasto Prime, Phantasma Prime, ...) whenever
+/// their pricier component crossed the ratio.
 ///
 /// This function is pure and synchronous, making it easy to unit test.
 fn aggregate_sets_with_prices(
@@ -567,30 +571,8 @@ fn aggregate_sets_with_prices(
             continue;
         }
 
-        // Guard check
         let set_price = *prices.get(&set_item.slug).unwrap_or(&0.0);
         if set_price <= 0.0 {
-            continue;
-        }
-
-        // Instead of an all-or-nothing kill switch per component:
-        let mut guard_failed = false;
-        for (comp_unique, _) in recipe {
-            if let Some((_, comp_item)) = component_qty.get(comp_unique) {
-                let comp_price = *prices.get(&comp_item.slug).unwrap_or(&0.0);
-                if comp_price > set_price * SET_BUNDLE_PART_VALUE_GUARD_RATIO {
-                    guard_failed = true;
-                    tseprintln!(
-                        "Set '{}' skipped: component '{}' priced {:.1}p exceeds {:.0}% of set price {:.1}p",
-                        wfcd_item.name, comp_item.name, comp_price,
-                        SET_BUNDLE_PART_VALUE_GUARD_RATIO * 100.0, set_price
-                    );
-                    break;
-                }
-            }
-        }
-
-        if guard_failed {
             continue;
         }
 
@@ -2146,8 +2128,15 @@ mod set_aggregation_tests {
     }
 
     #[test]
-    fn guard_check_prevents_bundling() {
-        // One component is worth 60% of set price -> guard fails
+    fn expensive_component_does_not_prevent_bundling() {
+        // Regression test for the Corinth/Akvasto/Phantasma Prime bug: a component priced
+        // well above the assembled set's price (e.g. the part sourced from the rarest-tier
+        // relic) must NOT block set formation. Warframe's Prime part market routinely prices
+        // one component above 50%, even above 100%, of the set's own price — that's normal
+        // relic-scarcity pricing, not a signal the bundle is a bad trade. A guard that killed
+        // the whole set over this used to silently drop sets (and their components) from the
+        // run entirely — see session log: "Set 'Corinth Prime' skipped: component 'Corinth
+        // Prime Barrel' priced 45.3p exceeds 50% of set price 88.2p".
         let build_unique = "/Lotus/Types/Recipes/WarframeRecipes/MagPrime".to_string();
         let mut wfcd_by_ref = HashMap::new();
         wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
@@ -2188,7 +2177,7 @@ mod set_aggregation_tests {
         prices.insert("mag_prime_set".to_string(), 100.0);
         prices.insert("mag_prime_blueprint".to_string(), 10.0);
         prices.insert("mag_prime_chassis".to_string(), 10.0);
-        prices.insert("mag_prime_neuroptics".to_string(), 60.0); // 60% of 100 = 60, exceeds 50%
+        prices.insert("mag_prime_neuroptics".to_string(), 60.0); // 60% of the 100p set price
         prices.insert("mag_prime_systems".to_string(), 10.0);
 
         let result = aggregate_sets_with_prices(
@@ -2200,9 +2189,10 @@ mod set_aggregation_tests {
             &prices,
         );
 
-        // No set, all parts remain separate
-        assert_eq!(result.len(), 4);
-        assert!(!result.iter().any(|i| i.slug == "mag_prime_set"));
+        // Set forms despite one component being priced above 50% of the set's price.
+        let sets: Vec<_> = result.iter().filter(|i| i.slug == "mag_prime_set").collect();
+        assert_eq!(sets.len(), 1, "a complete set must form even with a disproportionately priced component");
+        assert_eq!(sets[0].quantity, 1);
     }
 
     #[test]
