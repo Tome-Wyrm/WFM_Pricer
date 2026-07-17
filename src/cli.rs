@@ -1702,13 +1702,41 @@ pub async fn run_primed_mod_prices() -> Result<(), Box<dyn Error>> {
 
     tsprintln!("Fetching current market statistics...\n");
 
+    // Max rank varies per mod (most Primed set mods cap at 5, but some — e.g. the
+    // ammo-mutation/ammo-chain/ammo-stock mods — cap lower or higher). We used to
+    // hardcode Some(10) here, which silently returned (0.0, 0) for every mod whose
+    // real max rank wasn't exactly 10, since calculate_weighted_average/recent_volume
+    // filter WFM stats on an exact rank match. Pull the real maxRank from the WFM
+    // items cache (keyed by slug) instead, so this can't drift out of sync again.
+    let (_wfcd_by_ref, _wfm_by_ref, _wfm_by_name, wfm_by_slug) =
+        crate::mapping::load_lookup_tables()?;
+
     let mut prices = Vec::<PrimedPrice>::new();
 
     for primed in PRIMED_MODS {
+        let Some(max_rank) = wfm_by_slug.get(primed.slug).and_then(|item| item.max_rank) else {
+            tseprintln!(
+                "[WARNING] Could not resolve max rank for {} ('{}') from WFM items cache — skipping.",
+                primed.name,
+                primed.slug
+            );
+            continue;
+        };
+        // WFM's statistics rank field is u32 while max_rank on WfmItem is also u32,
+        // but calculate_weighted_average/recent_volume take Option<u8> — narrow safely.
+        let Ok(max_rank) = u8::try_from(max_rank) else {
+            tseprintln!(
+                "[WARNING] Max rank {} for {} doesn't fit in u8 — skipping.",
+                max_rank,
+                primed.name
+            );
+            continue;
+        };
+
         match fetch_statistics(primed.slug).await {
             Ok(stats) => {
-                let (price, _) = calculate_weighted_average(&stats, Some(10));
-                let (volume, _) = recent_volume(&stats, Some(10), 30);
+                let (price, _) = calculate_weighted_average(&stats, Some(max_rank));
+                let (volume, _) = recent_volume(&stats, Some(max_rank), 30);
 
                 prices.push(PrimedPrice {
                     name: primed.name,
