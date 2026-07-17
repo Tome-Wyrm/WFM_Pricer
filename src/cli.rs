@@ -1714,7 +1714,7 @@ pub async fn run_primed_mod_prices() -> Result<(), Box<dyn Error>> {
     let mut prices = Vec::<PrimedPrice>::new();
 
     for primed in PRIMED_MODS {
-        let Some(max_rank) = wfm_by_slug.get(primed.slug).and_then(|item| item.max_rank) else {
+        let Some(raw_max_rank) = wfm_by_slug.get(primed.slug).and_then(|item| item.max_rank) else {
             tseprintln!(
                 "[WARNING] Could not resolve max rank for {} ('{}') from WFM items cache — skipping.",
                 primed.name,
@@ -1724,19 +1724,22 @@ pub async fn run_primed_mod_prices() -> Result<(), Box<dyn Error>> {
         };
         // WFM's statistics rank field is u32 while max_rank on WfmItem is also u32,
         // but calculate_weighted_average/recent_volume take Option<u8> — narrow safely.
-        let Ok(max_rank) = u8::try_from(max_rank) else {
+        let Ok(raw_max_rank) = u8::try_from(raw_max_rank) else {
             tseprintln!(
                 "[WARNING] Max rank {} for {} doesn't fit in u8 — skipping.",
-                max_rank,
+                raw_max_rank,
                 primed.name
             );
             continue;
         };
-
+        // calculate_weighted_average/recent_volume now self-correct if this guessed rank
+        // doesn't match any real statistics row but null-ranked rows exist instead (see
+        // resolve_target_rank in pricing.rs) — e.g. items like "Peculiar Audience" that WFM
+        // tracks with rank: null on every row rather than numeric ranks.
         match fetch_statistics(primed.slug).await {
             Ok(stats) => {
-                let (price, _) = calculate_weighted_average(&stats, Some(max_rank));
-                let (volume, _) = recent_volume(&stats, Some(max_rank), 30);
+                let (price, _) = calculate_weighted_average(&stats, Some(raw_max_rank));
+                let (volume, _) = recent_volume(&stats, Some(raw_max_rank), 30);
 
                 prices.push(PrimedPrice {
                     name: primed.name,

@@ -162,6 +162,46 @@ fn filter_live_outliers<'a>(
 
 // ── Public pricing functions ─────────────────────────────────────────────────
 
+/// Resolves the effective rank filter to apply against `stats`, correcting for callers
+/// that guess a specific numeric rank (e.g. `Some(0)` for "vendor sells the unranked
+/// copy", or a `maxRank` pulled from the item cache) when the item is actually one WFM
+/// tracks with a `null` rank on *every* statistics row instead of numeric ranks.
+/// Confirmed against a real 90-day statistics dump for "Peculiar Audience": all 88 rows
+/// have `rank: null`, so any caller requesting `Some(0)` or another specific rank for it
+/// would filter out 100% of real data and silently report a 0.0 price / 0 volume.
+///
+/// If a row actually matching the requested rank exists, the request is honored as-is
+/// (this is the normal case for real moddable items, whose stats do carry numeric ranks).
+/// Otherwise, if the item's rows are null-ranked, we fall back to `None` so genuine data
+/// isn't discarded just because the caller assumed the wrong representation. If neither
+/// representation has any data, the original request passes through unchanged (so a
+/// truly untraded item still correctly reports zero).
+fn resolve_target_rank_in<'a, I: Iterator<Item = &'a WfmStatsItem>>(
+    rows: I,
+    requested: Option<u8>,
+) -> Option<u8> {
+    let r = requested?;
+    let mut has_requested = false;
+    let mut has_null = false;
+    for row in rows {
+        if row.rank == Some(u32::from(r)) {
+            has_requested = true;
+        }
+        if row.rank.is_none() {
+            has_null = true;
+        }
+    }
+    if has_requested { requested } else if has_null { None } else { requested }
+}
+
+fn resolve_target_rank(stats: &WfmStatsResponse, requested: Option<u8>) -> Option<u8> {
+    resolve_target_rank_in(stats.payload.statistics_closed.ninety_days.iter(), requested)
+}
+
+fn resolve_target_rank_live(stats: &WfmStatsResponse, requested: Option<u8>) -> Option<u8> {
+    resolve_target_rank_in(stats.payload.statistics_live.ninety_days.iter(), requested)
+}
+
 /// Total volume and number of distinct trading days within the most recent `window_days`
 /// *calendar* days, anchored to the latest matching entry's own date — not array position,
 /// and not wall‑clock "now" (so this is reproducible against cached/fixture data).
@@ -172,6 +212,7 @@ pub fn recent_volume(
     window_days: i64,
 ) -> (u32, u32) {
     use chrono::{DateTime, Duration};
+    let target_rank = resolve_target_rank(stats, target_rank);
     let days_for_rank: Vec<&WfmStatsItem> = stats
         .payload
         .statistics_closed
@@ -210,6 +251,7 @@ pub fn calculate_weighted_average(
     stats: &WfmStatsResponse,
     target_rank: Option<u8>,
 ) -> (f64, u32) {
+    let target_rank = resolve_target_rank(stats, target_rank);
     let days_for_rank: Vec<&WfmStatsItem> = stats
         .payload
         .statistics_closed
@@ -258,6 +300,7 @@ pub fn calculate_saturation_ratio(
     stats: &WfmStatsResponse,
     target_rank: Option<u8>,
 ) -> f64 {
+    let target_rank = resolve_target_rank_live(stats, target_rank);
     let live_sells: Vec<&WfmStatsItem> = stats
         .payload
         .statistics_live
