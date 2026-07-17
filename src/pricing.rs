@@ -170,28 +170,35 @@ fn filter_live_outliers<'a>(
 /// have `rank: null`, so any caller requesting `Some(0)` or another specific rank for it
 /// would filter out 100% of real data and silently report a 0.0 price / 0 volume.
 ///
-/// If a row actually matching the requested rank exists, the request is honored as-is
-/// (this is the normal case for real moddable items, whose stats do carry numeric ranks).
-/// Otherwise, if the item's rows are null-ranked, we fall back to `None` so genuine data
-/// isn't discarded just because the caller assumed the wrong representation. If neither
-/// representation has any data, the original request passes through unchanged (so a
-/// truly untraded item still correctly reports zero).
+/// Falls back to `None` only when the item has *no* numeric-rank rows anywhere — i.e.
+/// it's genuinely not rank-tracked by WFM. It must NOT fall back just because the
+/// specific requested rank happens to have zero matches: a real ranked mod (e.g. Primed
+/// Continuity) can legitimately have thin or zero rank-0 trading in a given window, and
+/// falling back to `None` in that case doesn't mean "unranked" — it accidentally picks
+/// up whatever stray null-rank rows exist for the item (mixed in for other reasons,
+/// e.g. legacy/unspecified-rank orders), which for popular items skew heavily toward
+/// max-rank-like prices and volumes. That was the bug behind `--min-rank` silently
+/// reporting max-rank numbers for real ranked mods.
 fn resolve_target_rank_in<'a, I: Iterator<Item = &'a WfmStatsItem>>(
     rows: I,
     requested: Option<u8>,
 ) -> Option<u8> {
     let r = requested?;
     let mut has_requested = false;
-    let mut has_null = false;
+    let mut has_any_numeric_rank = false;
     for row in rows {
         if row.rank == Some(u32::from(r)) {
             has_requested = true;
         }
-        if row.rank.is_none() {
-            has_null = true;
+        if row.rank.is_some() {
+            has_any_numeric_rank = true;
         }
     }
-    if has_requested { requested } else if has_null { None } else { requested }
+    if has_requested || has_any_numeric_rank {
+        requested
+    } else {
+        None
+    }
 }
 
 fn resolve_target_rank(stats: &WfmStatsResponse, requested: Option<u8>) -> Option<u8> {
