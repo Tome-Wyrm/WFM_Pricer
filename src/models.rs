@@ -217,6 +217,13 @@ pub struct WfmStatsItem {
     /// Used in outlier detection: if present and non-zero, prefer it over `wa_price`
     /// and flag days where `wa_price` > `moving_avg` * 5 as outliers.
     pub moving_avg: Option<f64>,
+    /// WFM's statistics API sends this field as `mod_rank`, not `rank` — without the
+    /// alias below, serde silently deserialized it as `None` on every row (there's no
+    /// bare `"rank"` key to match), which is what actually caused every rank-filtered
+    /// price/volume query to come back empty or fall back to a blended, rank-blind
+    /// average. Confirmed against real dumps for both Peculiar Audience and Primed
+    /// Continuity — every row had `mod_rank` populated but landed as `rank: None` here.
+    #[serde(alias = "mod_rank")]
     pub rank: Option<u32>,
     pub order_type: Option<String>,
 }
