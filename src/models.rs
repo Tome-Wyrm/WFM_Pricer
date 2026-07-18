@@ -123,7 +123,19 @@ pub struct MappedItem {
     pub is_arcane: bool,
     pub is_ayatan: bool,
     pub game_ref: String,
+    /// The full set of subtypes/variants the *catalog item* supports (e.g. every relic
+    /// refinement: `["intact", "exceptional", "flawless", "radiant"]`). This is metadata
+    /// about the market listing as a whole, fetched per-slug via `fetch_full_item` — it does
+    /// NOT say which variant this particular owned stack is. See `owned_subtype` for that.
     pub subtypes: Vec<String>,
+    /// The specific subtype/variant *this owned stack* is, when the underlying game item
+    /// distinguishes one (currently: relic refinement — `"intact"`/`"exceptional"`/
+    /// `"flawless"`/`"radiant"`, set by `process_relic`). `None` for anything that doesn't
+    /// have a meaningful per-stack subtype (which is most items — most `subtypes`-bearing
+    /// items like Ayatan sculptures encode their variant via other fields instead).
+    /// Deliberately a separate field from `subtypes` (plural) so that `map_inventory`
+    /// overwriting `subtypes` from the live per-item endpoint can never clobber this.
+    pub owned_subtype: Option<String>,
     /// Mirrors WFM's `bulkTradable` flag. Bulk-tradable items (e.g. Endo, boosters, some
     /// stackable resources) require a `perTrade` value on order creation — WFM rejects the
     /// request with `"perTrade":"app.field.required"` otherwise.

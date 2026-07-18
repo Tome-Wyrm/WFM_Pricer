@@ -525,7 +525,7 @@ fn load_relic_map() -> HashMap<String, String> {
     map
 }
 
-fn map_relic(game_ref: &str, relic_map: &HashMap<String, String>) -> Option<String> {
+fn map_relic(game_ref: &str, relic_map: &HashMap<String, String>) -> Option<(String, &'static str)> {
     let (base_unique_name, refinement) = if let Some(base) = game_ref.strip_suffix("Bronze") {
         (base, "intact")
     } else if let Some(base) = game_ref.strip_suffix("Silver") {
@@ -539,7 +539,7 @@ fn map_relic(game_ref: &str, relic_map: &HashMap<String, String>) -> Option<Stri
     };
 
     let slug_base = relic_map.get(base_unique_name)?;
-    Some(format!("{slug_base}_{refinement}"))
+    Some((slug_base.clone(), refinement))
 }
 
 // ── Inventory mapping helpers ──────────────────────────────────────────────────
@@ -620,6 +620,7 @@ fn map_single(
             is_ayatan: true,
             game_ref: game_ref.to_string(),
             subtypes: Vec::new(),
+            owned_subtype: None,
             bulk_tradable: wfm_item.bulk_tradable,
         });
     }
@@ -640,6 +641,7 @@ fn map_single(
                 is_ayatan: true,
                 game_ref: game_ref.to_string(),
                 subtypes: Vec::new(),
+                owned_subtype: None,
                 bulk_tradable: wfm_item.bulk_tradable,
             });
         }
@@ -683,6 +685,7 @@ fn map_single(
         is_ayatan: false,
         game_ref: game_ref.to_string(),
         subtypes: Vec::new(),
+        owned_subtype: None,
         bulk_tradable: wfm_item.bulk_tradable,
     })
 }
@@ -702,6 +705,7 @@ fn process_legendary_core(item_type: &str, qty: u32) -> Option<MappedItem> {
             is_ayatan: false,
             game_ref: item_type.to_string(),
             subtypes: Vec::new(),
+            owned_subtype: None,
             bulk_tradable: false,
         })
     } else {
@@ -744,6 +748,7 @@ fn process_veiled_riven(
             is_ayatan: false,
             game_ref: item_type.to_string(),
             subtypes: Vec::new(),
+            owned_subtype: None,
             bulk_tradable: wfm_item.bulk_tradable,
         });
     }
@@ -759,7 +764,7 @@ fn process_relic(
     if !is_relic(item_type) {
         return None;
     }
-    if let Some(slug) = map_relic(item_type, relic_map) && let Some(wfm_item) = wfm_by_slug.get(&slug) {
+    if let Some((slug, refinement)) = map_relic(item_type, relic_map) && let Some(wfm_item) = wfm_by_slug.get(&slug) {
         return Some(MappedItem {
             id: wfm_item.id.clone(),
             slug,
@@ -773,6 +778,7 @@ fn process_relic(
             is_ayatan: false,
             game_ref: item_type.to_string(),
             subtypes: Vec::new(),
+            owned_subtype: Some(refinement.to_string()),
             bulk_tradable: wfm_item.bulk_tradable,
         });
     }
