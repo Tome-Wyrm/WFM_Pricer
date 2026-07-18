@@ -1702,25 +1702,35 @@ pub async fn run_cli(
     Ok(())
 }
 
-/// One priced, completable Set: the missing parts, what buying them on the current buy-order
-/// book would cost, what the completed Set currently fetches on its own buy-order book, and
-/// the resulting profit (positive or negative).
+/// A priced (or attempted-to-price) incomplete Set: what buying the missing parts off the
+/// current buy-order book would cost, what the completed Set currently fetches on its own
+/// sell/ask book, and the resulting profit — or, if pricing couldn't complete, why not.
 struct PricedIncompleteSet {
     name: String,
     missing: Vec<(String, u32, u32)>, // (part name, deficit qty, best buy-order price/unit)
     total_cost: u32,
-    set_buy_price: u32,
+    set_sell_price: u32,
     profit: f64,
 }
 
 /// `--check-sets`: finds every Set the user owns at least one component of but hasn't
-/// finished assembling, then checks whether buying the missing parts — priced off the
-/// *current buy-order book*, not the sell/ask listings and not the statistics-derived
-/// `wa_price` — would be profitable against what the completed Set currently fetches on its
-/// own buy-order book. Buy orders are used deliberately on both sides: they're what you'd
-/// realistically pay by placing a competitive buy order of your own (cheaper than
-/// instant-buying the ask), and what you'd realistically receive by instant-selling the
-/// finished Set into someone else's buy order.
+/// finished assembling, then checks whether buying the missing parts is profitable:
+///
+/// - Cost side: the current best *buy*-order price for each missing part × how many are
+///   needed. This is what you'd realistically pay by placing a competitive buy order of your
+///   own, not the (higher) instant-buy ask.
+/// - Revenue side: the current best *sell*-order price for the completed Set — what you'd
+///   realistically get by listing/undercutting into the existing ask, not a statistics-derived
+///   `wa_price` and not the (lower) buy-order/bid side.
+///
+/// profit = set sell price − total missing-part cost.
+///
+/// Every incomplete Set found is reported up front (name + missing parts), before any pricing
+/// happens, so the completeness detection itself — `mapping::find_incomplete_sets`, which is
+/// driven entirely by "does this build have a sellable WFM Set listing", not by "can this be
+/// crafted from a blueprint" — can be sanity-checked independently of pricing. Sets that can't
+/// be fully priced (no current orders on one side or the other) are still shown in the final
+/// table, just with `N/A` in place of a number and a reason, rather than disappearing.
 ///
 /// Does not place any orders — this is a read-only profitability report. Sunk cost of the
 /// parts you already own is intentionally not counted against the profit figure.
@@ -1748,56 +1758,70 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
         return Ok(());
     }
 
-    tsprintln!("Found {} incomplete Set(s). Checking current buy orders (this respects WFM's 3 req/s limit, so it may take a bit)...\n", incomplete.len());
+    // Report everything the completeness check found, unconditionally, before touching the
+    // network. This is the audit trail for `find_incomplete_sets` itself — if something looks
+    // wrong here (a Set that shouldn't be sellable, a missing-part quantity that looks off,
+    // etc.), that's a detection-logic bug, independent of anything the pricing pass below does.
+    print_header(&format!("Incomplete Sets Found ({})", incomplete.len()));
+    for set in &incomplete {
+        let name = wfcd_by_ref.get(&set.build_unique).map_or(set.build_unique.as_str(), |w| w.name.as_str());
+        let parts: Vec<String> = set.missing.iter().map(|c| format!("{}x {}", c.deficit, c.name)).collect();
+        tsprintln!("  {name}: needs {}", parts.join(", "));
+    }
+    tsprintln!("\nChecking current buy/sell orders for each (respects WFM's 3 req/s limit, so this may take a bit)...\n");
 
     let mut priced = Vec::new();
 
     for set in &incomplete {
         let Some(wfcd_item) = wfcd_by_ref.get(&set.build_unique) else { continue };
-
+        // find_incomplete_sets already only returns builds with a resolvable WFM Set
+        // listing, so this should always succeed — treated as a hard skip (not silently
+        // dropped: it still shows up in the "Incomplete Sets Found" list above) if the two
+        // ever disagree.
         let Some(set_wfm_item) = resolve_set_item(&wfcd_item.name, &wfm_by_name) else {
-            tseprintln!("[WARNING] Could not resolve a WFM Set listing for '{}' — skipping.", wfcd_item.name);
+            tseprintln!("[WARNING] '{}' passed completeness detection but has no resolvable WFM Set listing — this is a bug, please report it.", wfcd_item.name);
             continue;
         };
 
-        let set_orders = match wfm_client::fetch_item_orders(&client, &set_wfm_item.slug).await {
-            Ok(o) => o,
+        let mut unpriced_reason: Option<String> = None;
+
+        let set_sell_price = match wfm_client::fetch_item_orders(&client, &set_wfm_item.slug).await {
+            Ok(orders) => wfm_client::best_sell_price(&orders, None),
             Err(e) => {
-                tseprintln!("[WARNING] Failed to fetch orders for '{}': {e}", set_wfm_item.slug);
-                continue;
+                unpriced_reason = Some(format!("failed to fetch orders for the Set: {e}"));
+                None
             }
         };
         sleep(Duration::from_millis(350)).await;
 
-        let Some(set_buy_price) = wfm_client::best_buy_price(&set_orders, None) else {
-            tsprintln!("{}: no current buy orders for the completed Set — skipping.", wfcd_item.name);
-            continue;
-        };
+        if unpriced_reason.is_none() && set_sell_price.is_none() {
+            unpriced_reason = Some("no current sell orders for the completed Set".to_string());
+        }
 
         let mut total_cost: u32 = 0;
         let mut priced_missing = Vec::new();
-        let mut fully_priced = true;
 
         for comp in &set.missing {
+            if unpriced_reason.is_some() {
+                break;
+            }
+
             let Some(wfm_comp) = wfm_by_ref.get(&comp.unique_name) else {
-                tsprintln!("{}: missing part '{}' isn't in the WFM items cache — skipping this Set.", wfcd_item.name, comp.name);
-                fully_priced = false;
+                unpriced_reason = Some(format!("'{}' isn't in the WFM items cache", comp.name));
                 break;
             };
 
             let orders = match wfm_client::fetch_item_orders(&client, &wfm_comp.slug).await {
                 Ok(o) => o,
                 Err(e) => {
-                    tseprintln!("[WARNING] Failed to fetch orders for '{}': {e}", wfm_comp.slug);
-                    fully_priced = false;
+                    unpriced_reason = Some(format!("failed to fetch orders for '{}': {e}", comp.name));
                     break;
                 }
             };
             sleep(Duration::from_millis(350)).await;
 
             let Some(unit_price) = wfm_client::best_buy_price(&orders, None) else {
-                tsprintln!("{}: no current buy orders for missing part '{}' — skipping this Set.", wfcd_item.name, comp.name);
-                fully_priced = false;
+                unpriced_reason = Some(format!("no current buy orders for missing part '{}'", comp.name));
                 break;
             };
 
@@ -1805,16 +1829,19 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
             priced_missing.push((comp.name.clone(), comp.deficit, unit_price));
         }
 
-        if !fully_priced {
+        if let Some(reason) = unpriced_reason {
+            tsprintln!("{}: could not price — {reason}.", wfcd_item.name);
             continue;
         }
 
-        let profit = f64::from(set_buy_price) - f64::from(total_cost);
+        // Reachable only once set_sell_price is confirmed Some above.
+        let set_sell_price = set_sell_price.unwrap_or(0);
+        let profit = f64::from(set_sell_price) - f64::from(total_cost);
         priced.push(PricedIncompleteSet {
             name: wfcd_item.name.clone(),
             missing: priced_missing,
             total_cost,
-            set_buy_price,
+            set_sell_price,
             profit,
         });
     }
@@ -1822,7 +1849,7 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
     priced.sort_by(|a, b| b.profit.partial_cmp(&a.profit).unwrap_or(std::cmp::Ordering::Equal));
 
     print_header("Set Completion Profitability");
-    tsprintln!("{:<32} {:>12} {:>15} {:>10}", "Set", "Parts Cost", "Set Buy Price", "Profit");
+    tsprintln!("{:<32} {:>12} {:>15} {:>10}", "Set", "Parts Cost", "Set Sell Price", "Profit");
     tsprintln!("{}", "-".repeat(73));
 
     let mut shown = 0;
@@ -1836,7 +1863,7 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
             "{:<32} {:>12} {:>15} {:>10.1}",
             set.name,
             set.total_cost,
-            set.set_buy_price,
+            set.set_sell_price,
             set.profit
         );
         for (part_name, deficit, unit_price) in &set.missing {

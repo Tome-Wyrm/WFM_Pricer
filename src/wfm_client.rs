@@ -167,6 +167,10 @@ impl PublicOrder {
     pub fn is_buy(&self) -> bool {
         self.order_type == "buy"
     }
+    #[must_use]
+    pub fn is_sell(&self) -> bool {
+        self.order_type == "sell"
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -224,6 +228,21 @@ pub fn best_buy_price(orders: &[PublicOrder], rank: Option<u8>) -> Option<u32> {
         .max()
 }
 
+/// Picks the best (lowest) currently-visible *sell*-order price for an item, optionally
+/// restricted to a specific mod/arcane rank. This is the realistic price you'd sell a
+/// finished item at — undercutting the current cheapest ask, or getting bought out at it —
+/// as opposed to `best_buy_price`, which is the realistic price you'd *pay* to acquire an
+/// item by placing a competitive buy order.
+#[must_use]
+pub fn best_sell_price(orders: &[PublicOrder], rank: Option<u8>) -> Option<u32> {
+    orders
+        .iter()
+        .filter(|o| o.is_sell() && o.visible)
+        .filter(|o| rank.is_none() || o.rank == rank)
+        .map(|o| o.platinum)
+        .min()
+}
+
 #[cfg(test)]
 mod public_order_tests {
     use super::*;
@@ -260,6 +279,23 @@ mod public_order_tests {
     fn rank_filter_ignores_non_matching_ranks() {
         let orders = vec![order("buy", 50, true, Some(0)), order("buy", 30, true, Some(3))];
         assert_eq!(best_buy_price(&orders, Some(3)), Some(30));
+    }
+
+    #[test]
+    fn picks_lowest_visible_sell_order() {
+        let orders = vec![
+            order("sell", 40, true, None),
+            order("sell", 25, true, None),
+            order("buy", 10, true, None),  // wrong side — must be ignored
+            order("sell", 5, false, None), // lower, but hidden — must be ignored
+        ];
+        assert_eq!(best_sell_price(&orders, None), Some(25));
+    }
+
+    #[test]
+    fn no_visible_sell_orders_returns_none() {
+        let orders = vec![order("buy", 10, true, None), order("sell", 5, false, None)];
+        assert_eq!(best_sell_price(&orders, None), None);
     }
 }
 
