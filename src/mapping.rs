@@ -526,19 +526,19 @@ fn load_relic_map() -> HashMap<String, String> {
 }
 
 fn map_relic(game_ref: &str, relic_map: &HashMap<String, String>) -> Option<(String, &'static str)> {
-    let (base_unique_name, refinement) = if let Some(base) = game_ref.strip_suffix("Bronze") {
-        (base, "intact")
-    } else if let Some(base) = game_ref.strip_suffix("Silver") {
-        (base, "exceptional")
-    } else if let Some(base) = game_ref.strip_suffix("Gold") {
-        (base, "flawless")
-    } else if let Some(base) = game_ref.strip_suffix("Platinum") {
-        (base, "radiant")
+    let refinement = if game_ref.ends_with("Bronze") {
+        "intact"
+    } else if game_ref.ends_with("Silver") {
+        "exceptional"
+    } else if game_ref.ends_with("Gold") {
+        "flawless"
+    } else if game_ref.ends_with("Platinum") {
+        "radiant"
     } else {
         return None;
     };
 
-    let slug_base = relic_map.get(base_unique_name)?;
+    let slug_base = relic_map.get(game_ref)?;
     Some((slug_base.clone(), refinement))
 }
 
