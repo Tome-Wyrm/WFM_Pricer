@@ -156,6 +156,31 @@ pub struct PublicOrder {
     pub rank: Option<u8>,
     #[serde(default)]
     pub subtype: Option<String>,
+    // Same v2 camelCase convention as CreateOrder.per_trade — the minimum lot size the
+    // buyer/seller on this order is trading in. Bulk-tradable items (see
+    // MappedItem::bulk_tradable) always carry this; non-bulk items omit it entirely, hence
+    // `Option` rather than defaulting to 1 here — callers that care should treat a missing
+    // value as "no lot-size restriction" (i.e. 1) explicitly, not have it silently assumed
+    // during deserialization.
+    #[serde(default, rename = "perTrade")]
+    pub per_trade: Option<u32>,
+    // Optional because this struct is also built by hand in tests below, and because we'd
+    // rather deserialize successfully with no user info than fail the whole order-book fetch
+    // over one missing/malformed field.
+    #[serde(default)]
+    pub user: Option<PublicOrderUser>,
+}
+
+/// The trader behind a `PublicOrder` — just enough to whisper them in-game. WFM's v2 order
+/// schema nests this as `"user": { "ingameName": ..., "status": ... }`; we only need the name,
+/// but keep `status` too since a `whisper the buyer` workflow (see `run_sell_relics_cli`) cares
+/// whether they're actually online to receive it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PublicOrderUser {
+    #[serde(rename = "ingameName")]
+    pub ingame_name: String,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -170,6 +195,12 @@ impl PublicOrder {
     #[must_use]
     pub fn is_sell(&self) -> bool {
         self.order_type == "sell"
+    }
+    /// The lot size this order must be traded in. WFM omits `perTrade` entirely for
+    /// non-bulk-tradable items rather than sending `1`, so this normalizes that omission.
+    #[must_use]
+    pub fn lot_size(&self) -> u32 {
+        self.per_trade.unwrap_or(1)
     }
 }
 
@@ -255,6 +286,8 @@ mod public_order_tests {
             visible,
             rank,
             subtype: None,
+            per_trade: None,
+            user: None,
         }
     }
 

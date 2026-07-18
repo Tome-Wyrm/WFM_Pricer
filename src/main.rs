@@ -77,6 +77,15 @@ enum Commands {
         #[arg(long)]
         min_profit: Option<f64>,
     },
+    /// Check owned relics (by tier: Intact/Exceptional/Flawless/Radiant) against the live
+    /// public buy-order book and print ready-to-send whisper messages for the best-paying
+    /// buyer of each relic/tier you actually own enough of to fulfill.
+    SellRelics {
+        /// Only include buy orders at or above this platinum price. Unset = show every
+        /// fulfillable buy order regardless of price.
+        #[arg(long)]
+        min_price: Option<u32>,
+    },
 }
 
 fn is_eligible_for_mastery_checklist(unique_name: &str) -> bool {
@@ -302,6 +311,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some(Commands::UpdateCaches) => mapping::update_caches().await,
         Some(Commands::PrimedMods { min_rank }) => cli::run_primed_mod_prices(min_rank).await,
         Some(Commands::CheckSets { min_profit }) => cli::run_check_sets_cli(min_profit).await,
+        Some(Commands::SellRelics { min_price }) => cli::run_sell_relics_cli(min_price).await,
         Some(Commands::DebugMastery) => run_default_pipeline(cli_args.inventory, true).await,
         None => run_default_pipeline(cli_args.inventory, false).await,
     }

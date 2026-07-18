@@ -1895,6 +1895,178 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
     Ok(())
 }
 
+/// Relic slug suffix -> display tier, per `mapping::map_relic`'s refinement encoding
+/// (Bronze/Silver/Gold/Platinum in-game -> intact/exceptional/flawless/radiant on WFM).
+/// Order matters only in that all four must be checked; kept in refinement order for
+/// readability.
+const RELIC_TIER_SUFFIXES: [(&str, &str); 4] = [
+    ("_intact", "Intact"),
+    ("_exceptional", "Exceptional"),
+    ("_flawless", "Flawless"),
+    ("_radiant", "Radiant"),
+];
+
+/// Splits a mapped relic item into `(base display name, tier)`, e.g. a `MappedItem` with
+/// `slug: "lith_o2_relic_intact"` and `name: "Lith O2 Relic (Intact)"` becomes
+/// `("Lith O2 Relic".to_string(), "Intact")`.
+///
+/// Returns `None` if the slug doesn't end in one of the four known refinement suffixes —
+/// this should be unreachable for anything `MappedItem::category()` classified as `"relic"`
+/// (see `mapping::map_relic`, which is the only place relic slugs get built), but we don't
+/// trust that invariant blindly here since a WFCD/WFM data change upstream could violate it
+/// silently otherwise.
+fn relic_display_and_tier(item: &MappedItem) -> Option<(String, &'static str)> {
+    let tier = RELIC_TIER_SUFFIXES.iter().find(|entry| item.slug.ends_with(entry.0))?.1;
+    let paren_suffix = format!(" ({tier})");
+    let display_name = item.name.strip_suffix(paren_suffix.as_str()).unwrap_or(item.name.as_str()).to_string();
+    Some((display_name, tier))
+}
+
+/// One ready-to-send whisper, already matched against a live buy order this account can
+/// actually fulfill (enough owned copies of that exact relic/tier to cover the order's lot
+/// size).
+struct RelicSellMessage {
+    ign: String,
+    display_name: String,
+    tier: &'static str,
+    price: u32,
+}
+
+/// `sell-relics`: matches owned relics (by tier) against the live public buy-order book and
+/// prints a whisper message for the best-paying, fulfillable buy order on each one, sorted
+/// descending by platinum.
+///
+/// Unlike `run_check_sets_cli`/the default pipeline, this never logs into WFM — whispering a
+/// buyer only needs their in-game name off the *public* per-item order book
+/// (`wfm_client::fetch_item_orders`), not an authenticated `WfmClient`.
+///
+/// # Errors
+/// Returns an error if caches can't be refreshed, the inventory file can't be found/decrypted,
+/// or inventory mapping fails outright. Per-item order-fetch failures are logged and skipped
+/// rather than aborting the whole run, matching `run_check_sets_cli`'s behavior.
+pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn Error>> {
+    print_header("Sell Relics — Matching Buy Orders");
+
+    mapping::update_caches().await?;
+
+    tsprintln!("Ingesting inventory...");
+    let inventory_path = crate::resolve_inventory_path(None)?;
+    let inventory = crate::ingestion::ingest_inventory(&inventory_path)?;
+
+    let client = reqwest::Client::new();
+    let mapped_items = mapping::map_inventory(&inventory, &client).await?;
+
+    // Aggregate by slug rather than trusting one MappedItem per relic/tier: nothing in
+    // map_inventory guarantees inventory.json can't list the same game_ref across more than
+    // one array entry, and understating owned quantity here would just mean skipping a
+    // fulfillable sale, but overstating it would mean whispering a buyer we can't actually
+    // deliver to.
+    let mut relic_qty: HashMap<String, u32> = HashMap::new();
+    let mut relic_repr: HashMap<String, &MappedItem> = HashMap::new();
+    for item in mapped_items.iter().filter(|i| i.category() == "relic" && i.quantity > 0) {
+        *relic_qty.entry(item.slug.clone()).or_insert(0) += item.quantity;
+        relic_repr.entry(item.slug.clone()).or_insert(item);
+    }
+
+    if relic_repr.is_empty() {
+        tsprintln!("No relics found in inventory.");
+        return Ok(());
+    }
+
+    tsprintln!(
+        "Checking live buy orders for {} owned relic/tier combination(s) (respects WFM's 3 req/s limit, so this may take a bit)...\n",
+        relic_repr.len()
+    );
+
+    let mut messages: Vec<RelicSellMessage> = Vec::new();
+    let mut no_buy_orders = 0u32;
+    let mut no_fulfillable_order = 0u32;
+
+    // Deterministic order for the progress-relevant fetch pass; HashMap iteration order isn't
+    // otherwise meaningful here since results get sorted by price before display anyway.
+    let mut slugs: Vec<&String> = relic_repr.keys().collect();
+    slugs.sort();
+
+    for slug in slugs {
+        let item = relic_repr[slug];
+        let owned_qty = relic_qty.get(slug).copied().unwrap_or(0);
+
+        let Some((display_name, tier)) = relic_display_and_tier(item) else {
+            tseprintln!(
+                "[WARNING] '{}' ({slug}) matched the relic category but its tier couldn't be determined from its slug — skipping.",
+                item.name
+            );
+            continue;
+        };
+
+        let orders = match wfm_client::fetch_item_orders(&client, slug).await {
+            Ok(o) => o,
+            Err(e) => {
+                tseprintln!("Failed to fetch orders for {display_name} - {tier}: {e}");
+                continue;
+            }
+        };
+        sleep(Duration::from_millis(350)).await;
+
+        // Only visible buy orders whose lot size (perTrade) we can actually cover with what's
+        // in inventory count as fulfillable — a buy order asking for a bigger lot than we own
+        // of that exact relic/tier can't be delivered on, regardless of price.
+        let mut candidates: Vec<&crate::wfm_client::PublicOrder> = orders
+            .iter()
+            .filter(|o| o.is_buy() && o.visible)
+            .filter(|o| o.lot_size() <= owned_qty)
+            .collect();
+
+        if let Some(min) = min_price {
+            candidates.retain(|o| o.platinum >= min);
+        }
+
+        let Some(best) = candidates.iter().max_by_key(|o| o.platinum) else {
+            if orders.iter().any(|o| o.is_buy() && o.visible) {
+                no_fulfillable_order += 1;
+            } else {
+                no_buy_orders += 1;
+            }
+            continue;
+        };
+
+        let Some(user) = &best.user else {
+            tseprintln!("[WARNING] Best buy order for {display_name} - {tier} at {}p has no attached trader info — skipping.", best.platinum);
+            continue;
+        };
+
+        messages.push(RelicSellMessage {
+            ign: user.ingame_name.clone(),
+            display_name,
+            tier,
+            price: best.platinum,
+        });
+    }
+
+    messages.sort_by(|a, b| b.price.cmp(&a.price));
+
+    print_header(&format!("Whisper Messages ({})", messages.len()));
+    if messages.is_empty() {
+        tsprintln!("(No owned relic had a fulfillable buy order{}.)", if min_price.is_some() { " at or above the requested minimum price" } else { "" });
+    }
+    for m in &messages {
+        // Backslash-escaped so the line pastes cleanly into chat clients (e.g. Discord) that
+        // would otherwise treat ':', '[', ']', '(', ')' as formatting.
+        tsprintln!(
+            "\\/w {} Hi! I want to sell\\: \\[{}\\] - {} for {}\\:platinum\\: \\(warframe.market\\)",
+            m.ign, m.display_name, m.tier, m.price
+        );
+    }
+
+    if no_buy_orders > 0 || no_fulfillable_order > 0 {
+        tsprintln!(
+            "\n({no_buy_orders} relic/tier combo(s) had no visible buy orders at all; {no_fulfillable_order} had buy orders but none we could fulfill at the requested lot size/min price.)"
+        );
+    }
+
+    Ok(())
+}
+
 pub async fn run_primed_mod_prices(min_rank: bool) -> Result<(), Box<dyn Error>> {
     print_header(if min_rank { "Primed Mod Prices (Unranked)" } else { "Primed Mod Prices (Maxed)" });
 
