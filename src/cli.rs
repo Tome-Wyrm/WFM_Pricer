@@ -1707,7 +1707,7 @@ pub async fn run_cli(
 /// sell/ask book, and the resulting profit — or, if pricing couldn't complete, why not.
 struct PricedIncompleteSet {
     name: String,
-    missing: Vec<(String, u32, u32)>, // (part name, deficit qty, best buy-order price/unit)
+    missing: Vec<(String, u32, u32, bool)>, // (part name, deficit qty, unit price, priced off the ask?)
     total_cost: u32,
     set_sell_price: u32,
     profit: f64,
@@ -1718,7 +1718,10 @@ struct PricedIncompleteSet {
 ///
 /// - Cost side: the current best *buy*-order price for each missing part × how many are
 ///   needed. This is what you'd realistically pay by placing a competitive buy order of your
-///   own, not the (higher) instant-buy ask.
+///   own, not the (higher) instant-buy ask. If a part has no buy orders at all, falls back to
+///   its current best *sell*-order price instead of giving up on that Set — flagged with a
+///   `*` in the output since it's a worse-case estimate (paying the ask, not getting filled at
+///   your own bid).
 /// - Revenue side: the current best *sell*-order price for the completed Set — what you'd
 ///   realistically get by listing/undercutting into the existing ask, not a statistics-derived
 ///   `wa_price` and not the (lower) buy-order/bid side.
@@ -1820,13 +1823,23 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
             };
             sleep(Duration::from_millis(350)).await;
 
-            let Some(unit_price) = wfm_client::best_buy_price(&orders, None) else {
-                unpriced_reason = Some(format!("no current buy orders for missing part '{}'", comp.name));
-                break;
+            let (unit_price, used_ask) = match wfm_client::best_buy_price(&orders, None) {
+                Some(price) => (price, false),
+                // No buy orders to competitively bid against — fall back to the current
+                // best sell/ask price instead of giving up on pricing this Set entirely.
+                // Worse-case cost estimate (you're paying the ask instead of getting
+                // filled at your own bid), so it's flagged with a `*` in the output.
+                None => match wfm_client::best_sell_price(&orders, None) {
+                    Some(price) => (price, true),
+                    None => {
+                        unpriced_reason = Some(format!("no current buy or sell orders for missing part '{}'", comp.name));
+                        break;
+                    }
+                },
             };
 
             total_cost += unit_price * comp.deficit;
-            priced_missing.push((comp.name.clone(), comp.deficit, unit_price));
+            priced_missing.push((comp.name.clone(), comp.deficit, unit_price, used_ask));
         }
 
         if let Some(reason) = unpriced_reason {
@@ -1866,8 +1879,12 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
             set.set_sell_price,
             set.profit
         );
-        for (part_name, deficit, unit_price) in &set.missing {
-            tsprintln!("    need {deficit}x {part_name} @ {unit_price}p (current best buy order)");
+        for (part_name, deficit, unit_price, used_ask) in &set.missing {
+            if *used_ask {
+                tsprintln!("    need {deficit}x {part_name} @ {unit_price}p* (no buy orders — priced off current best sell order instead)");
+            } else {
+                tsprintln!("    need {deficit}x {part_name} @ {unit_price}p (current best buy order)");
+            }
         }
     }
 
