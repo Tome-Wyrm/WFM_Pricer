@@ -1742,7 +1742,7 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
     let (_parent_map, requirements) = mapping::load_build_maps()?;
     let (wfcd_by_ref, wfm_by_ref, wfm_by_name, _wfm_by_slug) = mapping::load_lookup_tables()?;
 
-    let incomplete = mapping::find_incomplete_sets(&mapped_items, &requirements, &wfcd_by_ref);
+    let incomplete = mapping::find_incomplete_sets(&mapped_items, &requirements, &wfcd_by_ref, &wfm_by_ref, &wfm_by_name);
     if incomplete.is_empty() {
         tsprintln!("No incomplete Sets found — every Set you own parts of is either complete already or you don't own any of its parts yet.");
         return Ok(());

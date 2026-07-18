@@ -1183,14 +1183,18 @@ pub struct IncompleteSet {
 
 /// Finds every build where the user owns at least one required component but is short on at
 /// least one other, i.e. a Set that's genuinely worth considering completing (as opposed to
-/// one they own zero parts of, or one they can already assemble). Pure and synchronous by
-/// design -- pricing the shortfall against live buy orders is a separate, async concern
-/// handled by the caller (see `cli::run_check_sets_cli`).
+/// one they own zero parts of, or one they can already assemble). Builds with no tradeable
+/// WFM Set listing (cosmetics, companion parts, etc.) are excluded entirely — there's nothing
+/// to price or complete-for-profit there. Pure and synchronous by design — pricing the
+/// shortfall against live buy orders is a separate, async concern handled by the caller (see
+/// `cli::run_check_sets_cli`).
 #[must_use]
 pub fn find_incomplete_sets(
     mapped_items: &[MappedItem],
     requirements: &BuildRequirements,
     wfcd_by_ref: &HashMap<String, WfcdItem>,
+    wfm_by_ref: &HashMap<String, WfmItem>,
+    wfm_by_name: &HashMap<String, WfmItem>,
 ) -> Vec<IncompleteSet> {
     let mut owned: HashMap<&str, u32> = HashMap::new();
     for item in mapped_items {
@@ -1199,6 +1203,15 @@ pub fn find_incomplete_sets(
 
     let mut result = Vec::new();
     for (build_unique, recipe) in requirements {
+        // Skip builds with no tradeable WFM Set listing at all (cosmetics, companion
+        // parts, and other non-marketable builds) before doing any ownership work —
+        // there's nothing to price or complete-for-profit here, and surfacing these
+        // just buries the builds that actually matter under warnings.
+        let Some(wfcd_item) = wfcd_by_ref.get(build_unique) else { continue };
+        if resolve_set_item(&wfcd_item.name, wfm_by_name).is_none() {
+            continue;
+        }
+
         let mut any_owned = false;
         let mut missing = Vec::new();
 
@@ -1208,9 +1221,13 @@ pub fn find_incomplete_sets(
                 any_owned = true;
             }
             if have < *required_qty {
-                let name = wfcd_by_ref
+                // Prefer the WFM display name (what a trader actually recognizes) over
+                // WFCD's, and only fall back to the raw uniqueName path as a last resort.
+                let name = wfm_by_ref
                     .get(comp_unique)
-                    .map_or_else(|| comp_unique.clone(), |w| w.name.clone());
+                    .map(|w| w.i18n.en.name.clone())
+                    .or_else(|| wfcd_by_ref.get(comp_unique).map(|w| w.name.clone()))
+                    .unwrap_or_else(|| comp_unique.clone());
                 missing.push(MissingComponent {
                     unique_name: comp_unique.clone(),
                     name,
