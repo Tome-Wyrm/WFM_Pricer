@@ -1,6 +1,6 @@
 .git/
 cache/
-config/
+config/*
 logs/
 target/
 tests/
@@ -19,3 +19,5 @@ vendor-rank-plan.md
 vendor-reconciliation-checklist.md
 warframe_tool.exe
 items.json
+config/blacklist.toml
+config/
