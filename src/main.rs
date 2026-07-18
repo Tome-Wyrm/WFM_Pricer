@@ -67,6 +67,16 @@ enum Commands {
         #[arg(long)]
         min_rank: bool,
     },
+    /// Find Sets you own some but not all components of, and check whether buying the
+    /// missing components off the current buy-order book would be profitable against what
+    /// the completed Set currently fetches on its own buy-order book.
+    CheckSets {
+        /// Only show Sets whose estimated profit is at least this many platinum (can be
+        /// negative to also see near-miss/losing completions). Unset = show everything that
+        /// could be priced.
+        #[arg(long)]
+        min_profit: Option<f64>,
+    },
 }
 
 fn is_eligible_for_mastery_checklist(unique_name: &str) -> bool {
@@ -204,7 +214,7 @@ fn run_debug_mastery_checklist(
 
 /// Resolves the inventory file to ingest: an explicit `--inventory` override, else
 /// `inventory.json` in the cwd if present, else the AlecaFrame `lastData.dat` fallback.
-fn resolve_inventory_path(override_path: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>> {
+pub(crate) fn resolve_inventory_path(override_path: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>> {
     if let Some(p) = override_path {
         tsprintln!("Using --inventory override: {}", p.display());
         return Ok(p);
@@ -291,6 +301,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Some(Commands::UpdateCaches) => mapping::update_caches().await,
         Some(Commands::PrimedMods { min_rank }) => cli::run_primed_mod_prices(min_rank).await,
+        Some(Commands::CheckSets { min_profit }) => cli::run_check_sets_cli(min_profit).await,
         Some(Commands::DebugMastery) => run_default_pipeline(cli_args.inventory, true).await,
         None => run_default_pipeline(cli_args.inventory, false).await,
     }

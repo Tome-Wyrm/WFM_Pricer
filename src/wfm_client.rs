@@ -138,6 +138,131 @@ impl CreateOrder {
     }
 }
 
+/// A single order from an item's *public* order book (i.e. every trader's listing for that
+/// item, not just the caller's own — contrast with `Order`/`my_orders`, which is
+/// account-scoped and requires auth). Deliberately a separate, smaller struct rather than
+/// reusing `Order`: the public per-item endpoint has no `itemId` field (the item is implied
+/// by the URL) and no visibility into which orders are the caller's, so `Order`'s shape
+/// doesn't match it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PublicOrder {
+    #[serde(rename = "type")]
+    pub order_type: String,
+    pub platinum: u32,
+    pub quantity: u32,
+    #[serde(default = "default_true")]
+    pub visible: bool,
+    #[serde(default)]
+    pub rank: Option<u8>,
+    #[serde(default)]
+    pub subtype: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl PublicOrder {
+    #[must_use]
+    pub fn is_buy(&self) -> bool {
+        self.order_type == "buy"
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PublicOrdersResponse {
+    data: Vec<PublicOrder>,
+}
+
+/// Fetches the live public order book for a single item slug — every trader's buy and sell
+/// listings, not just the caller's own. This is WFM's public v2 endpoint; no auth token is
+/// required (this is a free function, not a `WfmClient` method, for exactly that reason).
+///
+/// # Errors
+/// Returns an error if the request fails, the server returns a non-success status, or the
+/// response body cannot be parsed as the expected order-list shape.
+pub async fn fetch_item_orders(
+    client: &reqwest::Client,
+    slug: &str,
+) -> Result<Vec<PublicOrder>, Box<dyn Error + Send + Sync>> {
+    let url = format!("https://api.warframe.market/v2/orders/item/{slug}");
+    let resp = client
+        .get(&url)
+        .header("Platform", "pc")
+        .header("Language", "en")
+        .header("Crossplay", "true")
+        .header("User-Agent", "wfm-pricer-cli")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("Failed to fetch orders for {slug}: {status} - {text}").into());
+    }
+
+    let body: PublicOrdersResponse = resp.json().await?;
+    Ok(body.data)
+}
+
+/// Picks the best (highest) currently-visible *buy*-order price for an item, optionally
+/// restricted to a specific mod/arcane rank (`None` = ignore rank entirely, which is what
+/// almost every Prime/Set component wants since those aren't ranked).
+///
+/// Deliberately the buy side, not the cheapest sell listing: the intended workflow is to
+/// place a competitive buy order at (or just above) the current best buy price rather than
+/// instant-buying the cheapest sell listing, since the buy side is reliably cheaper than the
+/// sell/ask side. Same logic applies when this is used to value a completed Set — the buy
+/// price is what you'd actually receive by instant-selling into someone's existing buy order.
+#[must_use]
+pub fn best_buy_price(orders: &[PublicOrder], rank: Option<u8>) -> Option<u32> {
+    orders
+        .iter()
+        .filter(|o| o.is_buy() && o.visible)
+        .filter(|o| rank.is_none() || o.rank == rank)
+        .map(|o| o.platinum)
+        .max()
+}
+
+#[cfg(test)]
+mod public_order_tests {
+    use super::*;
+
+    fn order(order_type: &str, platinum: u32, visible: bool, rank: Option<u8>) -> PublicOrder {
+        PublicOrder {
+            order_type: order_type.to_string(),
+            platinum,
+            quantity: 1,
+            visible,
+            rank,
+            subtype: None,
+        }
+    }
+
+    #[test]
+    fn picks_highest_visible_buy_order() {
+        let orders = vec![
+            order("buy", 10, true, None),
+            order("buy", 25, true, None),
+            order("sell", 40, true, None), // higher, but wrong side — must be ignored
+            order("buy", 18, false, None), // higher, but hidden — must be ignored
+        ];
+        assert_eq!(best_buy_price(&orders, None), Some(25));
+    }
+
+    #[test]
+    fn no_visible_buy_orders_returns_none() {
+        let orders = vec![order("sell", 40, true, None), order("buy", 12, false, None)];
+        assert_eq!(best_buy_price(&orders, None), None);
+    }
+
+    #[test]
+    fn rank_filter_ignores_non_matching_ranks() {
+        let orders = vec![order("buy", 50, true, Some(0)), order("buy", 30, true, Some(3))];
+        assert_eq!(best_buy_price(&orders, Some(3)), Some(30));
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateOrder {

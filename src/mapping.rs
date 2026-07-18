@@ -1161,6 +1161,78 @@ pub fn get_build_status(
     }
 }
 
+/// One component still needed to complete a Set the user has partially assembled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingComponent {
+    /// The component's WFCD `uniqueName` (matches keys in `BuildRequirements`/`BuildParentMap`).
+    pub unique_name: String,
+    /// Display name, resolved from the WFCD cache where possible.
+    pub name: String,
+    /// How many more copies are needed to reach the recipe's required quantity.
+    pub deficit: u32,
+}
+
+/// A Set the user owns at least one component of, but not enough of every component to
+/// assemble yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncompleteSet {
+    /// The build's `uniqueName` (key into `wfcd_by_ref` / `BuildRequirements`).
+    pub build_unique: String,
+    pub missing: Vec<MissingComponent>,
+}
+
+/// Finds every build where the user owns at least one required component but is short on at
+/// least one other, i.e. a Set that's genuinely worth considering completing (as opposed to
+/// one they own zero parts of, or one they can already assemble). Pure and synchronous by
+/// design -- pricing the shortfall against live buy orders is a separate, async concern
+/// handled by the caller (see `cli::run_check_sets_cli`).
+#[must_use]
+pub fn find_incomplete_sets(
+    mapped_items: &[MappedItem],
+    requirements: &BuildRequirements,
+    wfcd_by_ref: &HashMap<String, WfcdItem>,
+) -> Vec<IncompleteSet> {
+    let mut owned: HashMap<&str, u32> = HashMap::new();
+    for item in mapped_items {
+        *owned.entry(item.game_ref.as_str()).or_insert(0) += item.quantity;
+    }
+
+    let mut result = Vec::new();
+    for (build_unique, recipe) in requirements {
+        let mut any_owned = false;
+        let mut missing = Vec::new();
+
+        for (comp_unique, required_qty) in recipe {
+            let have = owned.get(comp_unique.as_str()).copied().unwrap_or(0);
+            if have > 0 {
+                any_owned = true;
+            }
+            if have < *required_qty {
+                let name = wfcd_by_ref
+                    .get(comp_unique)
+                    .map_or_else(|| comp_unique.clone(), |w| w.name.clone());
+                missing.push(MissingComponent {
+                    unique_name: comp_unique.clone(),
+                    name,
+                    deficit: required_qty - have,
+                });
+            }
+        }
+
+        // Own at least one part, but not the whole recipe yet -- that's "incomplete", as
+        // distinct from "not started" (own nothing) or "already complete" (missing is empty).
+        if any_owned && !missing.is_empty() {
+            result.push(IncompleteSet {
+                build_unique: build_unique.clone(),
+                missing,
+            });
+        }
+    }
+
+    result
+}
+
+
 // ── Main mapping function ─────────────────────────────────────────────────────
 
 /// Maps the `AlecaFrame` inventory JSON to a list of tradeable WFM items.

@@ -7,6 +7,11 @@ use tokio::time::{sleep, Duration};
 use crate::wfm_client::{WfmClient, Credentials, CreateOrder, UpdateOrder, Order as OwnedOrder};
 use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE, MIN_DAILY_VOLUME};
 use crate::mapping::{BuildParentMap, BuildRequirements, BuildStatus, get_build_status, resolve_set_item};
+// Whole-module imports (as opposed to the specific-item imports above) for the
+// check-sets feature, which needs several more mapping::/wfm_client:: items than are
+// worth naming individually here.
+use crate::mapping;
+use crate::wfm_client;
 use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig, WfcdItem, WfmItem, WfmStatsResponse};
 use crate::pricing::{
     calculate_saturation_ratio, calculate_weighted_average, derive_endo_to_plat_from_mods,
@@ -1693,6 +1698,155 @@ pub async fn run_cli(
 
     print_header("WFM Pricer Session Completed Successfully");
     tsprintln!("Session report written to: 'session_report.json'");
+
+    Ok(())
+}
+
+/// One priced, completable Set: the missing parts, what buying them on the current buy-order
+/// book would cost, what the completed Set currently fetches on its own buy-order book, and
+/// the resulting profit (positive or negative).
+struct PricedIncompleteSet {
+    name: String,
+    missing: Vec<(String, u32, u32)>, // (part name, deficit qty, best buy-order price/unit)
+    total_cost: u32,
+    set_buy_price: u32,
+    profit: f64,
+}
+
+/// `--check-sets`: finds every Set the user owns at least one component of but hasn't
+/// finished assembling, then checks whether buying the missing parts — priced off the
+/// *current buy-order book*, not the sell/ask listings and not the statistics-derived
+/// `wa_price` — would be profitable against what the completed Set currently fetches on its
+/// own buy-order book. Buy orders are used deliberately on both sides: they're what you'd
+/// realistically pay by placing a competitive buy order of your own (cheaper than
+/// instant-buying the ask), and what you'd realistically receive by instant-selling the
+/// finished Set into someone else's buy order.
+///
+/// Does not place any orders — this is a read-only profitability report. Sunk cost of the
+/// parts you already own is intentionally not counted against the profit figure.
+///
+/// # Errors
+/// Returns an error if caches can't be refreshed/loaded, the inventory can't be ingested, or
+/// inventory-to-WFM mapping fails.
+pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn Error>> {
+    print_header("Incomplete Set Profitability Check");
+
+    mapping::update_caches().await?;
+
+    tsprintln!("Ingesting inventory...");
+    let inventory_path = crate::resolve_inventory_path(None)?;
+    let inventory = crate::ingestion::ingest_inventory(&inventory_path)?;
+
+    let client = reqwest::Client::new();
+    let mapped_items = mapping::map_inventory(&inventory, &client).await?;
+    let (_parent_map, requirements) = mapping::load_build_maps()?;
+    let (wfcd_by_ref, wfm_by_ref, wfm_by_name, _wfm_by_slug) = mapping::load_lookup_tables()?;
+
+    let incomplete = mapping::find_incomplete_sets(&mapped_items, &requirements, &wfcd_by_ref);
+    if incomplete.is_empty() {
+        tsprintln!("No incomplete Sets found — every Set you own parts of is either complete already or you don't own any of its parts yet.");
+        return Ok(());
+    }
+
+    tsprintln!("Found {} incomplete Set(s). Checking current buy orders (this respects WFM's 3 req/s limit, so it may take a bit)...\n", incomplete.len());
+
+    let mut priced = Vec::new();
+
+    for set in &incomplete {
+        let Some(wfcd_item) = wfcd_by_ref.get(&set.build_unique) else { continue };
+
+        let Some(set_wfm_item) = resolve_set_item(&wfcd_item.name, &wfm_by_name) else {
+            tseprintln!("[WARNING] Could not resolve a WFM Set listing for '{}' — skipping.", wfcd_item.name);
+            continue;
+        };
+
+        let set_orders = match wfm_client::fetch_item_orders(&client, &set_wfm_item.slug).await {
+            Ok(o) => o,
+            Err(e) => {
+                tseprintln!("[WARNING] Failed to fetch orders for '{}': {e}", set_wfm_item.slug);
+                continue;
+            }
+        };
+        sleep(Duration::from_millis(350)).await;
+
+        let Some(set_buy_price) = wfm_client::best_buy_price(&set_orders, None) else {
+            tsprintln!("{}: no current buy orders for the completed Set — skipping.", wfcd_item.name);
+            continue;
+        };
+
+        let mut total_cost: u32 = 0;
+        let mut priced_missing = Vec::new();
+        let mut fully_priced = true;
+
+        for comp in &set.missing {
+            let Some(wfm_comp) = wfm_by_ref.get(&comp.unique_name) else {
+                tsprintln!("{}: missing part '{}' isn't in the WFM items cache — skipping this Set.", wfcd_item.name, comp.name);
+                fully_priced = false;
+                break;
+            };
+
+            let orders = match wfm_client::fetch_item_orders(&client, &wfm_comp.slug).await {
+                Ok(o) => o,
+                Err(e) => {
+                    tseprintln!("[WARNING] Failed to fetch orders for '{}': {e}", wfm_comp.slug);
+                    fully_priced = false;
+                    break;
+                }
+            };
+            sleep(Duration::from_millis(350)).await;
+
+            let Some(unit_price) = wfm_client::best_buy_price(&orders, None) else {
+                tsprintln!("{}: no current buy orders for missing part '{}' — skipping this Set.", wfcd_item.name, comp.name);
+                fully_priced = false;
+                break;
+            };
+
+            total_cost += unit_price * comp.deficit;
+            priced_missing.push((comp.name.clone(), comp.deficit, unit_price));
+        }
+
+        if !fully_priced {
+            continue;
+        }
+
+        let profit = f64::from(set_buy_price) - f64::from(total_cost);
+        priced.push(PricedIncompleteSet {
+            name: wfcd_item.name.clone(),
+            missing: priced_missing,
+            total_cost,
+            set_buy_price,
+            profit,
+        });
+    }
+
+    priced.sort_by(|a, b| b.profit.partial_cmp(&a.profit).unwrap_or(std::cmp::Ordering::Equal));
+
+    print_header("Set Completion Profitability");
+    tsprintln!("{:<32} {:>12} {:>15} {:>10}", "Set", "Parts Cost", "Set Buy Price", "Profit");
+    tsprintln!("{}", "-".repeat(73));
+
+    let mut shown = 0;
+    for set in &priced {
+        if let Some(min) = min_profit
+            && set.profit < min {
+                continue;
+            }
+        shown += 1;
+        tsprintln!(
+            "{:<32} {:>12} {:>15} {:>10.1}",
+            set.name,
+            set.total_cost,
+            set.set_buy_price,
+            set.profit
+        );
+        for (part_name, deficit, unit_price) in &set.missing {
+            tsprintln!("    need {deficit}x {part_name} @ {unit_price}p (current best buy order)");
+        }
+    }
+
+    if shown == 0 {
+        tsprintln!("(No priced Sets met the requested minimum profit.)");
+    }
 
     Ok(())
 }
