@@ -1915,12 +1915,27 @@ struct RelicSellMessage {
     ign: String,
     display_name: String,
     tier: String,
+    /// Total platinum for the trade (i.e. what you'd actually receive for `lot_size` relics
+    /// in one go) — this is what gets quoted in the whisper.
     price: u32,
+    /// perTrade lot size for the matched order. WFM's `platinum` is the price for the whole
+    /// lot, not per relic — a `platinum: 40, perTrade: 6` order is ~6.67p/relic, not 40p/relic.
+    /// Kept alongside `price` so the message can show "6x [...]" for batch orders.
+    lot_size: u32,
+    /// The order's own `quantity` field — how many total the buyer is looking to acquire
+    /// across (potentially many) trades, NOT the lot size of any single trade. Shown above the
+    /// whisper purely as context (e.g. "they want 36 total, you have 12") — never filtered on,
+    /// since fulfillability only depends on `lot_size`.
+    listing_quantity: u32,
+    /// Total owned of this exact relic/tier at the time of the check, shown alongside
+    /// `listing_quantity` for the same reason.
+    owned_quantity: u32,
 }
 
 /// `sell-relics`: matches owned relics (by refinement/tier) against the live public buy-order
 /// book and prints a whisper message for the best-paying, fulfillable buy order on each one,
-/// sorted descending by platinum.
+/// sorted descending by per-relic rate (platinum ÷ perTrade lot size — see the `unit_price`
+/// comment below for why raw lot totals would rank batch orders wrong).
 ///
 /// Important WFM-specific detail, confirmed against the real API: unlike most bulk-tradable
 /// items, a relic's WFM slug is NOT refinement-specific — `lith_o2_relic` alone covers Intact
@@ -2029,11 +2044,21 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
             let mut candidates: Vec<&crate::wfm_client::PublicOrder> =
                 buy_orders_for_tier().filter(|o| o.lot_size() <= owned_qty).collect();
 
+            // WFM's `platinum` is the price for the whole lot (perTrade relics), not per
+            // relic — a 6-relic lot at platinum: 40 is ~6.67p/relic, not 40p/relic. Both
+            // `--min-price` and "best" order selection need to compare on that per-relic rate,
+            // or a large low-value lot can look like the best (or only qualifying) offer when
+            // it's actually the worst.
+            let unit_price = |o: &crate::wfm_client::PublicOrder| f64::from(o.platinum) / f64::from(o.lot_size());
+
             if let Some(min) = min_price {
-                candidates.retain(|o| o.platinum >= min);
+                candidates.retain(|o| unit_price(o) >= f64::from(min));
             }
 
-            let Some(best) = candidates.iter().max_by_key(|o| o.platinum) else {
+            let Some(best) = candidates
+                .iter()
+                .max_by(|a, b| unit_price(a).total_cmp(&unit_price(b)))
+            else {
                 if buy_orders_for_tier().next().is_some() {
                     no_fulfillable_order += 1;
                 } else {
@@ -2055,21 +2080,35 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
                 display_name: display_name.clone(),
                 tier: capitalize_tier(&tier),
                 price: best.platinum,
+                lot_size: best.lot_size(),
+                listing_quantity: best.quantity,
+                owned_quantity: owned_qty,
             });
         }
     }
 
-    messages.sort_by(|a, b| b.price.cmp(&a.price));
+    // Sort by per-relic rate (platinum / lot_size), not raw lot total — see the unit_price
+    // comment above for why. A 6-relic lot at 40p total (~6.67p/relic) should rank below a
+    // single-relic order at 10p, not above it.
+    messages.sort_by(|a, b| {
+        let rate = |m: &RelicSellMessage| f64::from(m.price) / f64::from(m.lot_size);
+        rate(b).total_cmp(&rate(a))
+    });
 
     print_header(&format!("Whisper Messages ({})", messages.len()));
     if messages.is_empty() {
         tsprintln!("(No owned relic had a fulfillable buy order{}.)", if min_price.is_some() { " at or above the requested minimum price" } else { "" });
     }
     for m in &messages {
-        // Backslash-escaped so the line pastes cleanly into chat clients (e.g. Discord) that
-        // would otherwise treat ':', '[', ']', '(', ')' as formatting.
         tsprintln!(
-            "\\/w {} Hi! I want to sell\\: \\[{}\\] - {} for {}\\:platinum\\: \\(warframe.market\\)",
+            "{} - {}  (listing wants {}, you own {})",
+            m.display_name, m.tier, m.listing_quantity, m.owned_quantity
+        );
+        // Unescaped: [Name] renders as an in-game item link (helps with localization) and
+        // :platinum: as the in-game emote when pasted into WFM/Warframe chat directly.
+        let qty_prefix = if m.lot_size > 1 { format!("{}x ", m.lot_size) } else { String::new() };
+        tsprintln!(
+            "/w {} Hi! I want to sell: {qty_prefix}[{}] - {} for {}:platinum: (warframe.market)\n",
             m.ign, m.display_name, m.tier, m.price
         );
     }
