@@ -31,6 +31,8 @@ pub use mastery::{
 pub(crate) use cache::{fetch_full_item, load_full_items_cache, save_full_items_cache};
 pub(crate) use filters::{check_allowlist, is_relic};
 pub(crate) use item_mapping::process_item;
-pub(crate) use keep_blacklist::{apply_cross_rank_keep, apply_keep_blacklist, load_keep_blacklist, merge_duplicate_ranked_items};
+pub(crate) use keep_blacklist::{
+    apply_cross_rank_keep, apply_keep_blacklist, load_keep_blacklist, merge_duplicate_ranked_items,
+};
 pub(crate) use lookup::{find_wfm_match, load_lookup_tables};
 pub(crate) use relics::{load_relic_map, map_relic};
