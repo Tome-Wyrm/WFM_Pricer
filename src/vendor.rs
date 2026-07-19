@@ -1,11 +1,11 @@
 // src/vendor.rs
 use crate::config;
 use num_traits::ToPrimitive;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 // Timestamped session logging: see src/logging.rs.
 use crate::{tseprintln, tsprint, tsprintln};
 
@@ -203,22 +203,24 @@ fn parse_rank_list(table: &[(Option<LuaKey>, LuaValue)]) -> RankList {
 
     for (key, val) in table {
         let Some(name) = val.as_str() else { continue };
-        match key {
-            Some(LuaKey::Integer(i)) => {
-                pairs.push((*i, name.to_string()));
-                if *i + 1 > next_idx { next_idx = *i + 1; }
+        if let Some(LuaKey::Integer(i)) = key {
+            pairs.push((*i, name.to_string()));
+            if *i + 1 > next_idx {
+                next_idx = *i + 1;
             }
-            _ => {
-                pairs.push((next_idx, name.to_string()));
-                next_idx += 1;
-            }
+        } else {
+            pairs.push((next_idx, name.to_string()));
+            next_idx += 1;
         }
     }
 
     pairs.sort_by_key(|(i, _)| *i);
     let zero_indexed = pairs.iter().any(|(i, _)| *i == 0);
     let names = pairs.into_iter().map(|(_, n)| n).collect();
-    RankList { names, zero_indexed }
+    RankList {
+        names,
+        zero_indexed,
+    }
 }
 
 /// Parses a token stream into a `LuaValue`.
@@ -315,7 +317,9 @@ fn parse_field(tokens: &[Token], pos: &mut usize) -> Result<(Option<LuaKey>, Lua
                         return Err(format!("Bracket key must be an integer, got {n}"));
                     }
                 }
-                LuaValue::Table(_) => return Err(format!("Invalid bracket key type: {key_expr:?}")),
+                LuaValue::Table(_) => {
+                    return Err(format!("Invalid bracket key type: {key_expr:?}"));
+                }
             }
         }
         Token::Ident(name) => {
@@ -350,8 +354,8 @@ pub fn load_vendor_data() -> Result<Vec<RawVendor>, String> {
     if !path.exists() {
         return Err(format!("Vendor cache file not found: {}", path.display()));
     }
-    let json = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read vendor cache: {e}"))?;
+    let json =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read vendor cache: {e}"))?;
     let vendors: Vec<RawVendor> = serde_json::from_str(&json)
         .map_err(|e| format!("Failed to parse vendor cache JSON: {e}"))?;
     Ok(vendors)
@@ -365,8 +369,7 @@ pub fn write_vendor_cache(vendors: &[RawVendor]) -> Result<(), String> {
     let path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
     let json = serde_json::to_string_pretty(vendors)
         .map_err(|e| format!("Failed to serialize vendor cache: {e}"))?;
-    std::fs::write(path, json)
-        .map_err(|e| format!("Failed to write vendor cache: {e}"))?;
+    std::fs::write(path, json).map_err(|e| format!("Failed to write vendor cache: {e}"))?;
     Ok(())
 }
 
@@ -411,11 +414,7 @@ pub fn normalize_category(cat: &str) -> String {
 fn get_string_field<'a>(fields: &'a [(Option<LuaKey>, LuaValue)], key: &str) -> Option<&'a str> {
     fields.iter().find_map(|(k, v)| {
         if let Some(LuaKey::String(s)) = k {
-            if s == key {
-                v.as_str()
-            } else {
-                None
-            }
+            if s == key { v.as_str() } else { None }
         } else {
             None
         }
@@ -426,11 +425,7 @@ fn get_string_field<'a>(fields: &'a [(Option<LuaKey>, LuaValue)], key: &str) -> 
 fn get_number_field(fields: &[(Option<LuaKey>, LuaValue)], key: &str) -> Option<f64> {
     fields.iter().find_map(|(k, v)| {
         if let Some(LuaKey::String(s)) = k {
-            if s == key {
-                v.as_number()
-            } else {
-                None
-            }
+            if s == key { v.as_number() } else { None }
         } else {
             None
         }
@@ -455,7 +450,8 @@ fn parse_price(price_val: &LuaValue, fallback_currency: Option<&str>) -> Result<
                     Some(LuaKey::Integer(i)) => i.to_string(),
                     None => return Err("Price table has an unnamed entry".to_string()),
                 };
-                let amount = val.as_number()
+                let amount = val
+                    .as_number()
                     .ok_or_else(|| format!("Price table value for '{cur}' is not a number"))?;
                 currencies.push((cur, amount));
             }
@@ -472,11 +468,14 @@ fn parse_price(price_val: &LuaValue, fallback_currency: Option<&str>) -> Result<
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn parse_prereq(table: &[(Option<LuaKey>, LuaValue)]) -> Result<Option<PrereqSpec>, String> {
     for (key, val) in table {
-        if let Some(LuaKey::String(s)) = key && s == "Prereq" {
+        if let Some(LuaKey::String(s)) = key
+            && s == "Prereq"
+        {
             match val {
                 LuaValue::Number(n) => {
                     let rounded = n.round();
-                    if (*n - rounded).abs() < f64::EPSILON && *n >= 0.0 && *n <= f64::from(u32::MAX) {
+                    if (*n - rounded).abs() < f64::EPSILON && *n >= 0.0 && *n <= f64::from(u32::MAX)
+                    {
                         let rank = rounded as u32;
                         return Ok(Some(PrereqSpec::Rank(rank)));
                     }
@@ -503,31 +502,34 @@ pub fn parse_raw_offering(
     table: &[(Option<LuaKey>, LuaValue)],
     vendor_currency: Option<&str>,
 ) -> Result<Option<RawOffering>, String> {
-    let is_named = get_string_field(table, "item").is_some() || get_number_field(table, "cost").is_some();
+    let is_named =
+        get_string_field(table, "item").is_some() || get_number_field(table, "cost").is_some();
 
     if is_named {
-        let name = match get_string_field(table, "item") {
-            Some(n) => n.to_string(),
-            None => {
-                tseprintln!("Warning: named offering missing 'item', skipping");
-                return Ok(None);
-            }
+        let name = if let Some(n) = get_string_field(table, "item") {
+            n.to_string()
+        } else {
+            tseprintln!("Warning: named offering missing 'item', skipping");
+            return Ok(None);
         };
         let category = get_string_field(table, "type")
             .or_else(|| get_string_field(table, "category"))
             .unwrap_or("Misc")
             .to_string();
-        let price_val = table.iter().find_map(|(k, v)| {
-            if let Some(LuaKey::String(s)) = k {
-                if s == "cost" || s == "price" {
-                    Some(v)
+        let price_val = table
+            .iter()
+            .find_map(|(k, v)| {
+                if let Some(LuaKey::String(s)) = k {
+                    if s == "cost" || s == "price" {
+                        Some(v)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
-            } else {
-                None
-            }
-        }).ok_or_else(|| "Named offering missing 'cost' or 'price'".to_string())?;
+            })
+            .ok_or_else(|| "Named offering missing 'cost' or 'price'".to_string())?;
         let price = parse_price(price_val, vendor_currency)?;
         let qty = get_number_field(table, "qty").map_or(1, |n| n as u32);
         let timer = get_number_field(table, "Timer").map(|n| n as u64);
@@ -552,16 +554,18 @@ pub fn parse_raw_offering(
         }
         if values.len() < 3 {
             tseprintln!("Warning: positional offering has fewer than 3 fields, skipping");
-            tseprintln!("Table fields: {:?}", table);   // 👈 print the whole table
+            tseprintln!("Table fields: {:?}", table); // 👈 print the whole table
             for (key, val) in table {
                 tseprintln!("  key={:?}, val={:?}", key, val);
             }
             return Ok(None);
         }
-        let name = values[0].as_str()
+        let name = values[0]
+            .as_str()
             .ok_or_else(|| "First positional value must be a string for name".to_string())?
             .to_string();
-        let category = values[1].as_str()
+        let category = values[1]
+            .as_str()
             .ok_or_else(|| "Second positional value must be a string for category".to_string())?
             .to_string();
         let price = parse_price(values[2], vendor_currency)?;
@@ -613,7 +617,8 @@ pub fn parse_raw_vendor(
     vendor_key: String,
     vendor_table: &LuaValue,
 ) -> Result<(RawVendor, usize), String> {
-    let fields = vendor_table.as_table()
+    let fields = vendor_table
+        .as_table()
         .ok_or("Vendor table is not a table")?;
 
     let name = get_string_field(fields, "Name")
@@ -624,20 +629,27 @@ pub fn parse_raw_vendor(
     let vendor_type = get_string_field(fields, "Type").map(String::from);
 
     let ranks = fields.iter().find_map(|(k, v)| {
-        if let Some(LuaKey::String(s)) = k && s == "Ranks" {
+        if let Some(LuaKey::String(s)) = k
+            && s == "Ranks"
+        {
             v.as_table().map(|t| parse_rank_list(t))
         } else {
             None
         }
     });
 
-    let offerings_table = fields.iter().find_map(|(k, v)| {
-        if let Some(LuaKey::String(s)) = k && s == "Offerings" {
-            v.as_table()
-        } else {
-            None
-        }
-    }).ok_or("Vendor missing 'Offerings' table")?;
+    let offerings_table = fields
+        .iter()
+        .find_map(|(k, v)| {
+            if let Some(LuaKey::String(s)) = k
+                && s == "Offerings"
+            {
+                v.as_table()
+            } else {
+                None
+            }
+        })
+        .ok_or("Vendor missing 'Offerings' table")?;
 
     let vendor_currency_str = match &currency {
         CurrencySpec::One(c) => Some(c.as_str()),
@@ -647,17 +659,18 @@ pub fn parse_raw_vendor(
     let mut offerings = Vec::new();
     let mut skipped = 0usize;
     for (_, offering_val) in offerings_table {
-        let fields = match offering_val {
-            LuaValue::Table(f) => f.as_slice(),
-            _ => {
-                tseprintln!("Warning: offering entry is not a table, skipping");
-                skipped += 1;
-                continue;
-            }
+        let fields = if let LuaValue::Table(f) = offering_val {
+            f.as_slice()
+        } else {
+            tseprintln!("Warning: offering entry is not a table, skipping");
+            skipped += 1;
+            continue;
         };
         match parse_raw_offering(fields, vendor_currency_str) {
             Ok(Some(raw)) => offerings.push(raw),
-            Ok(None) => { skipped += 1; }
+            Ok(None) => {
+                skipped += 1;
+            }
             Err(e) => {
                 tseprintln!("Warning: failed to parse offering: {}", e);
                 skipped += 1;
@@ -665,19 +678,24 @@ pub fn parse_raw_vendor(
         }
     }
 
-    Ok((RawVendor {
-        key: vendor_key,
-        name,
-        currency,
-        vendor_type,
-        ranks,
-        offerings,
-    }, skipped))
+    Ok((
+        RawVendor {
+            key: vendor_key,
+            name,
+            currency,
+            vendor_type,
+            ranks,
+            offerings,
+        },
+        skipped,
+    ))
 }
 
 fn parse_currency(fields: &[(Option<LuaKey>, LuaValue)]) -> Result<CurrencySpec, String> {
     for (key, val) in fields {
-        if let Some(LuaKey::String(s)) = key && s == "Currency" {
+        if let Some(LuaKey::String(s)) = key
+            && s == "Currency"
+        {
             return match val {
                 LuaValue::String(s) => Ok(CurrencySpec::One(s.clone())),
                 LuaValue::Table(pairs) => {
@@ -712,7 +730,9 @@ fn parse_currency(fields: &[(Option<LuaKey>, LuaValue)]) -> Result<CurrencySpec,
                         }
                     }
                 }
-                LuaValue::Number(_) => Err("Currency must be a string or a table of strings".to_string()),
+                LuaValue::Number(_) => {
+                    Err("Currency must be a string or a table of strings".to_string())
+                }
             };
         }
     }
@@ -765,14 +785,15 @@ pub struct VendorConfig {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_vendor_metadata() -> Result<std::collections::HashMap<String, VendorMeta>, Box<dyn Error>> {
+pub fn load_vendor_metadata()
+-> Result<std::collections::HashMap<String, VendorMeta>, Box<dyn Error>> {
     let path = Path::new(crate::config::VENDORS_CONFIG_FILE);
     if !path.exists() {
         return Ok(std::collections::HashMap::new());
     }
     let content = fs::read_to_string(path)?;
-    let config: VendorConfig = toml::from_str(&content)
-        .map_err(|e| format!("Failed to parse vendors.toml: {e}"))?;
+    let config: VendorConfig =
+        toml::from_str(&content).map_err(|e| format!("Failed to parse vendors.toml: {e}"))?;
     Ok(config.vendor)
 }
 
@@ -986,7 +1007,10 @@ pub fn build_and_write_vendor_cache() -> Result<Vec<MappedVendor>, Box<dyn Error
                     let (slug, reason) = if is_tradeable_category(&o.category) {
                         match_offering(&o, &wfm_by_name)
                     } else {
-                        (None, Some(format!("category '{}' not tradeable", o.category)))
+                        (
+                            None,
+                            Some(format!("category '{}' not tradeable", o.category)),
+                        )
                     };
                     MappedOffering {
                         target_rank: target_rank_for(&o.category),
@@ -1072,15 +1096,26 @@ pub fn print_match_report(vendors: &[MappedVendor]) {
     let stats = compute_match_stats(vendors);
     tsprintln!(
         "{:<28} {:>6} {:>10} {:>8} {:>10}",
-        "Vendor", "Total", "Tradeable", "Matched", "Unmatched"
+        "Vendor",
+        "Total",
+        "Tradeable",
+        "Matched",
+        "Unmatched"
     );
     for s in &stats {
         let unmatched_count = s.unmatched.len();
         let skipped = s.total_offerings - s.tradeable_count;
-        debug_assert_eq!(s.matched_count + unmatched_count + skipped, s.total_offerings);
+        debug_assert_eq!(
+            s.matched_count + unmatched_count + skipped,
+            s.total_offerings
+        );
         tsprintln!(
             "{:<28} {:>6} {:>10} {:>8} {:>10}",
-            s.key, s.total_offerings, s.tradeable_count, s.matched_count, unmatched_count
+            s.key,
+            s.total_offerings,
+            s.tradeable_count,
+            s.matched_count,
+            unmatched_count
         );
         for name in &s.unmatched {
             tsprintln!("    unmatched: {name}");
@@ -1111,7 +1146,9 @@ pub fn dump_category_audit(vendors: &[MappedVendor]) {
     }
     tsprintln!(
         "{:<20} {:>6} {:>8}  sample unmatched",
-        "Category", "Total", "Matched"
+        "Category",
+        "Total",
+        "Matched"
     );
     for (cat, (total, matched, samples)) in by_category {
         tsprintln!("{cat:<20} {total:>6} {matched:>8}  {}", samples.join(", "));
@@ -1187,7 +1224,7 @@ pub fn unclassified_offerings(vendors: &[MappedVendor]) -> Vec<(String, String)>
 pub struct CostRow {
     pub currency: String,
     pub amount: f64,
-    /// `weighted_avg_price / amount`. `None` when `note` is set instead (AllOf).
+    /// `weighted_avg_price / amount`. `None` when `note` is set instead (`AllOf`).
     pub score: Option<f64>,
     /// Set for `AllOf` rows: "also requires: X amount of Y" for every *other*
     /// currency required alongside this row's own.
@@ -1320,7 +1357,11 @@ pub fn rank_by_score(inputs: Vec<ScoreInput>, max_saturation: Option<f64>) -> Ve
             saturation: i.saturation,
         })
         .collect();
-    rows.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    rows.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     rows
 }
 
@@ -1434,9 +1475,10 @@ pub async fn rank_offerings(
     // cheap and correct since both are built from the same offering in lockstep above.
     let mut result: Vec<RankedOffering> = Vec::new();
     for scored in &scored_rows {
-        if let Some((_, ranked)) = scored_inputs.iter().find(|(i, _)| {
-            i.label == scored.label && i.currency == scored.currency
-        }) {
+        if let Some((_, ranked)) = scored_inputs
+            .iter()
+            .find(|(i, _)| i.label == scored.label && i.currency == scored.currency)
+        {
             result.push(ranked.clone());
         }
     }
@@ -1452,6 +1494,8 @@ struct RevidCache {
 }
 
 /// Reads the cached revid from disk, if present.
+/// # Errors
+/// Returns an error if the file exists but cannot be read or parsed as JSON.
 pub fn read_cached_revid() -> Result<Option<u64>, Box<dyn Error>> {
     let path = Path::new(crate::config::VENDOR_REVID_FILE);
     if !path.exists() {
@@ -1463,6 +1507,8 @@ pub fn read_cached_revid() -> Result<Option<u64>, Box<dyn Error>> {
 }
 
 /// Writes the given revid to the cache file.
+/// # Errors
+/// Returns an error if the cache file cannot be written or serialized to JSON.
 pub fn write_cached_revid(revid: u64) -> Result<(), Box<dyn Error>> {
     let path = Path::new(crate::config::VENDOR_REVID_FILE);
     let cache = RevidCache { revid };
@@ -1500,7 +1546,7 @@ pub async fn fetch_latest_revid(client: &reqwest::Client) -> Result<u64, Box<dyn
     let json: serde_json::Value = response.json().await?;
     let revid = json
         .pointer("/query/pages/0/revisions/0/revid")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .ok_or("Failed to extract revid from API response")?;
 
     Ok(revid)
@@ -1508,6 +1554,10 @@ pub async fn fetch_latest_revid(client: &reqwest::Client) -> Result<u64, Box<dyn
 
 /// Fetches the raw Lua source of Module:Vendors/data from the Warframe wiki.
 /// Uses the revisions API to get the content directly.
+///
+/// # Errors
+/// Returns an error if the network request fails, the API returns a non‑success status,
+/// or the response does not contain the expected content.
 pub async fn fetch_vendors_lua(client: &reqwest::Client) -> Result<String, Box<dyn Error>> {
     let url = "https://wiki.warframe.com/api.php";
     let params = [
@@ -1541,8 +1591,11 @@ pub async fn fetch_vendors_lua(client: &reqwest::Client) -> Result<String, Box<d
     Ok(source)
 }
 
-/// Parses the Lua source of Module:Vendors/data into a vector of RawVendor.
+/// Parses the Lua source of Module:Vendors/data into a vector of `RawVendor`.
 /// Returns the parsed vendors and the total number of offerings skipped due to errors.
+///
+/// # Errors
+/// Returns a `String` error if tokenization or parsing of the Lua source fails.
 pub fn parse_vendors_from_lua(source: &str) -> Result<(Vec<RawVendor>, usize), String> {
     let tokens = tokenize(source)?;
     let parsed = parse(&tokens)?;
@@ -1551,11 +1604,7 @@ pub fn parse_vendors_from_lua(source: &str) -> Result<(Vec<RawVendor>, usize), S
         .iter()
         .find_map(|(key, val)| {
             if let Some(LuaKey::String(s)) = key {
-                if s == "Vendors" {
-                    val.as_table()
-                } else {
-                    None
-                }
+                if s == "Vendors" { val.as_table() } else { None }
             } else {
                 None
             }
@@ -1576,17 +1625,28 @@ pub fn parse_vendors_from_lua(source: &str) -> Result<(Vec<RawVendor>, usize), S
 }
 
 /// Fetches and caches vendor data if the remote revision differs from the cached one.
+///
+/// # Errors
+/// Returns an error if the network request fails, the wiki API returns a non‑success status,
+/// the Lua source cannot be parsed, or the cache files cannot be written.
 pub async fn fetch_and_cache_vendors(client: &reqwest::Client) -> Result<(), Box<dyn Error>> {
     let remote_revid = fetch_latest_revid(client).await?;
     let cached_revid = read_cached_revid()?;
 
-    if let Some(cached) = cached_revid {
-        if cached == remote_revid {
-            tsprintln!("Vendor data unchanged (revid {}). Skipping fetch.", remote_revid);
-            return Ok(());
-        }
+    if let Some(cached) = cached_revid
+        && cached == remote_revid
+    {
+        tsprintln!(
+            "Vendor data unchanged (revid {}). Skipping fetch.",
+            remote_revid
+        );
+        return Ok(());
     }
-    tsprintln!("Vendor data changed (cached: {:?}, remote: {}). Fetching...", cached_revid, remote_revid);
+    tsprintln!(
+        "Vendor data changed (cached: {:?}, remote: {}). Fetching...",
+        cached_revid,
+        remote_revid
+    );
 
     let lua_source = fetch_vendors_lua(client).await?;
     let (raw_vendors, skipped) = parse_vendors_from_lua(&lua_source)
@@ -1637,7 +1697,9 @@ fn build_location_tree(vendors: &[MappedVendor]) -> LocTree {
         if vendor.excluded {
             continue;
         }
-        let Some(location) = &vendor.location else { continue };
+        let Some(location) = &vendor.location else {
+            continue;
+        };
         let mut node = &mut root;
         for segment in location.split('/').filter(|s| !s.is_empty()) {
             node = node.children.entry(segment.to_string()).or_default();
@@ -1668,7 +1730,10 @@ fn vendors_for_entry<'a>(name: &str, vendors: &'a [MappedVendor]) -> Vec<&'a Map
 /// Walks the interactive nested menu starting at `node`, returning the set of
 /// resolved vendors the user picked (either one entry, or "0" for everything under
 /// the current node).
-fn interactive_picker<'a>(root: &LocTree, vendors: &'a [MappedVendor]) -> Result<Vec<&'a MappedVendor>, Box<dyn Error>> {
+fn interactive_picker<'a>(
+    root: &LocTree,
+    vendors: &'a [MappedVendor],
+) -> Result<Vec<&'a MappedVendor>, Box<dyn Error>> {
     let mut node = root;
     loop {
         // Build the numbered menu: child directories first, then leaf entries at this level.
@@ -1719,7 +1784,11 @@ fn interactive_picker<'a>(root: &LocTree, vendors: &'a [MappedVendor]) -> Result
 /// `"zariman/cavalero"`, case-insensitive) by walking the tree segment-by-segment.
 /// The final segment may name either a deeper directory (in which case everything
 /// under it is returned) or a leaf entry (group/vendor name) directly.
-fn resolve_path<'a>(root: &LocTree, path: &str, vendors: &'a [MappedVendor]) -> Result<Vec<&'a MappedVendor>, Box<dyn Error>> {
+fn resolve_path<'a>(
+    root: &LocTree,
+    path: &str,
+    vendors: &'a [MappedVendor],
+) -> Result<Vec<&'a MappedVendor>, Box<dyn Error>> {
     let mut node = root;
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if segments.is_empty() {
@@ -1727,16 +1796,23 @@ fn resolve_path<'a>(root: &LocTree, path: &str, vendors: &'a [MappedVendor]) -> 
     }
 
     for (i, segment) in segments.iter().enumerate() {
-        if let Some(child) = node.children.iter().find(|(k, _)| k.eq_ignore_ascii_case(segment)) {
+        if let Some(child) = node
+            .children
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(segment))
+        {
             node = child.1;
             continue;
         }
         // Not a directory segment — check whether it names a leaf entry. Only valid
         // as the *last* segment.
-        if i == segments.len() - 1 {
-            if let Some(name) = node.entries.iter().find(|e| e.eq_ignore_ascii_case(segment)) {
-                return Ok(vendors_for_entry(name, vendors));
-            }
+        if i == segments.len() - 1
+            && let Some(name) = node
+                .entries
+                .iter()
+                .find(|e| e.eq_ignore_ascii_case(segment))
+        {
+            return Ok(vendors_for_entry(name, vendors));
         }
         return Err(format!("No such vendor path segment: '{segment}'").into());
     }
@@ -1761,18 +1837,35 @@ fn print_ranked_table(rows: &[RankedOffering]) {
     }
     tsprintln!(
         "{:<28} | {:<32} | {:<10} | {:>10} | {:>8} | {:>10} | {}",
-        "Vendor", "Offering", "Currency", "Cost", "Score", "Vol/day", "Note"
+        "Vendor",
+        "Offering",
+        "Currency",
+        "Cost",
+        "Score",
+        "Vol/day",
+        "Note"
     );
     tsprintln!("{}", "-".repeat(120));
     for row in rows {
-        let score_str = row.score.map_or_else(|| "—".to_string(), |s| format!("{s:.2}"));
+        let score_str = row
+            .score
+            .map_or_else(|| "—".to_string(), |s| format!("{s:.2}"));
         let note = row.note.as_deref().unwrap_or("");
         tsprintln!(
             "{:<28} | {:<32} | {:<10} | {:>10.1} | {:>8} | {:>10.1} | {}",
-            row.vendor_name, row.offering_name, row.currency, row.amount, score_str, row.daily_volume, note
+            row.vendor_name,
+            row.offering_name,
+            row.currency,
+            row.amount,
+            score_str,
+            row.daily_volume,
+            note
         );
     }
-    crate::cli::print_info("Saturation column", "not shown inline — check --max-saturation filtering");
+    crate::cli::print_info(
+        "Saturation column",
+        "not shown inline — check --max-saturation filtering",
+    );
 }
 
 /// Writes `rows` as JSON to `vendor_rankings.json` in the project root (matching the
@@ -1838,17 +1931,29 @@ mod test_helpers {
     use super::*;
 
     #[allow(dead_code)]
-    pub fn number(n: f64) -> LuaValue { LuaValue::Number(n) }
+    pub fn number(n: f64) -> LuaValue {
+        LuaValue::Number(n)
+    }
     #[allow(dead_code)]
-    pub fn string(s: &str) -> LuaValue { LuaValue::String(s.to_string()) }
+    pub fn string(s: &str) -> LuaValue {
+        LuaValue::String(s.to_string())
+    }
     #[allow(dead_code)]
-    pub fn table(fields: Vec<(Option<LuaKey>, LuaValue)>) -> LuaValue { LuaValue::Table(fields) }
+    pub fn table(fields: Vec<(Option<LuaKey>, LuaValue)>) -> LuaValue {
+        LuaValue::Table(fields)
+    }
     #[allow(dead_code)]
-    pub fn key(s: &str) -> Option<LuaKey> { Some(LuaKey::String(s.to_string())) }
+    pub fn key(s: &str) -> Option<LuaKey> {
+        Some(LuaKey::String(s.to_string()))
+    }
     #[allow(dead_code)]
-    pub fn int_key(i: i64) -> Option<LuaKey> { Some(LuaKey::Integer(i)) }
+    pub fn int_key(i: i64) -> Option<LuaKey> {
+        Some(LuaKey::Integer(i))
+    }
     #[allow(dead_code)]
-    pub fn no_key() -> Option<LuaKey> { None }
+    pub fn no_key() -> Option<LuaKey> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -1865,7 +1970,9 @@ mod offering_tests {
             (no_key(), number(5000.0)),
             (key("Timer"), number(604800.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Pathos Clamp")).unwrap().unwrap();
+        let result = parse_raw_offering(&fields, Some("Pathos Clamp"))
+            .unwrap()
+            .unwrap();
         assert_eq!(result.name, "Kuva");
         assert_eq!(result.category, "Resource");
         match result.price {
@@ -1889,7 +1996,9 @@ mod offering_tests {
             (no_key(), number(20.0)),
             (key("Timer"), number(604800.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Platinum")).unwrap().unwrap();
+        let result = parse_raw_offering(&fields, Some("Platinum"))
+            .unwrap()
+            .unwrap();
         assert_eq!(result.name, "Orokin Reactor");
         assert_eq!(result.qty, 1);
     }
@@ -1907,7 +2016,9 @@ mod offering_tests {
             (no_key(), number(1.0)),
             (key("Prereq"), number(0.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Platinum")).unwrap().unwrap();
+        let result = parse_raw_offering(&fields, Some("Platinum"))
+            .unwrap()
+            .unwrap();
         match result.price {
             PriceSpec::Multi(currencies) => {
                 assert_eq!(currencies.len(), 2);
@@ -1929,8 +2040,13 @@ mod offering_tests {
             (no_key(), number(1.0)),
             (key("Prereq"), string("Natah (Quest)")),
         ];
-        let result = parse_raw_offering(&fields, Some("Standing")).unwrap().unwrap();
-        assert_eq!(result.prereq, Some(PrereqSpec::Quest("Natah (Quest)".to_string())));
+        let result = parse_raw_offering(&fields, Some("Standing"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result.prereq,
+            Some(PrereqSpec::Quest("Natah (Quest)".to_string()))
+        );
     }
 
     #[test]
@@ -1941,7 +2057,9 @@ mod offering_tests {
             (no_key(), number(100000.0)),
             (key("Prereq"), number(5.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Standing")).unwrap().unwrap();
+        let result = parse_raw_offering(&fields, Some("Standing"))
+            .unwrap()
+            .unwrap();
         assert_eq!(result.prereq, Some(PrereqSpec::Rank(5)));
         assert_eq!(result.qty, 1);
     }
@@ -1956,7 +2074,9 @@ mod offering_tests {
             (key("Timer"), number(604800.0)),
             (key("Limit"), number(10.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Riven Sliver")).unwrap().unwrap();
+        let result = parse_raw_offering(&fields, Some("Riven Sliver"))
+            .unwrap()
+            .unwrap();
         assert_eq!(result.timer, Some(604800));
         assert_eq!(result.limit, Some(10));
     }
@@ -1967,7 +2087,9 @@ mod offering_tests {
             (key("item"), string("Energy Conversion")),
             (key("cost"), number(100000.0)),
         ];
-        let result = parse_raw_offering(&fields, Some("Standing")).unwrap().unwrap();
+        let result = parse_raw_offering(&fields, Some("Standing"))
+            .unwrap()
+            .unwrap();
         assert_eq!(result.name, "Energy Conversion");
         assert_eq!(result.category, "Misc");
         match result.price {
@@ -2014,12 +2136,12 @@ mod offering_tests {
     #[test]
     fn named_offering_missing_item_returns_ok_none() {
         // Has a 'cost' field (so is_named = true) but no 'item' field — should skip, not error.
-        let fields = vec![
-            (key("cost"), number(5000.0)),
-            (key("type"), string("Mod")),
-        ];
+        let fields = vec![(key("cost"), number(5000.0)), (key("type"), string("Mod"))];
         let result = parse_raw_offering(&fields, Some("Standing")).unwrap();
-        assert!(result.is_none(), "Expected Ok(None) for named offering missing 'item'");
+        assert!(
+            result.is_none(),
+            "Expected Ok(None) for named offering missing 'item'"
+        );
     }
 
     #[test]
@@ -2030,7 +2152,10 @@ mod offering_tests {
             (no_key(), string("Mod")),
         ];
         let result = parse_raw_offering(&fields, Some("Platinum")).unwrap();
-        assert!(result.is_none(), "Expected Ok(None) for positional offering with < 3 fields");
+        assert!(
+            result.is_none(),
+            "Expected Ok(None) for positional offering with < 3 fields"
+        );
     }
 }
 
@@ -2050,7 +2175,10 @@ mod vendor_tests {
         assert_eq!(skipped, 0);
         assert_eq!(vendor.key, "Acrithis");
         assert_eq!(vendor.name, "Acrithis");
-        assert_eq!(vendor.currency, CurrencySpec::One("Pathos Clamp".to_string()));
+        assert_eq!(
+            vendor.currency,
+            CurrencySpec::One("Pathos Clamp".to_string())
+        );
         assert!(vendor.vendor_type.is_none());
         assert!(vendor.ranks.is_none());
         assert!(vendor.offerings.is_empty());
@@ -2069,11 +2197,14 @@ mod vendor_tests {
             (key("Offerings"), table(vec![])),
         ]);
         let (vendor, _) = parse_raw_vendor("Marie".to_string(), &vendor_table).unwrap();
-        assert_eq!(vendor.currency, CurrencySpec::Many(vec![
-            "Lyroic Bridge".to_string(),
-            "Ren Hypercore".to_string(),
-            "Ascaris Prime".to_string(),
-        ]));
+        assert_eq!(
+            vendor.currency,
+            CurrencySpec::Many(vec![
+                "Lyroic Bridge".to_string(),
+                "Ren Hypercore".to_string(),
+                "Ascaris Prime".to_string(),
+            ])
+        );
     }
 
     #[test]
@@ -2107,7 +2238,14 @@ mod vendor_tests {
         assert!(ranks.zero_indexed);
         assert_eq!(
             ranks.names,
-            vec!["Initiation", "Principled", "Authentic", "Lawful", "Crusader", "Maxim"]
+            vec![
+                "Initiation",
+                "Principled",
+                "Authentic",
+                "Lawful",
+                "Crusader",
+                "Maxim"
+            ]
         );
     }
 
@@ -2170,11 +2308,7 @@ return {
             LuaValue::Table(outer) => {
                 let vendors_opt = outer.iter().find_map(|(key, val)| {
                     if let Some(LuaKey::String(name)) = key {
-                        if name == "Vendors" {
-                            Some(val)
-                        } else {
-                            None
-                        }
+                        if name == "Vendors" { Some(val) } else { None }
                     } else {
                         None
                     }
@@ -2231,11 +2365,17 @@ return {
     fn parse_full_vendors_cache() {
         let cache_path = std::path::Path::new(config::VENDORS_RAW_CACHE_FILE);
         if !cache_path.exists() {
-            tseprintln!("Skipping full cache test – cache file not found. Run the fetch step first.");
+            tseprintln!(
+                "Skipping full cache test – cache file not found. Run the fetch step first."
+            );
             return;
         }
         let vendors = load_vendor_data().expect("Failed to load vendor data");
-        assert!(vendors.len() >= 60, "Expected at least 60 vendors, got {}", vendors.len());
+        assert!(
+            vendors.len() >= 60,
+            "Expected at least 60 vendors, got {}",
+            vendors.len()
+        );
         let has_simaris = vendors.iter().any(|v| v.key == "Cephalon Simaris");
         assert!(has_simaris, "Cephalon Simaris not found");
     }
@@ -2258,7 +2398,10 @@ return {
         for v in &vendors {
             match meta.get(&v.key) {
                 Some(m) if m.excluded || m.location.is_some() => {}
-                Some(_) => missing.push(format!("{} (has entry but no location and not excluded)", v.key)),
+                Some(_) => missing.push(format!(
+                    "{} (has entry but no location and not excluded)",
+                    v.key
+                )),
                 None => missing.push(format!("{} (not in vendors.toml at all)", v.key)),
             }
         }
@@ -2276,10 +2419,24 @@ return {
         // Expected pool → member keys, derived from the planning doc.
         // Update this list if a pool changes.
         let expected_pools: &[(&str, &[&str])] = &[
-            ("Ostron", &["Fisher Hai-Luk", "Hok", "Master Teasonai", "Old Man Suumbaat"]),
-            ("Solaris United", &["Legs", "Rude Zuud", "Smokefinger", "The Business"]),
+            (
+                "Ostron",
+                &[
+                    "Fisher Hai-Luk",
+                    "Hok",
+                    "Master Teasonai",
+                    "Old Man Suumbaat",
+                ],
+            ),
+            (
+                "Solaris United",
+                &["Legs", "Rude Zuud", "Smokefinger", "The Business"],
+            ),
             ("Entrati", &["Daughter", "Father", "Otak", "Son"]),
-            ("The Hex", &["Amir", "Aoi", "Quincy", "Minerva", "Velimir", "Eleanor"]),
+            (
+                "The Hex",
+                &["Amir", "Aoi", "Quincy", "Minerva", "Velimir", "Eleanor"],
+            ),
             ("The Holdfasts", &["Cavalero", "Hombask"]),
         ];
 
@@ -2298,9 +2455,14 @@ return {
                         m.group.as_deref(),
                         Some(*pool),
                         "Vendor '{}' should have group '{}' but has {:?}",
-                        member, pool, m.group
+                        member,
+                        pool,
+                        m.group
                     ),
-                    None => panic!("Pool member '{}' (group '{}') is missing from vendors.toml", member, pool),
+                    None => panic!(
+                        "Pool member '{}' (group '{}') is missing from vendors.toml",
+                        member, pool
+                    ),
                 }
             }
         }
@@ -2357,9 +2519,13 @@ hand_curated = true
         assert!(conclave.excluded);
 
         // cost_mode variants
-        let citrine = meta.get("Unearth Citrine").expect("Unearth Citrine missing");
+        let citrine = meta
+            .get("Unearth Citrine")
+            .expect("Unearth Citrine missing");
         assert_eq!(citrine.cost_mode, CostMode::AllOf);
-        let supply = meta.get("Operational Supply").expect("Operational Supply missing");
+        let supply = meta
+            .get("Operational Supply")
+            .expect("Operational Supply missing");
         assert_eq!(supply.cost_mode, CostMode::AnyOf);
 
         // hand_curated
@@ -2378,7 +2544,10 @@ mod category_tests {
         assert_eq!(classify_category("Captura Scene"), CategoryClass::Tradeable);
         assert_eq!(classify_category("Sigil"), CategoryClass::NonTradeable);
         assert_eq!(classify_category("Glyph"), CategoryClass::NonTradeable);
-        assert_eq!(classify_category("SomeBrandNewCategory"), CategoryClass::Unknown);
+        assert_eq!(
+            classify_category("SomeBrandNewCategory"),
+            CategoryClass::Unknown
+        );
     }
 
     #[test]
@@ -2475,7 +2644,9 @@ mod slug_matching_tests {
 
         for (vendor_key, item_name) in KNOWN_GOOD {
             if *vendor_key == "PLACEHOLDER" {
-                tseprintln!("Skipping unfilled KNOWN_GOOD placeholder — fill in real (vendor, item) pairs.");
+                tseprintln!(
+                    "Skipping unfilled KNOWN_GOOD placeholder — fill in real (vendor, item) pairs."
+                );
                 continue;
             }
             let vendor = mapped
@@ -2562,7 +2733,10 @@ mod match_report_tests {
 
         // Matched + unmatched + skipped-by-category == total.
         let skipped = s.total_offerings - s.tradeable_count;
-        assert_eq!(s.matched_count + s.unmatched.len() + skipped, s.total_offerings);
+        assert_eq!(
+            s.matched_count + s.unmatched.len() + skipped,
+            s.total_offerings
+        );
     }
 }
 
@@ -2687,7 +2861,10 @@ mod cost_model_tests {
         let rows = cost_rows(&cost, 100.0);
         assert_eq!(rows.len(), 2);
         for row in &rows {
-            assert_eq!(row.score, None, "AllOf rows must not manufacture a fake score");
+            assert_eq!(
+                row.score, None,
+                "AllOf rows must not manufacture a fake score"
+            );
             assert!(row.note.is_some());
         }
         assert_eq!(
@@ -2903,12 +3080,13 @@ mod tokenizer_tests {
         let input = r#"{ outer = { inner = 42 } }"#;
         let tokens = tokenize(input).unwrap();
         let value = parse(&tokens).unwrap();
-        let expected = LuaValue::Table(vec![
-            (Some(LuaKey::String("outer".to_string())),
-             LuaValue::Table(vec![
-                 (Some(LuaKey::String("inner".to_string())), LuaValue::Number(42.0))
-             ]))
-        ]);
+        let expected = LuaValue::Table(vec![(
+            Some(LuaKey::String("outer".to_string())),
+            LuaValue::Table(vec![(
+                Some(LuaKey::String("inner".to_string())),
+                LuaValue::Number(42.0),
+            )]),
+        )]);
         assert_eq!(value, expected);
     }
 
@@ -2921,8 +3099,12 @@ mod tokenizer_tests {
             LuaValue::Table(fields) => {
                 assert_eq!(fields.len(), 3);
                 assert!(matches!(fields[0], (None, LuaValue::String(_))));
-                assert!(matches!(&fields[1], (Some(LuaKey::String(k)), LuaValue::Number(10.0)) if k == "key"));
-                assert!(matches!(&fields[2], (Some(LuaKey::String(k)), LuaValue::String(v)) if k == "flag" && v == "true"));
+                assert!(
+                    matches!(&fields[1], (Some(LuaKey::String(k)), LuaValue::Number(10.0)) if k == "key")
+                );
+                assert!(
+                    matches!(&fields[2], (Some(LuaKey::String(k)), LuaValue::String(v)) if k == "flag" && v == "true")
+                );
             }
             _ => panic!("Expected Table"),
         }
@@ -2951,14 +3133,18 @@ mod tokenizer_tests {
                 match (key, val) {
                     (Some(LuaKey::String(name)), LuaValue::Table(fields)) => {
                         assert_eq!(name, "Cephalon Simaris");
-                        let location = fields.iter().find(|(k, _)| matches!(k, Some(LuaKey::String(s)) if s == "location"));
+                        let location = fields
+                            .iter()
+                            .find(|(k, _)| matches!(k, Some(LuaKey::String(s)) if s == "location"));
                         assert!(location.is_some());
                         if let Some((_, LuaValue::String(loc))) = location {
                             assert_eq!(loc, "Relay");
                         } else {
                             panic!("location not a string");
                         }
-                        let pool = fields.iter().find(|(k, _)| matches!(k, Some(LuaKey::String(s)) if s == "pool"));
+                        let pool = fields
+                            .iter()
+                            .find(|(k, _)| matches!(k, Some(LuaKey::String(s)) if s == "pool"));
                         assert!(pool.is_some());
                         if let Some((_, LuaValue::Table(pool_items))) = pool {
                             assert_eq!(pool_items.len(), 2);

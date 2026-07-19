@@ -110,6 +110,7 @@ pub struct WfcdComponent {
     // We can ignore other fields like name, description, etc.
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MappedItem {
     pub id: String,
@@ -145,22 +146,41 @@ pub struct MappedItem {
 impl MappedItem {
     #[must_use]
     pub fn category(&self) -> &'static str {
-        if self.is_mod { return "mod"; }
-        if self.is_arcane { return "arcane"; }
-        if self.is_ayatan { return "ayatan"; }
+        if self.is_mod {
+            return "mod";
+        }
+        if self.is_arcane {
+            return "arcane";
+        }
+        if self.is_ayatan {
+            return "ayatan";
+        }
         let name_lower = self.name.to_lowercase();
-        if name_lower.contains("prime") { return "prime_part"; }
-        if self.slug.contains("emote") { return "emote"; }
-        if self.slug.contains("scene") { return "scene"; }
-        if self.slug.contains("_fish") || self.slug.ends_with("_fry")
-            || self.slug.ends_with("_morsel") || self.slug.ends_with("_whole") {
+        if name_lower.contains("prime") {
+            return "prime_part";
+        }
+        if self.slug.contains("emote") {
+            return "emote";
+        }
+        if self.slug.contains("scene") {
+            return "scene";
+        }
+        if self.slug.contains("_fish")
+            || self.slug.ends_with("_fry")
+            || self.slug.ends_with("_morsel")
+            || self.slug.ends_with("_whole")
+        {
             return "fish";
         }
-        if self.slug.contains("_gem") || self.slug.contains("_crystal")
-            || self.slug.contains("_shard") {
+        if self.slug.contains("_gem")
+            || self.slug.contains("_crystal")
+            || self.slug.contains("_shard")
+        {
             return "gem";
         }
-        if self.slug.contains("_relic") { return "relic"; }
+        if self.slug.contains("_relic") {
+            return "relic";
+        }
         "misc"
     }
 }

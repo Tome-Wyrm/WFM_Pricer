@@ -1,5 +1,5 @@
-use std::error::Error;
 use serde::{Deserialize, Serialize};
+use std::error::Error;
 
 #[derive(Debug, Clone)]
 pub struct WfmClient {
@@ -92,7 +92,7 @@ pub struct CreateOrder {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_trade: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub subtype: Option<String>,   // <-- add this
+    pub subtype: Option<String>, // <-- add this
 }
 
 impl CreateOrder {
@@ -310,7 +310,10 @@ mod public_order_tests {
 
     #[test]
     fn rank_filter_ignores_non_matching_ranks() {
-        let orders = vec![order("buy", 50, true, Some(0)), order("buy", 30, true, Some(3))];
+        let orders = vec![
+            order("buy", 50, true, Some(0)),
+            order("buy", 30, true, Some(3)),
+        ];
         assert_eq!(best_buy_price(&orders, Some(3)), Some(30));
     }
 
@@ -319,7 +322,7 @@ mod public_order_tests {
         let orders = vec![
             order("sell", 40, true, None),
             order("sell", 25, true, None),
-            order("buy", 10, true, None),  // wrong side — must be ignored
+            order("buy", 10, true, None), // wrong side — must be ignored
             order("sell", 5, false, None), // lower, but hidden — must be ignored
         ];
         assert_eq!(best_sell_price(&orders, None), Some(25));
@@ -400,10 +403,10 @@ impl WfmClient {
     /// Returns an error if the HTTP client cannot be built, the sign-in request fails or
     /// returns a non-success status, or the response doesn't contain a usable JWT token in
     /// either the `Authorization` header or the response body.
-    pub async fn from_credentials(creds: Credentials) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let client = reqwest::Client::builder()
-            .cookie_store(true)
-            .build()?;
+    pub async fn from_credentials(
+        creds: Credentials,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let client = reqwest::Client::builder().cookie_store(true).build()?;
 
         let signin_url = "https://api.warframe.market/v1/auth/signin";
         let req_body = SignInRequest {
@@ -475,7 +478,8 @@ impl WfmClient {
     /// Returns an error if the request fails, the server returns a non-success status, or the
     /// response body doesn't contain the expected `ingameName` field.
     pub async fn get_username(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
-        let resp = self.client
+        let resp = self
+            .client
             .get("https://api.warframe.market/v2/me")
             .header("Authorization", format!("Bearer {}", self.token))
             .header("Platform", "pc")
@@ -502,7 +506,8 @@ impl WfmClient {
     /// Returns an error if the request fails, the server returns a non-success status, or the
     /// response body cannot be parsed as the expected order-list shape.
     pub async fn my_orders(&self) -> Result<Vec<Order>, Box<dyn Error + Send + Sync>> {
-        let resp = self.client
+        let resp = self
+            .client
             .get("https://api.warframe.market/v2/orders/my")
             .header("Authorization", format!("Bearer {}", self.token))
             .header("Platform", "pc")
@@ -522,8 +527,12 @@ impl WfmClient {
 
     /// # Errors
     /// Returns an error if the request fails or the server returns a non-success status.
-    pub async fn create_order(&self, order: CreateOrder) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let resp = self.client
+    pub async fn create_order(
+        &self,
+        order: CreateOrder,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let resp = self
+            .client
             .post("https://api.warframe.market/v2/order")
             .header("Authorization", format!("Bearer {}", self.token))
             .header("Platform", "pc")
@@ -545,9 +554,14 @@ impl WfmClient {
 
     /// # Errors
     /// Returns an error if the request fails or the server returns a non-success status.
-    pub async fn update_order(&self, order_id: &str, update: UpdateOrder) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub async fn update_order(
+        &self,
+        order_id: &str,
+        update: UpdateOrder,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let url = format!("https://api.warframe.market/v2/order/{order_id}");
-        let resp = self.client
+        let resp = self
+            .client
             .patch(&url)
             .header("Authorization", format!("Bearer {}", self.token))
             .header("Platform", "pc")

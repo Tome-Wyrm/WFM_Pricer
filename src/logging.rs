@@ -1,11 +1,11 @@
 //! Timestamped session logging.
 //!
-//! Historically this project relied on the caller piping `cargo run` through a PowerShell
+//! Historically this project relied on the caller piping `cargo run` through a `PowerShell`
 //! `ForEach-Object` wrapper to get timestamps on every line, e.g.:
 //! `cargo run | ForEach-Object { "$(Get-Date -Format '[...]') $_" }`.
 //!
 //! That works for non-interactive runs (`update-caches`, etc.) but breaks interactive
-//! sessions: PowerShell's pipeline capture of a child process's stdout is line-buffered on
+//! sessions: `PowerShell`'s pipeline capture of a child process's stdout is line-buffered on
 //! *its* end, so any `print!` prompt without a trailing newline (used deliberately so your
 //! typed answer lands on the same line) sits invisible in the pipe until some later
 //! `println!` finally supplies a newline. You end up answering prompts blind.
@@ -52,11 +52,11 @@ static AT_LINE_START: Mutex<bool> = Mutex::new(true);
 /// Returns an error if the `logs` directory can't be created or the log file can't be opened.
 pub fn init() -> std::io::Result<()> {
     std::fs::create_dir_all("logs")?;
-    let filename = format!(
-        "logs/session_{}.log",
-        Local::now().format("%Y%m%d_%H%M%S")
-    );
-    let file = OpenOptions::new().create(true).append(true).open(&filename)?;
+    let filename = format!("logs/session_{}.log", Local::now().format("%Y%m%d_%H%M%S"));
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&filename)?;
     if LOG_FILE.set(Mutex::new(file)).is_ok() {
         println!("Logging this session to {filename}");
     }
@@ -69,9 +69,15 @@ pub fn init() -> std::io::Result<()> {
 /// `tsprintln!` still ends up as one continuous, correctly-timestamped log line — matching
 /// what you'd see on a real terminal.
 fn write_to_file(text: &str) {
-    let Some(file_lock) = LOG_FILE.get() else { return };
-    let Ok(mut file) = file_lock.lock() else { return };
-    let Ok(mut at_start) = AT_LINE_START.lock() else { return };
+    let Some(file_lock) = LOG_FILE.get() else {
+        return;
+    };
+    let Ok(mut file) = file_lock.lock() else {
+        return;
+    };
+    let Ok(mut at_start) = AT_LINE_START.lock() else {
+        return;
+    };
 
     let mut remaining = text;
     while !remaining.is_empty() {
@@ -79,17 +85,14 @@ fn write_to_file(text: &str) {
             let ts = Local::now().format("[%Y-%m-%d %H:%M:%S]");
             let _ = write!(file, "{ts} ");
         }
-        match remaining.find('\n') {
-            Some(idx) => {
-                let _ = writeln!(file, "{}", &remaining[..idx]);
-                *at_start = true;
-                remaining = &remaining[idx + 1..];
-            }
-            None => {
-                let _ = write!(file, "{remaining}");
-                *at_start = false;
-                remaining = "";
-            }
+        if let Some(idx) = remaining.find('\n') {
+            let _ = writeln!(file, "{}", &remaining[..idx]);
+            *at_start = true;
+            remaining = &remaining[idx + 1..];
+        } else {
+            let _ = write!(file, "{remaining}");
+            *at_start = false;
+            remaining = "";
         }
     }
     let _ = file.flush();

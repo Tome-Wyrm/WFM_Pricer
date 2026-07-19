@@ -1,11 +1,11 @@
+use reqwest::header::USER_AGENT;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::SystemTime;
-use reqwest::header::USER_AGENT;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use crate::models::{WfmStatsItem, WfmStatsResponse};
 use crate::{tseprintln, tsprintln};
@@ -108,10 +108,10 @@ pub async fn fetch_statistics(slug: &str) -> Result<WfmStatsResponse, Box<dyn Er
         }
     }
 
-    Err(format!(
-        "Failed to fetch stats for {slug} after {STATS_MAX_ATTEMPTS} attempts: {last_err}"
+    Err(
+        format!("Failed to fetch stats for {slug} after {STATS_MAX_ATTEMPTS} attempts: {last_err}")
+            .into(),
     )
-    .into())
 }
 
 // ── Outlier-filtering helpers ────────────────────────────────────────────────
@@ -141,7 +141,9 @@ fn filter_closed_outliers<'a>(
                 return false;
             }
             if let Some(ma) = d.moving_avg
-                && ma > 0.0 && d.wa_price > ma * 5.0 {
+                && ma > 0.0
+                && d.wa_price > ma * 5.0
+            {
                 return false;
             }
             true
@@ -202,7 +204,10 @@ fn resolve_target_rank_in<'a, I: Iterator<Item = &'a WfmStatsItem>>(
 }
 
 fn resolve_target_rank(stats: &WfmStatsResponse, requested: Option<u8>) -> Option<u8> {
-    resolve_target_rank_in(stats.payload.statistics_closed.ninety_days.iter(), requested)
+    resolve_target_rank_in(
+        stats.payload.statistics_closed.ninety_days.iter(),
+        requested,
+    )
 }
 
 fn resolve_target_rank_live(stats: &WfmStatsResponse, requested: Option<u8>) -> Option<u8> {
@@ -254,10 +259,7 @@ pub fn recent_volume(
 /// Calculates the 90-day volume-weighted average price for a target rank,
 /// using outlier filtering to suppress wash-trade spikes.
 #[must_use]
-pub fn calculate_weighted_average(
-    stats: &WfmStatsResponse,
-    target_rank: Option<u8>,
-) -> (f64, u32) {
+pub fn calculate_weighted_average(stats: &WfmStatsResponse, target_rank: Option<u8>) -> (f64, u32) {
     let target_rank = resolve_target_rank(stats, target_rank);
     let days_for_rank: Vec<&WfmStatsItem> = stats
         .payload
@@ -303,20 +305,14 @@ pub fn calculate_weighted_average(
 /// Calculates the saturation ratio (active sell volume / latest closed volume) for a
 /// target rank, filtering outlier live-stat entries before picking the latest entry.
 #[must_use]
-pub fn calculate_saturation_ratio(
-    stats: &WfmStatsResponse,
-    target_rank: Option<u8>,
-) -> f64 {
+pub fn calculate_saturation_ratio(stats: &WfmStatsResponse, target_rank: Option<u8>) -> f64 {
     let target_rank = resolve_target_rank_live(stats, target_rank);
     let live_sells: Vec<&WfmStatsItem> = stats
         .payload
         .statistics_live
         .ninety_days
         .iter()
-        .filter(|d| {
-            d.rank == target_rank.map(u32::from)
-                && d.order_type.as_deref() == Some("sell")
-        })
+        .filter(|d| d.rank == target_rank.map(u32::from) && d.order_type.as_deref() == Some("sell"))
         .collect();
 
     if live_sells.is_empty() {
@@ -428,7 +424,10 @@ async fn collect_calibration_rates() -> Vec<f64> {
             continue;
         };
         if max_rank.is_some_and(|mr| mr < target_rank.into()) {
-            tsprintln!("[ENDO] Skipping {display_name}: max_rank {} < required {target_rank}", max_rank.unwrap_or(0));
+            tsprintln!(
+                "[ENDO] Skipping {display_name}: max_rank {} < required {target_rank}",
+                max_rank.unwrap_or(0)
+            );
             continue;
         }
 
@@ -469,15 +468,15 @@ pub async fn derive_endo_to_plat_from_mods() -> f64 {
 #[must_use]
 pub fn get_ayatan_endo_yield(slug: &str) -> Option<u32> {
     match slug {
-        "ayatan_cyan_star"          => Some(80),
-        "ayatan_amber_star"         => Some(100),
-        "ayatan_anasa_sculpture"    => Some(3450),
-        "ayatan_ayr_sculpture"      => Some(1425),
-        "ayatan_orta_sculpture"     => Some(2700),
-        "ayatan_sah_sculpture"      => Some(1500),
-        "ayatan_valana_sculpture"   => Some(1575),
-        "ayatan_vaya_sculpture"     => Some(1800),
-        "ayatan_piv_sculpture"      => Some(1725),
+        "ayatan_cyan_star" => Some(80),
+        "ayatan_amber_star" => Some(100),
+        "ayatan_anasa_sculpture" => Some(3450),
+        "ayatan_ayr_sculpture" => Some(1425),
+        "ayatan_orta_sculpture" => Some(2700),
+        "ayatan_sah_sculpture" => Some(1500),
+        "ayatan_valana_sculpture" => Some(1575),
+        "ayatan_vaya_sculpture" => Some(1800),
+        "ayatan_piv_sculpture" => Some(1725),
         "ayatan_hemakara_sculpture" => Some(3200),
         _ => None,
     }
@@ -485,7 +484,9 @@ pub fn get_ayatan_endo_yield(slug: &str) -> Option<u32> {
 
 /// Derives the plat-per-endo exchange rate dynamically from priced Ayatan sculptures and stars.
 #[must_use]
-pub fn derive_endo_to_plat_rate<S: ::std::hash::BuildHasher>(prices: &HashMap<String, f64, S>) -> f64 {
+pub fn derive_endo_to_plat_rate<S: ::std::hash::BuildHasher>(
+    prices: &HashMap<String, f64, S>,
+) -> f64 {
     let mut sum = 0.0;
     let mut count = 0;
 
@@ -521,16 +522,18 @@ pub fn is_antique(_slug: &str, game_ref: &str) -> bool {
 #[must_use]
 pub fn get_rarity_multiplier(rarity: &str) -> u32 {
     match rarity.to_lowercase().as_str() {
-        "common"    => 1,
-        "uncommon" | "peculiar"  => 2,
+        "common" => 1,
+        "uncommon" | "peculiar" => 2,
         "legendary" => 4,
-        _           => 3,
+        _ => 3,
     }
 }
 
 #[must_use]
 pub fn get_fusion_cost_from_zero(rarity: &str, target_rank: u32, is_antique: bool) -> u32 {
-    if target_rank == 0 { return 0; }
+    if target_rank == 0 {
+        return 0;
+    }
 
     let base_multiplier = if is_antique { 160 } else { 10 };
     let rarity_num = get_rarity_multiplier(rarity);
@@ -542,9 +545,9 @@ pub fn get_fusion_cost_from_zero(rarity: &str, target_rank: u32, is_antique: boo
 pub fn get_mod_base_endo(rarity: &str) -> u32 {
     match rarity {
         "Legendary" => 40,
-        "Uncommon"  => 20,
-        "Common"    => 10,
-        _           => 30,
+        "Uncommon" => 20,
+        "Common" => 10,
+        _ => 30,
     }
 }
 
@@ -552,9 +555,9 @@ pub fn get_mod_base_endo(rarity: &str) -> u32 {
 pub fn get_mod_trade_tax(rarity: &str) -> u32 {
     match rarity {
         "Legendary" => 1_000_000,
-        "Uncommon"  =>     4_000,
-        "Common"    =>     2_000,
-        _           =>     8_000,
+        "Uncommon" => 4_000,
+        "Common" => 2_000,
+        _ => 8_000,
     }
 }
 
@@ -579,7 +582,10 @@ mod endo_upgrade_tests {
         let cost_to_current = get_fusion_cost_from_zero("Rare", 3, false);
         let cost_to_max = get_fusion_cost_from_zero("Rare", 10, false);
         let endo_to_max = cost_to_max.saturating_sub(cost_to_current);
-        assert!(endo_to_max > 0, "a rank‑3‑of‑10 mod must have nonzero endo cost remaining");
+        assert!(
+            endo_to_max > 0,
+            "a rank‑3‑of‑10 mod must have nonzero endo cost remaining"
+        );
     }
 }
 

@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 #[command(name = "wfm-pricer", version, about, long_about = None)]
 struct Cli {
     /// Override the inventory file path (defaults to `inventory.json`, falling back
-    /// to the AlecaFrame `lastData.dat` location). Applies to the default pipeline
+    /// to the `AlecaFrame` `lastData.dat` location). Applies to the default pipeline
     /// only; ignored by `vendor` / `update-caches`.
     #[arg(short, long, global = true)]
     inventory: Option<PathBuf>,
@@ -137,7 +137,9 @@ fn run_debug_mastery_checklist(
             if let Some(existing) = name_to_unique.get(&norm) {
                 tseprintln!(
                     "WARNING: Ambiguous display name '{}' maps to both '{}' and '{}' — picking first.",
-                    item.name, existing, unique
+                    item.name,
+                    existing,
+                    unique
                 );
             } else {
                 name_to_unique.insert(norm, unique.clone());
@@ -149,10 +151,12 @@ fn run_debug_mastery_checklist(
         let norm = name.to_lowercase();
         if let Some(gr) = &item.game_ref
             && let Some(wfcd_item) = wfcd_by_ref.get(gr)
-                && is_eligible_for_mastery_checklist(&wfcd_item.unique_name)
-            {
-                name_to_unique.entry(norm).or_insert(wfcd_item.unique_name.clone());
-            }
+            && is_eligible_for_mastery_checklist(&wfcd_item.unique_name)
+        {
+            name_to_unique
+                .entry(norm)
+                .or_insert(wfcd_item.unique_name.clone());
+        }
     }
 
     // ---- Read checklist ----
@@ -166,36 +170,46 @@ fn run_debug_mastery_checklist(
     let items: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
     tsprintln!("\n=== Mastery Checklist Debug (with XP details) ===");
-    tsprintln!("{:<40} | {:<30} | MaxRank | Req XP | XP     | Status", "Item", "uniqueName");
+    tsprintln!(
+        "{:<40} | {:<30} | MaxRank | Req XP | XP     | Status",
+        "Item",
+        "uniqueName"
+    );
     tsprintln!("{}", "-".repeat(110));
 
     for name in items {
         let name = name.trim();
         let norm = name.to_lowercase();
 
-        let unique = name_to_unique.get(&norm).cloned()
-            .or_else(|| {
-                if norm.contains('&') {
-                    let alt = norm.replace('&', "and");
-                    name_to_unique.get(&alt).cloned()
-                } else {
-                    None
-                }
-            });
+        let unique = name_to_unique.get(&norm).cloned().or_else(|| {
+            if norm.contains('&') {
+                let alt = norm.replace('&', "and");
+                name_to_unique.get(&alt).cloned()
+            } else {
+                None
+            }
+        });
 
         if let Some(unique) = unique {
-            let display_name = wfcd_by_ref.get(&unique)
-                .map_or("", |w| w.name.as_str());
+            let display_name = wfcd_by_ref.get(&unique).map_or("", |w| w.name.as_str());
 
             // Same classification + threshold logic the production mastery pass uses, so the
             // debug print can never disagree with the real keep/sell decisions.
-            let required = mapping::mastery_threshold(display_name, &unique, frame_tier_uniques.contains(&unique));
+            let required = mapping::mastery_threshold(
+                display_name,
+                &unique,
+                frame_tier_uniques.contains(&unique),
+            );
 
             let max_rank = if let Some(wfm_item) = wfm_by_ref.get(&unique) {
                 wfm_item.max_rank.unwrap_or(30)
             } else if let Some(wfcd) = wfcd_by_ref.get(&unique) {
                 wfcd.fusion_limit
-                    .or_else(|| wfcd.level_stats.as_ref().map(|v| u32::try_from(v.len().saturating_sub(1)).unwrap_or(30)))
+                    .or_else(|| {
+                        wfcd.level_stats
+                            .as_ref()
+                            .map(|v| u32::try_from(v.len().saturating_sub(1)).unwrap_or(30))
+                    })
                     .unwrap_or(30)
             } else {
                 30
@@ -209,7 +223,11 @@ fn run_debug_mastery_checklist(
             } else {
                 "Not Mastered"
             };
-            let set_status = if mastered_set.contains(&unique) { "in set" } else { "not in set" };
+            let set_status = if mastered_set.contains(&unique) {
+                "in set"
+            } else {
+                "not in set"
+            };
             tsprintln!(
                 "{name:<40} | {unique:<30} | {max_rank:>3}    | {required:>6} | {xp:>6} | {status:<10} ({set_status})"
             );
@@ -222,8 +240,10 @@ fn run_debug_mastery_checklist(
 }
 
 /// Resolves the inventory file to ingest: an explicit `--inventory` override, else
-/// `inventory.json` in the cwd if present, else the AlecaFrame `lastData.dat` fallback.
-pub(crate) fn resolve_inventory_path(override_path: Option<PathBuf>) -> Result<PathBuf, Box<dyn Error>> {
+/// `inventory.json` in the cwd if present, else the `AlecaFrame` `lastData.dat` fallback.
+pub(crate) fn resolve_inventory_path(
+    override_path: Option<PathBuf>,
+) -> Result<PathBuf, Box<dyn Error>> {
     if let Some(p) = override_path {
         tsprintln!("Using --inventory override: {}", p.display());
         return Ok(p);
@@ -233,14 +253,17 @@ pub(crate) fn resolve_inventory_path(override_path: Option<PathBuf>) -> Result<P
         return Ok(PathBuf::from("inventory.json"));
     }
     tsprintln!("inventory.json not found, falling back to AlecaFrame lastData.dat");
-    Ok(ingestion::get_inventory_path()?)
+    ingestion::get_inventory_path()
 }
 
 /// Runs today's full default pipeline (cache update → ingest → map → build/mastery
 /// load → optional debug-mastery report → interactive CLI). Unchanged behavior from
 /// before the Phase G clap migration, aside from `inventory_override` replacing the
 /// old `inventory.json`-or-bust check.
-async fn run_default_pipeline(inventory_override: Option<PathBuf>, debug_mastery: bool) -> Result<(), Box<dyn Error>> {
+async fn run_default_pipeline(
+    inventory_override: Option<PathBuf>,
+    debug_mastery: bool,
+) -> Result<(), Box<dyn Error>> {
     tsprintln!("--- WFM Pricer System Startup ---");
 
     // 1. Update caches (fail fast if this doesn't work)
@@ -260,12 +283,20 @@ async fn run_default_pipeline(inventory_override: Option<PathBuf>, debug_mastery
     tsprintln!("Loading build maps and mastery status...");
     let (parent_map, requirements) = mapping::load_build_maps()?;
     let (wfcd_by_ref, wfm_by_ref, wfm_by_name, _wfm_by_slug) = mapping::load_lookup_tables()?;
-    let (mastered_set, owned_built_set, frame_tier_uniques) = mapping::load_mastery_and_ownership(&inventory, &wfcd_by_ref);
+    let (mastered_set, owned_built_set, frame_tier_uniques) =
+        mapping::load_mastery_and_ownership(&inventory, &wfcd_by_ref);
 
     tsprintln!("Successfully mapped {} items!", mapped.len());
 
     if debug_mastery {
-        run_debug_mastery_checklist(&inventory, &wfcd_by_ref, &wfm_by_ref, &wfm_by_name, &mastered_set, &frame_tier_uniques)?;
+        run_debug_mastery_checklist(
+            &inventory,
+            &wfcd_by_ref,
+            &wfm_by_ref,
+            &wfm_by_name,
+            &mastered_set,
+            &frame_tier_uniques,
+        )?;
     }
 
     // 5. Run interactive CLI
@@ -305,7 +336,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli_args = Cli::parse();
 
     match cli_args.command {
-        Some(Commands::Vendor { path, match_report, write_json, max_saturation }) => {
+        Some(Commands::Vendor {
+            path,
+            match_report,
+            write_json,
+            max_saturation,
+        }) => {
             vendor::run_vendor_cli(path.as_deref(), match_report, write_json, max_saturation).await
         }
         Some(Commands::UpdateCaches) => mapping::update_caches().await,
@@ -324,10 +360,18 @@ mod tests {
     #[test]
     fn decoy_entries_are_excluded_from_checklist_matching() {
         assert!(!is_eligible_for_mastery_checklist("SolNode105"));
-        assert!(!is_eligible_for_mastery_checklist("/Lotus/Types/StoreItems/SuitCustomizations/ColourPickerJadeItem"));
-        assert!(!is_eligible_for_mastery_checklist("/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/PvPVariantTipOne"));
-        assert!(!is_eligible_for_mastery_checklist("/Lotus/Types/Items/Deimos/WoundedInfestedPredatorUncommonRewardItem"));
-        assert!(is_eligible_for_mastery_checklist("/Lotus/Powersuits/Fairy/Fairy"));
+        assert!(!is_eligible_for_mastery_checklist(
+            "/Lotus/Types/StoreItems/SuitCustomizations/ColourPickerJadeItem"
+        ));
+        assert!(!is_eligible_for_mastery_checklist(
+            "/Lotus/Weapons/Ostron/Melee/ModularMelee01/Tip/PvPVariantTipOne"
+        ));
+        assert!(!is_eligible_for_mastery_checklist(
+            "/Lotus/Types/Items/Deimos/WoundedInfestedPredatorUncommonRewardItem"
+        ));
+        assert!(is_eligible_for_mastery_checklist(
+            "/Lotus/Powersuits/Fairy/Fairy"
+        ));
     }
 
     #[test]
@@ -335,6 +379,8 @@ mod tests {
         // Previously only excluded by the dead, test-only copy of this function — the nested
         // copy actually used by --debug-mastery was missing this check. Adjust the fixture
         // string below to a real Doppelganger uniqueName if you have one on hand.
-        assert!(!is_eligible_for_mastery_checklist("/Lotus/Types/Game/PlayerCustomizations/Doppelganger/SomeFakeGrimoire"));
+        assert!(!is_eligible_for_mastery_checklist(
+            "/Lotus/Types/Game/PlayerCustomizations/Doppelganger/SomeFakeGrimoire"
+        ));
     }
 }

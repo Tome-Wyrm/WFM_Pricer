@@ -9,13 +9,13 @@ use tokio::time::sleep;
 use toml;
 
 use crate::config::{
-    CACHE_DIR, METADATA_FILE, RELICS_CACHE_FILE, WFCD_CACHE_FILE, WFM_CACHE_FILE, FULL_ITEMS_CACHE_FILE
+    CACHE_DIR, FULL_ITEMS_CACHE_FILE, METADATA_FILE, RELICS_CACHE_FILE, WFCD_CACHE_FILE,
+    WFM_CACHE_FILE,
 };
-use crate::models::{MappedItem, WfcdItem, WfmItem, WfmV2Response, KeepConfig, BlacklistConfig};
+use crate::models::{BlacklistConfig, KeepConfig, MappedItem, WfcdItem, WfmItem, WfmV2Response};
 use crate::vendor;
 // Timestamped session logging: see src/logging.rs.
 use crate::{tseprintln, tsprintln};
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMetadata {
@@ -39,8 +39,8 @@ pub type BuildParentMap = std::collections::HashMap<String, String>;
 /// Mapping from a build's `uniqueName` to its list of required components and quantities.
 pub type BuildRequirements = std::collections::HashMap<String, Vec<(String, u32)>>;
 
-pub const MASTERY_THRESHOLD_FRAME: u64 = 900_000;       // 1000 * 30^2
-pub const MASTERY_THRESHOLD_WEAPON: u64 = 450_000;      // 500 * 30^2
+pub const MASTERY_THRESHOLD_FRAME: u64 = 900_000; // 1000 * 30^2
+pub const MASTERY_THRESHOLD_WEAPON: u64 = 450_000; // 500 * 30^2
 pub const MASTERY_THRESHOLD_NECRAMECH: u64 = 1_600_000; // 1000 * 40^2
 pub const MASTERY_THRESHOLD_OVERLEVEL_WEAPON: u64 = 800_000; // 500 * 40^2
 
@@ -209,11 +209,14 @@ pub fn build_maps_from_items(
             let tradable_components: Vec<_> = components
                 .into_iter()
                 .filter(|comp| {
-                    if let (Some(wfm_ref), Some(wfm_name), Some(wfcd_ref)) = (wfm_by_ref, wfm_by_name, wfcd_by_ref) {
+                    if let (Some(wfm_ref), Some(wfm_name), Some(wfcd_ref)) =
+                        (wfm_by_ref, wfm_by_name, wfcd_by_ref)
+                    {
                         wfm_ref.contains_key(&comp.unique_name)
-                            || wfcd_ref.get(&comp.unique_name).and_then(|wfcd_item| {
-                                find_wfm_match(&wfcd_item.name, wfm_name)
-                            }).is_some()
+                            || wfcd_ref
+                                .get(&comp.unique_name)
+                                .and_then(|wfcd_item| find_wfm_match(&wfcd_item.name, wfm_name))
+                                .is_some()
                     } else {
                         comp.tradable
                     }
@@ -336,11 +339,12 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
             .await;
 
         let wfm_bytes = match wfm_resp_result {
-            Ok(resp) if resp.status().is_success() => {
-                resp.bytes().await?.to_vec()
-            }
+            Ok(resp) if resp.status().is_success() => resp.bytes().await?.to_vec(),
             _ => {
-                return Err("WFM v2 items API request failed and no cache exists. Check your connection.".into());
+                return Err(
+                    "WFM v2 items API request failed and no cache exists. Check your connection."
+                        .into(),
+                );
             }
         };
 
@@ -356,10 +360,10 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
         tsprintln!("Cache metadata updated.");
     }
 
-        // Vendor cache (from wiki Module:Vendors/data)
-        tsprintln!("Updating vendor cache...");
-        vendor::fetch_and_cache_vendors(&client).await?;
-        tsprintln!("Vendor cache updated.");
+    // Vendor cache (from wiki Module:Vendors/data)
+    tsprintln!("Updating vendor cache...");
+    vendor::fetch_and_cache_vendors(&client).await?;
+    tsprintln!("Vendor cache updated.");
 
     let needs_relics_refresh = cache_invalidated || !Path::new(RELICS_CACHE_FILE).exists();
     if needs_relics_refresh {
@@ -474,7 +478,9 @@ fn is_upgrade_item_allowed(game_ref: &str) -> bool {
 }
 
 fn is_fusion_treasure_allowed(game_ref: &str) -> bool {
-    crate::mapping::AYATANS.iter().any(|a| a.game_ref == game_ref)
+    crate::mapping::AYATANS
+        .iter()
+        .any(|a| a.game_ref == game_ref)
 }
 
 fn is_misc_item_allowed(game_ref: &str) -> bool {
@@ -486,7 +492,8 @@ fn is_misc_item_allowed(game_ref: &str) -> bool {
         || game_ref.starts_with("/Lotus/Types/Items/Lenses/")
         || game_ref.starts_with("/Lotus/Types/Items/Keys/")
         || game_ref.starts_with("/Lotus/Types/Recipes/Weapons/WeaponParts/")
-        || (game_ref.starts_with("/Lotus/Types/Recipes/WarframeRecipes/") && !game_ref.ends_with("Component"))
+        || (game_ref.starts_with("/Lotus/Types/Recipes/WarframeRecipes/")
+            && !game_ref.ends_with("Component"))
         || game_ref.starts_with("/Lotus/Types/Items/MiscItems/JuggernautPart")
         || game_ref.starts_with("/Lotus/Types/Items/MiscItems/RazorbackCipherPart")
         || game_ref.starts_with("/Lotus/Types/Items/MiscItems/SyringeComponent")
@@ -504,7 +511,9 @@ fn is_relic(game_ref: &str) -> bool {
 
 fn load_relic_map() -> HashMap<String, String> {
     let Ok(raw) = fs::read_to_string(RELICS_CACHE_FILE) else {
-        tseprintln!("Warning: Relics cache not found at {RELICS_CACHE_FILE}. Relics will not be mapped.");
+        tseprintln!(
+            "Warning: Relics cache not found at {RELICS_CACHE_FILE}. Relics will not be mapped."
+        );
         return HashMap::new();
     };
 
@@ -525,7 +534,10 @@ fn load_relic_map() -> HashMap<String, String> {
     map
 }
 
-fn map_relic(game_ref: &str, relic_map: &HashMap<String, String>) -> Option<(String, &'static str)> {
+fn map_relic(
+    game_ref: &str,
+    relic_map: &HashMap<String, String>,
+) -> Option<(String, &'static str)> {
     let refinement = if game_ref.ends_with("Bronze") {
         "intact"
     } else if game_ref.ends_with("Silver") {
@@ -575,8 +587,7 @@ pub(crate) fn load_lookup_tables() -> Result<LookupTables, Box<dyn Error>> {
 fn load_keep_blacklist() -> Result<(KeepConfig, BlacklistConfig), Box<dyn Error>> {
     let keep_map = if Path::new(crate::config::KEEPLIST_FILE).exists() {
         let raw = fs::read_to_string(crate::config::KEEPLIST_FILE)?;
-        toml::from_str(&raw)
-            .map_err(|e| format!("Failed to parse keeplist.toml: {e:?}"))?
+        toml::from_str(&raw).map_err(|e| format!("Failed to parse keeplist.toml: {e:?}"))?
     } else {
         KeepConfig {
             defaults: HashMap::new(),
@@ -586,8 +597,7 @@ fn load_keep_blacklist() -> Result<(KeepConfig, BlacklistConfig), Box<dyn Error>
 
     let blacklist = if Path::new(crate::config::BLACKLIST_FILE).exists() {
         let raw = fs::read_to_string(crate::config::BLACKLIST_FILE)?;
-        toml::from_str(&raw)
-            .map_err(|e| format!("Failed to parse blacklist.toml: {e:?}"))?
+        toml::from_str(&raw).map_err(|e| format!("Failed to parse blacklist.toml: {e:?}"))?
     } else {
         BlacklistConfig::default()
     };
@@ -647,21 +657,21 @@ fn map_single(
         }
     }
 
-    let wfm_item = wfm_by_ref.get(game_ref)
-        .or_else(|| {
-            wfcd_by_ref.get(game_ref).and_then(|wfcd_item| {
-                find_wfm_match(&wfcd_item.name, wfm_by_name)
-            })
-        })?;
+    let wfm_item = wfm_by_ref.get(game_ref).or_else(|| {
+        wfcd_by_ref
+            .get(game_ref)
+            .and_then(|wfcd_item| find_wfm_match(&wfcd_item.name, wfm_by_name))
+    })?;
 
     let wfcd_item = wfcd_by_ref.get(game_ref);
-    let max_rank: Option<u8> = wfm_item.max_rank
+    let max_rank: Option<u8> = wfm_item
+        .max_rank
         .and_then(|r| u8::try_from(r).ok())
         .or_else(|| {
             wfcd_item.and_then(|item| {
-                item.level_stats.as_ref().map(|l| {
-                    u8::try_from(l.len()).unwrap_or(0).saturating_sub(1)
-                })
+                item.level_stats
+                    .as_ref()
+                    .map(|l| u8::try_from(l.len()).unwrap_or(0).saturating_sub(1))
             })
         });
 
@@ -669,17 +679,23 @@ fn map_single(
         || game_ref.contains("/Mods/")
         || wfcd_item.is_some_and(|item| item.category.as_deref() == Some("Mods"));
 
-    let is_arcane = wfm_item.tags.contains(&"arcane".to_string())
-        || game_ref.contains("/CosmeticEnhancers/");
+    let is_arcane =
+        wfm_item.tags.contains(&"arcane".to_string()) || game_ref.contains("/CosmeticEnhancers/");
 
     Some(MappedItem {
         id: wfm_item.id.clone(),
         slug: wfm_item.slug.clone(),
         name: wfm_item.i18n.en.name.clone(),
         quantity: qty,
-        rank: if is_mod || is_arcane { Some(rank) } else { None },
+        rank: if is_mod || is_arcane {
+            Some(rank)
+        } else {
+            None
+        },
         max_rank,
-        rarity: wfcd_item.and_then(|item| item.rarity.clone()).unwrap_or_default(),
+        rarity: wfcd_item
+            .and_then(|item| item.rarity.clone())
+            .unwrap_or_default(),
         is_mod,
         is_arcane,
         is_ayatan: false,
@@ -721,18 +737,24 @@ fn process_veiled_riven(
     if !item_type.starts_with("/Lotus/Upgrades/Mods/Randomized/") {
         return None;
     }
-    let riven_type = item_type.trim_start_matches("/Lotus/Upgrades/Mods/Randomized/").split('/').next().unwrap_or("");
+    let riven_type = item_type
+        .trim_start_matches("/Lotus/Upgrades/Mods/Randomized/")
+        .split('/')
+        .next()
+        .unwrap_or("");
     let slug = match riven_type {
-        "Rifle"            => Some("veiled_rifle_riven_mod"),
-        "Pistol"           => Some("veiled_pistol_riven_mod"),
-        "Shotgun"          => Some("veiled_shotgun_riven_mod"),
-        "Melee"            => Some("veiled_melee_riven_mod"),
-        "Kitgun"           => Some("veiled_kitgun_riven_mod"),
-        "Zaw"              => Some("veiled_zaw_riven_mod"),
-        "CompanionWeapon"  => Some("veiled_companion_weapon_riven_mod"),
+        "Rifle" => Some("veiled_rifle_riven_mod"),
+        "Pistol" => Some("veiled_pistol_riven_mod"),
+        "Shotgun" => Some("veiled_shotgun_riven_mod"),
+        "Melee" => Some("veiled_melee_riven_mod"),
+        "Kitgun" => Some("veiled_kitgun_riven_mod"),
+        "Zaw" => Some("veiled_zaw_riven_mod"),
+        "CompanionWeapon" => Some("veiled_companion_weapon_riven_mod"),
         _ => None,
     };
-    if let Some(s) = slug && let Some(wfm_item) = wfm_by_slug.get(s) {
+    if let Some(s) = slug
+        && let Some(wfm_item) = wfm_by_slug.get(s)
+    {
         return Some(MappedItem {
             id: wfm_item.id.clone(),
             slug: s.to_string(),
@@ -764,7 +786,9 @@ fn process_relic(
     if !is_relic(item_type) {
         return None;
     }
-    if let Some((slug, refinement)) = map_relic(item_type, relic_map) && let Some(wfm_item) = wfm_by_slug.get(&slug) {
+    if let Some((slug, refinement)) = map_relic(item_type, relic_map)
+        && let Some(wfm_item) = wfm_by_slug.get(&slug)
+    {
         return Some(MappedItem {
             id: wfm_item.id.clone(),
             slug,
@@ -793,27 +817,32 @@ fn check_allowlist(
     wfm_by_name: &HashMap<String, WfmItem>,
 ) -> bool {
     match category_key {
-        "FlavourItems"              => is_flavour_item_allowed(item_type),
-        "RawUpgrades" | "Upgrades"  => is_upgrade_item_allowed(item_type),
-        "FusionTreasures"           => is_fusion_treasure_allowed(item_type),
+        "FlavourItems" => is_flavour_item_allowed(item_type),
+        "RawUpgrades" | "Upgrades" => is_upgrade_item_allowed(item_type),
+        "FusionTreasures" => is_fusion_treasure_allowed(item_type),
         "Recipes" => {
             if is_misc_item_allowed(item_type) {
                 true
             } else {
                 wfm_by_ref.contains_key(item_type)
-                    || wfcd_by_ref.get(item_type).and_then(|wfcd_item| {
-                        find_wfm_match(&wfcd_item.name, wfm_by_name)
-                    }).is_some()
+                    || wfcd_by_ref
+                        .get(item_type)
+                        .and_then(|wfcd_item| find_wfm_match(&wfcd_item.name, wfm_by_name))
+                        .is_some()
             }
-        },
+        }
         "MiscItems" => is_misc_item_allowed(item_type),
         _ => false,
     }
 }
 
-fn parse_rank_and_sockets(item_obj: &serde_json::Map<String, serde_json::Value>) -> (u32, Option<u32>) {
+fn parse_rank_and_sockets(
+    item_obj: &serde_json::Map<String, serde_json::Value>,
+) -> (u32, Option<u32>) {
     let mut rank = 0;
-    if let Some(fp_str) = item_obj.get("UpgradeFingerprint").and_then(serde_json::Value::as_str)
+    if let Some(fp_str) = item_obj
+        .get("UpgradeFingerprint")
+        .and_then(serde_json::Value::as_str)
         && let Ok(fp_val) = serde_json::from_str::<serde_json::Value>(fp_str)
     {
         if fp_val.get("compat").is_some() || fp_val.get("challenge").is_some() {
@@ -823,7 +852,10 @@ fn parse_rank_and_sockets(item_obj: &serde_json::Map<String, serde_json::Value>)
             rank = u32::try_from(lvl).unwrap_or(0);
         }
     }
-    let sockets = item_obj.get("Sockets").and_then(serde_json::Value::as_u64).map(|s| u32::try_from(s).unwrap_or(0));
+    let sockets = item_obj
+        .get("Sockets")
+        .and_then(serde_json::Value::as_u64)
+        .map(|s| u32::try_from(s).unwrap_or(0));
     (rank, sockets)
 }
 
@@ -838,10 +870,13 @@ fn process_item(
 ) -> Option<MappedItem> {
     let item_obj = element.as_object()?;
     let item_type = item_obj.get("ItemType")?.as_str()?;
-    let qty = item_obj.get("ItemCount")
+    let qty = item_obj
+        .get("ItemCount")
         .and_then(serde_json::Value::as_u64)
         .map_or(1, |q| u32::try_from(q).unwrap_or(1));
-    if qty == 0 { return None; }
+    if qty == 0 {
+        return None;
+    }
 
     let (rank, sockets) = parse_rank_and_sockets(item_obj);
 
@@ -857,7 +892,13 @@ fn process_item(
     }
 
     // General allowlist
-    if !check_allowlist(item_type, category_key, wfm_by_ref, wfcd_by_ref, wfm_by_name) {
+    if !check_allowlist(
+        item_type,
+        category_key,
+        wfm_by_ref,
+        wfcd_by_ref,
+        wfm_by_name,
+    ) {
         return None;
     }
 
@@ -885,7 +926,7 @@ pub(crate) fn arcane_rank_cost(rank: u8) -> u32 {
     }
 }
 
- fn apply_keep_blacklist(
+fn apply_keep_blacklist(
     mut item: MappedItem,
     keep_map: &KeepConfig,
     blacklist: &BlacklistConfig,
@@ -906,11 +947,15 @@ pub(crate) fn arcane_rank_cost(rank: u8) -> u32 {
         if let Some(rules) = rules {
             let rank_val = item.rank;
             if let Some(rank) = rank_val {
-                rules.iter().find(|r| r.rank == Some(rank))
+                rules
+                    .iter()
+                    .find(|r| r.rank == Some(rank))
                     .or_else(|| rules.iter().find(|r| r.rank.is_none()))
                     .map_or(0, |r| r.keep)
             } else {
-                rules.iter().find(|r| r.rank.is_none())
+                rules
+                    .iter()
+                    .find(|r| r.rank.is_none())
                     .map_or(0, |r| r.keep)
             }
         } else {
@@ -924,7 +969,7 @@ pub(crate) fn arcane_rank_cost(rank: u8) -> u32 {
         item.quantity -= keep_reserved;
     }
     Some(item)
-     }
+}
 
 /// Merges `MappedItem` entries that are the same underlying item at the same rank (mods and
 /// arcanes only) into one entry with a summed quantity. Without this, every leveled duplicate
@@ -933,7 +978,8 @@ pub(crate) fn arcane_rank_cost(rank: u8) -> u32 {
 /// against each independently instead of the true total.
 fn merge_duplicate_ranked_items(items: Vec<MappedItem>) -> Vec<MappedItem> {
     let mut merged: Vec<MappedItem> = Vec::new();
-    let mut index: std::collections::HashMap<(String, Option<u8>), usize> = std::collections::HashMap::new();
+    let mut index: std::collections::HashMap<(String, Option<u8>), usize> =
+        std::collections::HashMap::new();
 
     for item in items {
         if item.is_mod || item.is_arcane {
@@ -1001,7 +1047,9 @@ fn apply_mod_keep(
 /// extra raw dupes — is left sellable.
 fn apply_arcane_fusion_reserve(variants: &mut [MappedItem], max_rank: Option<u8>) {
     let Some(max_rank) = max_rank else { return };
-    let Some(base_idx) = variants.iter().position(|v| v.quantity > 0) else { return };
+    let Some(base_idx) = variants.iter().position(|v| v.quantity > 0) else {
+        return;
+    };
     let base_rank = variants[base_idx].rank.unwrap_or(0);
 
     variants[base_idx].quantity -= 1;
@@ -1020,7 +1068,8 @@ fn apply_arcane_fusion_reserve(variants: &mut [MappedItem], max_rank: Option<u8>
 /// for mods and arcanes. Must run after `merge_duplicate_ranked_items`. Non-mod/arcane items
 /// pass through untouched — their keep-reservation already happened in `apply_keep_blacklist`.
 fn apply_cross_rank_keep(items: Vec<MappedItem>, keep_map: &KeepConfig) -> Vec<MappedItem> {
-    let mut by_item: std::collections::HashMap<String, Vec<MappedItem>> = std::collections::HashMap::new();
+    let mut by_item: std::collections::HashMap<String, Vec<MappedItem>> =
+        std::collections::HashMap::new();
     let mut other = Vec::new();
 
     for item in items {
@@ -1047,7 +1096,7 @@ fn apply_cross_rank_keep(items: Vec<MappedItem>, keep_map: &KeepConfig) -> Vec<M
                     |r| r.keep,
                 );
             if keep_total > 0 {
-              apply_arcane_fusion_reserve(&mut variants, sample_max_rank);
+                apply_arcane_fusion_reserve(&mut variants, sample_max_rank);
             }
         } else {
             let default_keep = keep_map.defaults.get("mod").map_or(0, |r| r.keep);
@@ -1081,9 +1130,21 @@ pub fn load_mastery_and_ownership(
     // weapon-tier default and can read as falsely "Mastered."
     let mut frame_tier_uniques = HashSet::new();
     let equipment_keys = [
-        "Suits", "LongGuns", "Pistols", "Melee",
-        "Archwing", "Necramech", "Sentinels", "KubrowPets",
-        "MoaPets", "Hounds", "Hoverboard", "CrewShips", "SpaceSuits", "SpaceGuns", "SpaceMelee",
+        "Suits",
+        "LongGuns",
+        "Pistols",
+        "Melee",
+        "Archwing",
+        "Necramech",
+        "Sentinels",
+        "KubrowPets",
+        "MoaPets",
+        "Hounds",
+        "Hoverboard",
+        "CrewShips",
+        "SpaceSuits",
+        "SpaceGuns",
+        "SpaceMelee",
     ];
     if let Some(obj) = inventory.as_object() {
         for &key in &equipment_keys {
@@ -1092,7 +1153,8 @@ pub fn load_mastery_and_ownership(
                     if let Some(item_type) = entry.get("ItemType").and_then(|v| v.as_str()) {
                         owned_built_set.insert(item_type.to_string());
                         match key {
-                            "Suits" | "Archwing" | "Necramech" | "Sentinels" | "KubrowPets" | "MoaPets" | "Hounds" | "Hoverboard" => {
+                            "Suits" | "Archwing" | "Necramech" | "Sentinels" | "KubrowPets"
+                            | "MoaPets" | "Hounds" | "Hoverboard" => {
                                 frame_tier_uniques.insert(item_type.to_string());
                             }
                             _ => {}
@@ -1124,10 +1186,15 @@ pub fn load_mastery_and_ownership(
 
     // ---- Process ----
     for (unique_name, xp_value) in xp_map {
-        let display_name = wfcd_by_ref.get(&unique_name)
+        let display_name = wfcd_by_ref
+            .get(&unique_name)
             .map_or("", |w| w.name.as_str());
 
-        let threshold = mastery_threshold(display_name, &unique_name, frame_tier_uniques.contains(&unique_name));
+        let threshold = mastery_threshold(
+            display_name,
+            &unique_name,
+            frame_tier_uniques.contains(&unique_name),
+        );
 
         if xp_value >= threshold {
             mastered_set.insert(unique_name);
@@ -1213,7 +1280,9 @@ pub fn find_incomplete_sets(
         // parts, and other non-marketable builds) before doing any ownership work —
         // there's nothing to price or complete-for-profit here, and surfacing these
         // just buries the builds that actually matter under warnings.
-        let Some(wfcd_item) = wfcd_by_ref.get(build_unique) else { continue };
+        let Some(wfcd_item) = wfcd_by_ref.get(build_unique) else {
+            continue;
+        };
         if resolve_set_item(&wfcd_item.name, wfm_by_name).is_none() {
             continue;
         }
@@ -1255,7 +1324,6 @@ pub fn find_incomplete_sets(
     result
 }
 
-
 // ── Main mapping function ─────────────────────────────────────────────────────
 
 /// Maps the `AlecaFrame` inventory JSON to a list of tradeable WFM items.
@@ -1281,22 +1349,23 @@ pub async fn map_inventory(
 
     let mut results = Vec::new();
     let allowed_keys = [
-        "FlavourItems", "RawUpgrades", "Upgrades",
-        "FusionTreasures", "Recipes", "MiscItems",
+        "FlavourItems",
+        "RawUpgrades",
+        "Upgrades",
+        "FusionTreasures",
+        "Recipes",
+        "MiscItems",
     ];
 
     // Total inventory entries across the allowed categories, used purely to render
     // "(N/total)" progress below — this does not change what gets fetched or how.
-    let total_items: usize = inventory
-        .as_object()
-        .map(|obj| {
-            allowed_keys
-                .iter()
-                .filter_map(|&key| obj.get(key).and_then(serde_json::Value::as_array))
-                .map(std::vec::Vec::len)
-                .sum()
-        })
-        .unwrap_or(0);
+    let total_items: usize = inventory.as_object().map_or(0, |obj| {
+        allowed_keys
+            .iter()
+            .filter_map(|&key| obj.get(key).and_then(|v| v.as_array()))
+            .map(Vec::len)
+            .sum()
+    });
     let mut processed = 0usize;
 
     if let Some(obj) = inventory.as_object() {
@@ -1304,7 +1373,7 @@ pub async fn map_inventory(
             if let Some(arr) = obj.get(category_key).and_then(serde_json::Value::as_array) {
                 for element in arr {
                     processed += 1;
-                    if processed % 50 == 0 {
+                    if processed.is_multiple_of(50) {
                         tsprintln!("Fetching item details... ({processed}/{total_items})");
                     }
                     if let Some(mut mapped) = process_item(
@@ -1330,14 +1399,17 @@ pub async fn map_inventory(
                             Err(e) => {
                                 tseprintln!(
                                     "Warning: Could not fetch full item for {}: {}",
-                                    mapped.slug, e
+                                    mapped.slug,
+                                    e
                                 );
                                 mapped.subtypes = Vec::new();
                             }
                         }
 
                         // Apply keeplist / blacklist
-                        if let Some(final_item) = apply_keep_blacklist(mapped, &keep_map, &blacklist) {
+                        if let Some(final_item) =
+                            apply_keep_blacklist(mapped, &keep_map, &blacklist)
+                        {
                             results.push(final_item);
                         }
                     }
@@ -1356,7 +1428,7 @@ pub async fn map_inventory(
 #[cfg(test)]
 mod mapping_tests {
     use super::*;
-    use crate::models::{WfmI18n, WfmEn};
+    use crate::models::{WfmEn, WfmI18n};
 
     #[test]
     fn rarity_populated_from_wfcd() {
@@ -1366,7 +1438,11 @@ mod mapping_tests {
             game_ref: Some("/Lotus/Test".into()),
             tags: vec!["mod".into()],
             max_rank: Some(10),
-            i18n: WfmI18n { en: WfmEn { name: "Test Mod".into() } },
+            i18n: WfmI18n {
+                en: WfmEn {
+                    name: "Test Mod".into(),
+                },
+            },
             subtypes: vec![],
             set_root: false,
             bulk_tradable: false,
@@ -1397,7 +1473,8 @@ mod mapping_tests {
             &wfm_by_ref,
             &wfm_by_name,
             &wfcd_by_ref,
-        ).expect("mapping should succeed");
+        )
+        .expect("mapping should succeed");
 
         assert_eq!(mapped.rarity, "Common");
     }
@@ -1419,7 +1496,11 @@ mod resolve_and_recipe_tests {
             game_ref: None,
             tags: vec![],
             max_rank: None,
-            i18n: WfmI18n { en: WfmEn { name: "Mag Prime Set".into() } },
+            i18n: WfmI18n {
+                en: WfmEn {
+                    name: "Mag Prime Set".into(),
+                },
+            },
             subtypes: vec![],
             set_root: true,
             bulk_tradable: false,
@@ -1432,7 +1513,11 @@ mod resolve_and_recipe_tests {
             game_ref: None,
             tags: vec![],
             max_rank: None,
-            i18n: WfmI18n { en: WfmEn { name: "Mag Prime Chassis".into() } },
+            i18n: WfmI18n {
+                en: WfmEn {
+                    name: "Mag Prime Chassis".into(),
+                },
+            },
             subtypes: vec![],
             set_root: false,
             bulk_tradable: false,
@@ -1463,14 +1548,18 @@ mod resolve_and_recipe_tests {
                 ]
             }
         ]"#;
-        let wfcd_items: Vec<WfcdItem> = serde_json::from_str(fixture).expect("fixture should parse");
+        let wfcd_items: Vec<WfcdItem> =
+            serde_json::from_str(fixture).expect("fixture should parse");
         let (parent_map, requirements_map) = build_maps_from_items(wfcd_items, None, None, None);
 
         let recipe = requirements_map
             .get("/Lotus/Powersuits/Mag/MagPrime")
             .expect("Mag Prime should have a recorded recipe");
         assert_eq!(recipe.len(), 4);
-        assert!(recipe.contains(&("/Lotus/Weapons/Tenno/Blueprints/MagPrimeBlueprint".to_string(), 1)));
+        assert!(recipe.contains(&(
+            "/Lotus/Weapons/Tenno/Blueprints/MagPrimeBlueprint".to_string(),
+            1
+        )));
         assert!(recipe.contains(&("/Lotus/Powersuits/Mag/MagPrimeChassis".to_string(), 1)));
         assert!(recipe.contains(&("/Lotus/Powersuits/Mag/MagPrimeNeuroptics".to_string(), 1)));
         assert!(recipe.contains(&("/Lotus/Powersuits/Mag/MagPrimeSystems".to_string(), 1)));
@@ -1530,7 +1619,12 @@ mod build_status_tests {
     fn component_with_no_known_parent_is_unknown() {
         let parent_map = sample_parent_map();
         assert_eq!(
-            get_build_status("untracked_part", &parent_map, &HashSet::new(), &HashSet::new()),
+            get_build_status(
+                "untracked_part",
+                &parent_map,
+                &HashSet::new(),
+                &HashSet::new()
+            ),
             BuildStatus::Unknown
         );
     }
@@ -1542,46 +1636,136 @@ mod mastery_calibration_tests {
 
     #[test]
     fn mastery_calibration_against_real_account_data() {
-    // (display_name, unique_name, is_frame_tier, xp, should_be_mastered)
-    //
-    // is_frame_tier here reflects each item's real equipment category directly (Warframe Wiki:
-    // Warframes/Archwings/Companions/Sentinels/K-Drives/Necramechs use 1000*R^2; ordinary weapons
-    // use 500*R^2) rather than going through load_mastery_and_ownership's equipment-array scan —
-    // that scan has its own coverage gaps (see the Hoverboard/K-Drive note above) which are a
-    // separate concern from whether this threshold math itself is correct.
-    let cases = [
-        ("Ash", "/Lotus/Powersuits/Ninja/Ninja", true, 901_045u64, true),
-        ("Acceltra", "/Lotus/Weapons/Tenno/LongGuns/SapientPrimary/SapientPrimaryWeapon", false, 450_743, true),
-        // Needlenose: K-Drive deck, confirmed in-game at rank 21/30. K-Drives are frame-tier
-        // (1000*R^2), not weapon-tier — at 456,993 XP this is comfortably below the frame-tier
-        // rank-30 threshold of 900,000, matching the real "Not Mastered" status.
-        ("Needlenose", "/Lotus/Types/Vehicles/Hoverboard/HoverboardParts/PartComponents/HoverboardCorpusB/HoverboardCorpusBDeck", true, 456_993, false),
-        ("Tenet Ferrox", "/Lotus/Weapons/Corpus/BoardExec/Primary/CrpBEFerrox/CrpBEFerrox", false, 578_000, false),
-        ("Coda Mire", "/Lotus/Weapons/Infested/InfestedLich/Melee/CodaMire", false, 648_000, false),
-        ("Coda Motovore", "/Lotus/Weapons/Infested/InfestedLich/Melee/InfestedHammer/InfLichHammerWeapon", false, 648_000, false),
-        ("Coda Pathocyst", "/Lotus/Weapons/Infested/InfestedLich/Melee/CodaPathocyst/CodaPathocyst", false, 648_000, false),
-        ("Kuva Shildeg", "/Lotus/Weapons/Grineer/Melee/GrnKuvaLichScythe/GrnKuvaLichScytheWeapon", false, 648_000, false),
-        ("Paracesis", "/Lotus/Weapons/Orokin/BallasSword/BallasSwordWeapon", false, 648_000, false),
-        ("Tenet Grigori", "/Lotus/Weapons/Corpus/Melee/CrpBriefcaseScythe/CrpBriefcaseScythe", false, 648_000, false),
-        ("Tenet Livia", "/Lotus/Weapons/Corpus/Melee/CrpBriefcase2HKatana/CrpBriefcase2HKatana", false, 648_000, false),
-        // Exactly at the weapon-tier threshold (450,000) but well under the overlevel-weapon
-        // threshold (800,000) it should actually be held to — a naive weapon-tier check would
-        // wrongly call this mastered.
-        ("Kuva Ayanga", "/Lotus/Weapons/Grineer/HeavyWeapons/GrnHeavyGrenadeLauncher", false, 450_000, false),
-        ("Kuva Grattler", "/Lotus/Weapons/Grineer/KuvaLich/HeavyWeapons/Grattler/KuvaGrattler", false, 512_000, false),
-        ("Bonewidow", "/Lotus/Powersuits/EntratiMech/ThanoTech", true, 900_000, false),
-        // Real XPInfo value (not the live MechSuits value, which is unreliable — see the
-        // load_mastery_and_ownership doc comment on why MechSuits is never read here).
-        ("Voidrig", "/Lotus/Powersuits/EntratiMech/NechroTech", true, 1_024_000, false),
-    ];
+        // (display_name, unique_name, is_frame_tier, xp, should_be_mastered)
+        //
+        // is_frame_tier here reflects each item's real equipment category directly (Warframe Wiki:
+        // Warframes/Archwings/Companions/Sentinels/K-Drives/Necramechs use 1000*R^2; ordinary weapons
+        // use 500*R^2) rather than going through load_mastery_and_ownership's equipment-array scan —
+        // that scan has its own coverage gaps (see the Hoverboard/K-Drive note above) which are a
+        // separate concern from whether this threshold math itself is correct.
+        let cases = [
+            (
+                "Ash",
+                "/Lotus/Powersuits/Ninja/Ninja",
+                true,
+                901_045u64,
+                true,
+            ),
+            (
+                "Acceltra",
+                "/Lotus/Weapons/Tenno/LongGuns/SapientPrimary/SapientPrimaryWeapon",
+                false,
+                450_743,
+                true,
+            ),
+            // Needlenose: K-Drive deck, confirmed in-game at rank 21/30. K-Drives are frame-tier
+            // (1000*R^2), not weapon-tier — at 456,993 XP this is comfortably below the frame-tier
+            // rank-30 threshold of 900,000, matching the real "Not Mastered" status.
+            (
+                "Needlenose",
+                "/Lotus/Types/Vehicles/Hoverboard/HoverboardParts/PartComponents/HoverboardCorpusB/HoverboardCorpusBDeck",
+                true,
+                456_993,
+                false,
+            ),
+            (
+                "Tenet Ferrox",
+                "/Lotus/Weapons/Corpus/BoardExec/Primary/CrpBEFerrox/CrpBEFerrox",
+                false,
+                578_000,
+                false,
+            ),
+            (
+                "Coda Mire",
+                "/Lotus/Weapons/Infested/InfestedLich/Melee/CodaMire",
+                false,
+                648_000,
+                false,
+            ),
+            (
+                "Coda Motovore",
+                "/Lotus/Weapons/Infested/InfestedLich/Melee/InfestedHammer/InfLichHammerWeapon",
+                false,
+                648_000,
+                false,
+            ),
+            (
+                "Coda Pathocyst",
+                "/Lotus/Weapons/Infested/InfestedLich/Melee/CodaPathocyst/CodaPathocyst",
+                false,
+                648_000,
+                false,
+            ),
+            (
+                "Kuva Shildeg",
+                "/Lotus/Weapons/Grineer/Melee/GrnKuvaLichScythe/GrnKuvaLichScytheWeapon",
+                false,
+                648_000,
+                false,
+            ),
+            (
+                "Paracesis",
+                "/Lotus/Weapons/Orokin/BallasSword/BallasSwordWeapon",
+                false,
+                648_000,
+                false,
+            ),
+            (
+                "Tenet Grigori",
+                "/Lotus/Weapons/Corpus/Melee/CrpBriefcaseScythe/CrpBriefcaseScythe",
+                false,
+                648_000,
+                false,
+            ),
+            (
+                "Tenet Livia",
+                "/Lotus/Weapons/Corpus/Melee/CrpBriefcase2HKatana/CrpBriefcase2HKatana",
+                false,
+                648_000,
+                false,
+            ),
+            // Exactly at the weapon-tier threshold (450,000) but well under the overlevel-weapon
+            // threshold (800,000) it should actually be held to — a naive weapon-tier check would
+            // wrongly call this mastered.
+            (
+                "Kuva Ayanga",
+                "/Lotus/Weapons/Grineer/HeavyWeapons/GrnHeavyGrenadeLauncher",
+                false,
+                450_000,
+                false,
+            ),
+            (
+                "Kuva Grattler",
+                "/Lotus/Weapons/Grineer/KuvaLich/HeavyWeapons/Grattler/KuvaGrattler",
+                false,
+                512_000,
+                false,
+            ),
+            (
+                "Bonewidow",
+                "/Lotus/Powersuits/EntratiMech/ThanoTech",
+                true,
+                900_000,
+                false,
+            ),
+            // Real XPInfo value (not the live MechSuits value, which is unreliable — see the
+            // load_mastery_and_ownership doc comment on why MechSuits is never read here).
+            (
+                "Voidrig",
+                "/Lotus/Powersuits/EntratiMech/NechroTech",
+                true,
+                1_024_000,
+                false,
+            ),
+        ];
 
-    for (display_name, unique_name, is_frame_tier, xp, should_be_mastered) in cases {
-        let threshold = mastery_threshold(display_name, unique_name, is_frame_tier);
-        assert_eq!(
-            xp >= threshold,
-            should_be_mastered,
-            "{display_name} ({unique_name}): xp={xp}, threshold={threshold}"
-        );
-    }
+        for (display_name, unique_name, is_frame_tier, xp, should_be_mastered) in cases {
+            let threshold = mastery_threshold(display_name, unique_name, is_frame_tier);
+            assert_eq!(
+                xp >= threshold,
+                should_be_mastered,
+                "{display_name} ({unique_name}): xp={xp}, threshold={threshold}"
+            );
+        }
     }
 }

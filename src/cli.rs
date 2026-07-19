@@ -1,22 +1,26 @@
+use crate::config::{BLACKLIST_FILE, KEEPLIST_FILE, MIN_DAILY_VOLUME};
+use crate::mapping::{
+    BuildParentMap, BuildRequirements, BuildStatus, get_build_status, resolve_set_item,
+};
+use crate::wfm_client::{CreateOrder, Credentials, Order as OwnedOrder, UpdateOrder, WfmClient};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use tokio::time::{sleep, Duration};
-use crate::wfm_client::{WfmClient, Credentials, CreateOrder, UpdateOrder, Order as OwnedOrder};
-use crate::config::{KEEPLIST_FILE, BLACKLIST_FILE, MIN_DAILY_VOLUME};
-use crate::mapping::{BuildParentMap, BuildRequirements, BuildStatus, get_build_status, resolve_set_item};
+use tokio::time::{Duration, sleep};
 // Whole-module imports (as opposed to the specific-item imports above) for the
 // check-sets feature, which needs several more mapping::/wfm_client:: items than are
 // worth naming individually here.
 use crate::mapping;
-use crate::wfm_client;
-use crate::models::{MappedItem, KeepConfig, KeepRule, BlacklistConfig, WfcdItem, WfmItem, WfmStatsResponse};
+use crate::models::{
+    BlacklistConfig, KeepConfig, KeepRule, MappedItem, WfcdItem, WfmItem, WfmStatsResponse,
+};
 use crate::pricing::{
     calculate_saturation_ratio, calculate_weighted_average, derive_endo_to_plat_from_mods,
-    fetch_statistics, get_ayatan_endo_yield, is_antique, get_fusion_cost_from_zero, recent_volume,
+    fetch_statistics, get_ayatan_endo_yield, get_fusion_cost_from_zero, is_antique, recent_volume,
 };
+use crate::wfm_client;
 // Timestamped session logging: see src/logging.rs.
 use crate::{tseprintln, tsprint, tsprintln};
 
@@ -29,7 +33,6 @@ const PRICE_TOLERANCE_PCT: f64 = 0.03;
 /// Set's own market price, sell that component standalone instead of folding it into the Set
 /// bundle — otherwise you're giving away a disproportionately valuable part inside a cheaper
 /// bundle price.
-
 enum NoOpDecision {
     TrueNoOp,
     QuantitySyncOnly { new_quantity: u32, keep_price: u32 },
@@ -528,19 +531,26 @@ fn decide_no_op(
     let price_matches = suggested_price.abs_diff(existing_price) <= tolerance;
     match (price_matches, desired_total_qty == existing_qty) {
         (true, true) => NoOpDecision::TrueNoOp,
-        (true, false) => NoOpDecision::QuantitySyncOnly { new_quantity: desired_total_qty, keep_price: existing_price },
+        (true, false) => NoOpDecision::QuantitySyncOnly {
+            new_quantity: desired_total_qty,
+            keep_price: existing_price,
+        },
         (false, _) => NoOpDecision::NeedsReview,
     }
 }
 
 fn quantity_default(is_already_listed: bool, listed_qty: u32, available_qty: u32) -> u32 {
-    if is_already_listed { listed_qty + available_qty } else { available_qty }
+    if is_already_listed {
+        listed_qty + available_qty
+    } else {
+        available_qty
+    }
 }
 
 fn ayatan_max_stars(slug: &str) -> (u8, u8) {
     match slug {
-        "ayatan_anasa_sculpture"    => (2, 2),
-        "ayatan_ayr_sculpture"      => (3, 0),
+        "ayatan_anasa_sculpture" => (2, 2),
+        "ayatan_ayr_sculpture" => (3, 0),
         "ayatan_chattraka_sculpture"
         | "ayatan_hemakara_sculpture"
         | "ayatan_piv_sculpture"
@@ -548,16 +558,20 @@ fn ayatan_max_stars(slug: &str) -> (u8, u8) {
         | "ayatan_valana_sculpture"
         | "ayatan_vaya_sculpture"
         | "ayatan_zambuka_sculpture" => (2, 1),
-        "ayatan_kitha_sculpture"    => (4, 1),
-        "ayatan_orta_sculpture"     => (3, 1),
-        _                           => (0, 0),
+        "ayatan_kitha_sculpture" => (4, 1),
+        "ayatan_orta_sculpture" => (3, 1),
+        _ => (0, 0),
     }
 }
 
 pub(crate) fn print_header(title: &str) {
-    tsprintln!("\x1B[1;36m================================================================================\x1B[0m");
+    tsprintln!(
+        "\x1B[1;36m================================================================================\x1B[0m"
+    );
     tsprintln!("\x1B[1;35m   {}   \x1B[0m", title.to_uppercase());
-    tsprintln!("\x1B[1;36m================================================================================\x1B[0m");
+    tsprintln!(
+        "\x1B[1;36m================================================================================\x1B[0m"
+    );
 }
 
 pub(crate) fn print_info(label: &str, value: &str) {
@@ -580,18 +594,27 @@ fn load_credentials() -> Result<(String, String), Box<dyn Error + Send + Sync>> 
     let password = std::env::var("WFM_PASSWORD").unwrap_or_default();
     if email.is_empty() || password.is_empty() {
         print_warning("WFM_EMAIL or WFM_PASSWORD not found in environment.");
-        print_info("Please supply them", "e.g., set WFM_EMAIL=email in environment or .env file.");
+        print_info(
+            "Please supply them",
+            "e.g., set WFM_EMAIL=email in environment or .env file.",
+        );
         return Err("Missing credentials".into());
     }
     Ok((email, password))
 }
 
-async fn fetch_user_listings(wfm_client: &WfmClient) -> Result<(Vec<OwnedOrder>, HashMap<ListingKey, Vec<OwnedOrder>>), Box<dyn Error + Send + Sync>> {
+async fn fetch_user_listings(
+    wfm_client: &WfmClient,
+) -> Result<(Vec<OwnedOrder>, HashMap<ListingKey, Vec<OwnedOrder>>), Box<dyn Error + Send + Sync>> {
     tsprintln!("Fetching your active listings from Warframe.Market...");
     let all_orders = wfm_client.my_orders().await?;
-    let user_listings: Vec<OwnedOrder> = all_orders.into_iter().filter(OwnedOrder::is_sell).collect();
+    let user_listings: Vec<OwnedOrder> =
+        all_orders.into_iter().filter(OwnedOrder::is_sell).collect();
     let current_count = user_listings.len();
-    print_info("Active Listings on WFM", &format!("{current_count}/100 slots used"));
+    print_info(
+        "Active Listings on WFM",
+        &format!("{current_count}/100 slots used"),
+    );
 
     let mut map: HashMap<ListingKey, Vec<OwnedOrder>> = HashMap::new();
     for listing in &user_listings {
@@ -650,8 +673,12 @@ fn aggregate_sets_with_prices(
 
     // Process each build
     for (build_unique, recipe) in requirements {
-        let Some(wfcd_item) = wfcd_by_ref.get(build_unique) else { continue };
-        let Some(set_item) = resolve_set_item(&wfcd_item.name, wfm_by_name) else { continue };
+        let Some(wfcd_item) = wfcd_by_ref.get(build_unique) else {
+            continue;
+        };
+        let Some(set_item) = resolve_set_item(&wfcd_item.name, wfm_by_name) else {
+            continue;
+        };
 
         // Determine possible sets ignoring guard
         let mut possible_sets = u32::MAX;
@@ -716,7 +743,9 @@ fn aggregate_sets_with_prices(
             // they weren't needed for the sets we did form), rather than the raw parts an
             // in-progress set still needs, which must reach aggregation first.
             let name_lower = comp_item_template.name.to_lowercase();
-            let worth_reviewing = name_lower.contains("prime") || name_lower.contains("set") || name_lower.contains("blueprint");
+            let worth_reviewing = name_lower.contains("prime")
+                || name_lower.contains("set")
+                || name_lower.contains("blueprint");
             if !worth_reviewing {
                 continue;
             }
@@ -730,7 +759,10 @@ fn aggregate_sets_with_prices(
     result
 }
 
-fn filter_candidates(mapped_items: Vec<MappedItem>, parent_map: &BuildParentMap) -> Vec<MappedItem> {
+fn filter_candidates(
+    mapped_items: Vec<MappedItem>,
+    parent_map: &BuildParentMap,
+) -> Vec<MappedItem> {
     tsprintln!("Filtering high-value candidates for trade review...");
     mapped_items
         .into_iter()
@@ -758,7 +790,9 @@ fn filter_candidates(mapped_items: Vec<MappedItem>, parent_map: &BuildParentMap)
                 return true;
             }
             let name_lower = item.name.to_lowercase();
-            name_lower.contains("prime") || name_lower.contains("set") || name_lower.contains("blueprint")
+            name_lower.contains("prime")
+                || name_lower.contains("set")
+                || name_lower.contains("blueprint")
         })
         .collect()
 }
@@ -783,7 +817,8 @@ fn upgrade_suggestion(
         return None;
     }
     let endo_cost = get_fusion_cost_from_zero(rarity, current_rank, is_antique);
-    let endo_to_max = get_fusion_cost_from_zero(rarity, max_rank, is_antique).saturating_sub(endo_cost);
+    let endo_to_max =
+        get_fusion_cost_from_zero(rarity, max_rank, is_antique).saturating_sub(endo_cost);
     if endo_to_max == 0 {
         return None;
     }
@@ -805,7 +840,10 @@ mod upgrade_suggestion_tests {
         // be (wrongly) used as a gate for "has this mod been touched at all" — excluding every
         // unranked mod, the single most common case for a sellable duplicate.
         let result = upgrade_suggestion("Rare", 0, 10, false, 10.0, 80.0, 500);
-        assert!(result.is_some(), "an unranked mod with a profitable max price must still be suggested");
+        assert!(
+            result.is_some(),
+            "an unranked mod with a profitable max price must still be suggested"
+        );
         let (delta, endo_to_max, _score) = result.unwrap();
         assert!((delta - 70.0).abs() < f64::EPSILON);
         assert!(endo_to_max > 0);
@@ -839,6 +877,7 @@ impl StatsSource for LiveStatsSource {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn build_priced_candidates<S: StatsSource>(
     candidates: Vec<MappedItem>,
     _endo_rate: f64, // unused here, needed for signature compatibility
@@ -847,7 +886,10 @@ async fn build_priced_candidates<S: StatsSource>(
     wfcd_by_ref: &HashMap<String, WfcdItem>,
     wfm_by_name: &HashMap<String, WfmItem>,
     stats_source: &S,
-) -> (Vec<(MappedItem, f64, f64, u32, f64)>, Vec<(String, f64, u32, u32, f64)>) {
+) -> (
+    Vec<(MappedItem, f64, f64, u32, f64)>,
+    Vec<(String, f64, u32, u32, f64)>,
+) {
     // ---- 1. Collect all slugs we need ----
     let mut slugs_to_fetch = HashSet::new();
 
@@ -859,9 +901,10 @@ async fn build_priced_candidates<S: StatsSource>(
     // Also, for each build, add its set slug (if resolvable)
     for build_unique in requirements.keys() {
         if let Some(wfcd_item) = wfcd_by_ref.get(build_unique)
-            && let Some(set_item) = resolve_set_item(&wfcd_item.name, wfm_by_name) {
-                slugs_to_fetch.insert(set_item.slug);
-            }
+            && let Some(set_item) = resolve_set_item(&wfcd_item.name, wfm_by_name)
+        {
+            slugs_to_fetch.insert(set_item.slug);
+        }
     }
 
     // ---- 2. Fetch stats for all slugs, store in a map ----
@@ -898,7 +941,11 @@ async fn build_priced_candidates<S: StatsSource>(
 
     for item in aggregated_items {
         // Determine the target rank for price calculation (mods/arcanes only)
-        let target_rank = if item.is_mod || item.is_arcane { item.rank } else { None };
+        let target_rank = if item.is_mod || item.is_arcane {
+            item.rank
+        } else {
+            None
+        };
 
         // Get stats for this item's slug
         let stats_opt = stats_map.get(&item.slug);
@@ -929,13 +976,15 @@ async fn build_priced_candidates<S: StatsSource>(
         // upgrade suggestions for every mod sitting at rank 0 with a quiet unranked market —
         // even wildly popular mods, since most owned drops are unranked and unranked copies
         // trade far less than maxed ones.
-        let vol_30d_max = if item.is_mod && !item.is_arcane
+        let vol_30d_max = if item.is_mod
+            && !item.is_arcane
             && let Some(max_rank) = item.max_rank
-            && let Some(stats) = stats_opt {
-                recent_volume(stats, Some(max_rank), 30).0
-            } else {
-                vol_30d
-            };
+            && let Some(stats) = stats_opt
+        {
+            recent_volume(stats, Some(max_rank), 30).0
+        } else {
+            vol_30d
+        };
 
         // ---- Demand floor for mods/arcanes ----
         // Use whichever rank (current or max) has better liquidity — only drop the item if
@@ -958,21 +1007,35 @@ async fn build_priced_candidates<S: StatsSource>(
         let score = wa_price * (1.0 + f64::from(vol_30d)).ln();
 
         // ---- Upgrade suggestions (only for mods) ----
-        if item.is_mod && !item.is_arcane
+        if item.is_mod
+            && !item.is_arcane
             && let Some(max_rank) = item.max_rank
-            && let Some(stats) = stats_opt {
-                let current_rank_u32 = u32::from(item.rank.unwrap_or(0));
-                let max_rank_u32 = u32::from(max_rank);
-                let is_antique = is_antique(&item.slug, &item.game_ref);
-                let (max_price, _) = calculate_weighted_average(stats, Some(max_rank));
-                // Use vol_30d_max here (not vol_30d): the score/volume shown should reflect
-                // demand for the mod in the form it'll actually be sold in after upgrading.
-                if let Some((delta, endo_to_max, upgrade_score)) = upgrade_suggestion(
-                    &item.rarity, current_rank_u32, max_rank_u32, is_antique, wa_price, max_price, vol_30d_max,
-                ) {
-                    upgrades.push((item.name.clone(), delta, endo_to_max, vol_30d_max, upgrade_score));
-                }
+            && let Some(stats) = stats_opt
+        {
+            let current_rank_u32 = u32::from(item.rank.unwrap_or(0));
+            let max_rank_u32 = u32::from(max_rank);
+            let is_antique = is_antique(&item.slug, &item.game_ref);
+            let (max_price, _) = calculate_weighted_average(stats, Some(max_rank));
+            // Use vol_30d_max here (not vol_30d): the score/volume shown should reflect
+            // demand for the mod in the form it'll actually be sold in after upgrading.
+            if let Some((delta, endo_to_max, upgrade_score)) = upgrade_suggestion(
+                &item.rarity,
+                current_rank_u32,
+                max_rank_u32,
+                is_antique,
+                wa_price,
+                max_price,
+                vol_30d_max,
+            ) {
+                upgrades.push((
+                    item.name.clone(),
+                    delta,
+                    endo_to_max,
+                    vol_30d_max,
+                    upgrade_score,
+                ));
             }
+        }
 
         // Store priced candidate
         priced.push((item, wa_price, saturation, vol_30d, score));
@@ -1027,7 +1090,9 @@ mod build_priced_candidates_tests {
     fn stats_response(items: Vec<WfmStatsItem>) -> WfmStatsResponse {
         WfmStatsResponse {
             payload: WfmStatsPayload {
-                statistics_closed: WfmStatsSubPayload { ninety_days: items.clone() },
+                statistics_closed: WfmStatsSubPayload {
+                    ninety_days: items.clone(),
+                },
                 statistics_live: WfmStatsSubPayload { ninety_days: items },
             },
         }
@@ -1065,8 +1130,8 @@ mod build_priced_candidates_tests {
         fixtures.insert(
             "primed_pressure_point".to_string(),
             stats_response(vec![
-                stats_item(0, 10.0, 500),   // current (unranked) price/volume
-                stats_item(10, 80.0, 500),  // max-rank price
+                stats_item(0, 10.0, 500),  // current (unranked) price/volume
+                stats_item(10, 80.0, 500), // max-rank price
             ]),
         );
         let stats_source = FixtureStatsSource(fixtures);
@@ -1083,7 +1148,10 @@ mod build_priced_candidates_tests {
         .await;
 
         assert_eq!(priced.len(), 1, "the candidate should still be priced");
-        assert!(!upgrades.is_empty(), "an unranked mod with a profitable max price must surface an upgrade suggestion");
+        assert!(
+            !upgrades.is_empty(),
+            "an unranked mod with a profitable max price must surface an upgrade suggestion"
+        );
         assert_eq!(upgrades[0].0, "Test Mod");
     }
 
@@ -1110,7 +1178,10 @@ mod build_priced_candidates_tests {
         )
         .await;
 
-        assert!(upgrades.is_empty(), "an already-maxed mod has nothing left to upgrade into");
+        assert!(
+            upgrades.is_empty(),
+            "an already-maxed mod has nothing left to upgrade into"
+        );
     }
 
     #[tokio::test]
@@ -1123,7 +1194,7 @@ mod build_priced_candidates_tests {
         fixtures.insert(
             "illiquid_mod".to_string(),
             stats_response(vec![
-                stats_item(0, 10.0, 1),  // 1 sale in 30 days, well under the 9.0/day floor
+                stats_item(0, 10.0, 1), // 1 sale in 30 days, well under the 9.0/day floor
                 stats_item(10, 80.0, 1),
             ]),
         );
@@ -1140,7 +1211,10 @@ mod build_priced_candidates_tests {
         )
         .await;
 
-        assert!(priced.is_empty(), "below the demand floor, the candidate should be dropped entirely");
+        assert!(
+            priced.is_empty(),
+            "below the demand floor, the candidate should be dropped entirely"
+        );
         assert!(upgrades.is_empty());
     }
 
@@ -1159,8 +1233,8 @@ mod build_priced_candidates_tests {
         fixtures.insert(
             "popular_when_maxed".to_string(),
             stats_response(vec![
-                stats_item(0, 10.0, 2),     // unranked: 2 sales/30d, well under the floor
-                stats_item(10, 80.0, 900),  // maxed: 900 sales/30d, comfortably liquid
+                stats_item(0, 10.0, 2),    // unranked: 2 sales/30d, well under the floor
+                stats_item(10, 80.0, 900), // maxed: 900 sales/30d, comfortably liquid
             ]),
         );
         let stats_source = FixtureStatsSource(fixtures);
@@ -1176,8 +1250,15 @@ mod build_priced_candidates_tests {
         )
         .await;
 
-        assert_eq!(priced.len(), 1, "liquid-when-maxed candidate should still be priced");
-        assert!(!upgrades.is_empty(), "should still surface an upgrade suggestion despite thin unranked volume");
+        assert_eq!(
+            priced.len(),
+            1,
+            "liquid-when-maxed candidate should still be priced"
+        );
+        assert!(
+            !upgrades.is_empty(),
+            "should still surface an upgrade suggestion despite thin unranked volume"
+        );
         assert_eq!(upgrades[0].0, "Test Mod");
     }
 }
@@ -1188,8 +1269,13 @@ fn print_upgrade_suggestions(suggestions: &[(String, f64, u32, u32, f64)]) {
     sorted.truncate(15);
 
     print_header("Mod Upgrade Suggestions (Best Endo Value × Volume)");
-    tsprintln!("\x1B[1m  {:<35} | {:<14} | {:<12} | {:<10} | Score\x1B[0m",
-        "Mod", "Δ Plat (→max)", "Endo Cost", "30d Vol");
+    tsprintln!(
+        "\x1B[1m  {:<35} | {:<14} | {:<12} | {:<10} | Score\x1B[0m",
+        "Mod",
+        "Δ Plat (→max)",
+        "Endo Cost",
+        "30d Vol"
+    );
     tsprintln!("  {}", "-".repeat(82));
     for (name, delta, endo, vol, score) in &sorted {
         tsprintln!("  {name:<35} | {delta:<14.1} | {endo:<12} | {vol:<10} | {score:.4}");
@@ -1202,8 +1288,22 @@ fn sort_candidates(
     existing: &HashMap<ListingKey, Vec<OwnedOrder>>,
 ) -> Vec<(MappedItem, f64, f64, u32, f64)> {
     priced.sort_by(|a, b| {
-        let a_key = ListingKey { item_id: a.0.id.clone(), rank: if a.0.is_mod || a.0.is_arcane { a.0.rank } else { None } };
-        let b_key = ListingKey { item_id: b.0.id.clone(), rank: if b.0.is_mod || b.0.is_arcane { b.0.rank } else { None } };
+        let a_key = ListingKey {
+            item_id: a.0.id.clone(),
+            rank: if a.0.is_mod || a.0.is_arcane {
+                a.0.rank
+            } else {
+                None
+            },
+        };
+        let b_key = ListingKey {
+            item_id: b.0.id.clone(),
+            rank: if b.0.is_mod || b.0.is_arcane {
+                b.0.rank
+            } else {
+                None
+            },
+        };
         let a_listed = existing.contains_key(&a_key);
         let b_listed = existing.contains_key(&b_key);
         if a_listed && !b_listed {
@@ -1246,37 +1346,56 @@ async fn handle_single_candidate(
     let auto_keep = get_auto_keep(&item, ctx.parent_map, ctx.mastered_set, ctx.owned_built_set);
     let keep_copies = resolve_keep_copies(manual_keep, auto_keep);
     if keep_copies > 0 {
-        if item.quantity <= keep_copies { return Ok(None); }
+        if item.quantity <= keep_copies {
+            return Ok(None);
+        }
         item.quantity -= keep_copies;
     }
 
-    if item.is_ayatan && let Some(endo_yield) = get_ayatan_endo_yield(&item.slug) {
+    if item.is_ayatan
+        && let Some(endo_yield) = get_ayatan_endo_yield(&item.slug)
+    {
         let endo_value = f64::from(endo_yield) * ctx.endo_rate;
         if wa_price < endo_value * 1.15 {
-            tsprintln!("[SKIP] {} worth {:.1}p as Endo (vs {:.1}p market)", item.name, endo_value, wa_price);
+            tsprintln!(
+                "[SKIP] {} worth {:.1}p as Endo (vs {:.1}p market)",
+                item.name,
+                endo_value,
+                wa_price
+            );
             return Ok(None);
         }
     }
 
     let listing_key = ListingKey {
         item_id: item.id.clone(),
-        rank: if item.is_mod || item.is_arcane { item.rank } else { None },
+        rank: if item.is_mod || item.is_arcane {
+            item.rank
+        } else {
+            None
+        },
     };
 
     let matching_listings = ctx.existing_listings_map.get(&listing_key);
     let listed_qty: u32 = matching_listings.map_or(0, |listings| {
-        listings.iter()
-          .map(|l| l.quantity())
-          .sum()
+        listings
+            .iter()
+            .map(crate::wfm_client::Order::quantity)
+            .sum()
     });
 
     let available_qty = item.quantity.saturating_sub(listed_qty);
     let is_already_listed = matching_listings.is_some();
 
-    if available_qty == 0 { return Ok(None); }
+    if available_qty == 0 {
+        return Ok(None);
+    }
 
     if *ctx.active_slots_count >= 100 && !is_already_listed {
-        print_warning(&format!("Budget limit reached (100/100 slots). Skipping listing creation candidate: {}", item.name));
+        print_warning(&format!(
+            "Budget limit reached (100/100 slots). Skipping listing creation candidate: {}",
+            item.name
+        ));
         return Ok(None);
     }
 
@@ -1300,11 +1419,20 @@ async fn handle_single_candidate(
 
             match decision {
                 NoOpDecision::TrueNoOp => return Ok(None),
-                NoOpDecision::QuantitySyncOnly { new_quantity, keep_price } => {
+                NoOpDecision::QuantitySyncOnly {
+                    new_quantity,
+                    keep_price,
+                } => {
                     // Silently update the listing with the new quantity, keeping the price exactly as-is.
-                    let update = UpdateOrder::new().platinum(keep_price).quantity(new_quantity);
+                    let update = UpdateOrder::new()
+                        .platinum(keep_price)
+                        .quantity(new_quantity);
                     if let Err(e) = ctx.wfm_client.update_order(existing.id(), update).await {
-                        tseprintln!("\x1B[31m[SYNC_ERROR] Failed to sync quantity for {}: {}\x1B[0m", item.name, e);
+                        tseprintln!(
+                            "\x1B[31m[SYNC_ERROR] Failed to sync quantity for {}: {}\x1B[0m",
+                            item.name,
+                            e
+                        );
                         return Ok(None);
                     }
                     // Return a report item so the session report records the sync.
@@ -1324,19 +1452,46 @@ async fn handle_single_candidate(
         }
     }
 
-    tsprintln!("\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m");
-    tsprintln!("\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}", item.name, item.slug, available_qty);
-    tsprintln!("  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m", item.rank.unwrap_or(0), vol_30d, wa_price);
+    tsprintln!(
+        "\x1B[1;36m--------------------------------------------------------------------------------\x1B[0m"
+    );
+    tsprintln!(
+        "\x1B[1mCANDIDATE\x1B[0m: \x1B[1;32m{}\x1B[0m | Slug: {} | Qty Available: {}",
+        item.name,
+        item.slug,
+        available_qty
+    );
+    tsprintln!(
+        "  Rank: {:<5} | 30d Vol: {:<6} | Est Price (WA): \x1B[1;33m{:.1} plat\x1B[0m",
+        item.rank.unwrap_or(0),
+        vol_30d,
+        wa_price
+    );
     tsprintln!("  Saturation Ratio: {saturation:.3} (sell volume vs closed volume)");
-    tsprintln!("  Already Listed on WFM: {}", if is_already_listed { "\x1B[1;32mYES\x1B[0m" } else { "\x1B[31mNO\x1B[0m" });
+    tsprintln!(
+        "  Already Listed on WFM: {}",
+        if is_already_listed {
+            "\x1B[1;32mYES\x1B[0m"
+        } else {
+            "\x1B[31mNO\x1B[0m"
+        }
+    );
 
     if is_already_listed && let Some(listings) = ctx.existing_listings_map.get(&listing_key) {
         for (idx, listing) in listings.iter().enumerate() {
-            tsprintln!("    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}", idx + 1, listing.platinum(), listing.quantity(), listing.is_visible());
+            tsprintln!(
+                "    [{}] Listed price: {} plat | Qty listed: {} | Visible: {}",
+                idx + 1,
+                listing.platinum(),
+                listing.quantity(),
+                listing.is_visible()
+            );
         }
     }
 
-    tsprint!("\x1B[1;35m  Action? [Enter/Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m");
+    tsprint!(
+        "\x1B[1;35m  Action? [Enter/Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m"
+    );
     let _ = ctx.stdout.flush();
     let mut choice = String::new();
     io::stdin().read_line(&mut choice)?;
@@ -1354,7 +1509,11 @@ async fn handle_single_candidate(
     }
 
     if choice == "K" {
-        tsprint!("\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m", item.name, item.rank.unwrap_or(0));
+        tsprint!(
+            "\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m",
+            item.name,
+            item.rank.unwrap_or(0)
+        );
         let _ = ctx.stdout.flush();
         let mut keep_str = String::new();
         io::stdin().read_line(&mut keep_str)?;
@@ -1366,15 +1525,16 @@ async fn handle_single_candidate(
     }
 
     if choice == "Y" {
-      return handle_list_or_update(
-          &item,
-          wa_price,
-          available_qty,
-          listed_qty,
-          is_already_listed,
-          &listing_key,
-          ctx,
-      ).await;
+        return handle_list_or_update(
+            &item,
+            wa_price,
+            available_qty,
+            listed_qty,
+            is_already_listed,
+            &listing_key,
+            ctx,
+        )
+        .await;
     }
 
     Ok(None)
@@ -1415,20 +1575,23 @@ async fn handle_list_or_update(
     let mut per_trade: Option<u32> = None;
 
     // ── Price‑conflict detection ──────────────────────────────────────────────
-    let existing_same_price_order = find_same_price_order(
-        ctx.existing_listings_map,
-        &item.id,
-        listing_key.rank,
-        price,
-    );
+    let existing_same_price_order =
+        find_same_price_order(ctx.existing_listings_map, &item.id, listing_key.rank, price);
 
     if let Some(order) = existing_same_price_order {
-        tsprintln!("\x1B[33m[SYNC] Found an existing order for {} at the same price ({} plat). Updating its quantity to {}...\x1B[0m",
-            item.name, price, quantity);
+        tsprintln!(
+            "\x1B[33m[SYNC] Found an existing order for {} at the same price ({} plat). Updating its quantity to {}...\x1B[0m",
+            item.name,
+            price,
+            quantity
+        );
         let update = UpdateOrder::new().platinum(price).quantity(quantity);
         match ctx.wfm_client.update_order(order.id(), update).await {
             Ok(()) => {
-                tsprintln!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", item.name);
+                tsprintln!(
+                    "\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m",
+                    item.name
+                );
                 return Ok(Some(SessionReportItem {
                     name: item.name.clone(),
                     slug: item.slug.clone(),
@@ -1455,21 +1618,19 @@ async fn handle_list_or_update(
     }
 
     // ── Ayatan star prompts ───────────────────────────────────────────────────
-    if item.is_ayatan {
-        if item.slug.ends_with("_sculpture") {
-            let (max_cyan, max_amber) = ayatan_max_stars(&item.slug);
-            tsprint!("  Cyan Stars installed (default {max_cyan}): ");
-            let _ = ctx.stdout.flush();
-            let mut c_str = String::new();
-            io::stdin().read_line(&mut c_str)?;
-            cyan_stars = Some(c_str.trim().parse::<u8>().unwrap_or(max_cyan));
+    if item.is_ayatan && item.slug.ends_with("_sculpture") {
+        let (max_cyan, max_amber) = ayatan_max_stars(&item.slug);
+        tsprint!("  Cyan Stars installed (default {max_cyan}): ");
+        let _ = ctx.stdout.flush();
+        let mut c_str = String::new();
+        io::stdin().read_line(&mut c_str)?;
+        cyan_stars = Some(c_str.trim().parse::<u8>().unwrap_or(max_cyan));
 
-            tsprint!("  Amber Stars installed (default {max_amber}): ");
-            let _ = ctx.stdout.flush();
-            let mut a_str = String::new();
-            io::stdin().read_line(&mut a_str)?;
-            amber_stars = Some(a_str.trim().parse::<u8>().unwrap_or(max_amber));
-        }
+        tsprint!("  Amber Stars installed (default {max_amber}): ");
+        let _ = ctx.stdout.flush();
+        let mut a_str = String::new();
+        io::stdin().read_line(&mut a_str)?;
+        amber_stars = Some(a_str.trim().parse::<u8>().unwrap_or(max_amber));
     }
 
     // ── Handle update or create ──────────────────────────────────────────────
@@ -1477,12 +1638,23 @@ async fn handle_list_or_update(
         if let Some(listings) = ctx.existing_listings_map.get(listing_key)
             && let Some(first_listing) = listings.first()
         {
-            tsprintln!("\x1B[33m[SYNC] Updating listing: {} to {} plat...\x1B[0m", item.name, price);
+            tsprintln!(
+                "\x1B[33m[SYNC] Updating listing: {} to {} plat...\x1B[0m",
+                item.name,
+                price
+            );
             sleep(Duration::from_millis(400)).await;
             let update = UpdateOrder::new().platinum(price).quantity(quantity);
-            match ctx.wfm_client.update_order(first_listing.id(), update).await {
+            match ctx
+                .wfm_client
+                .update_order(first_listing.id(), update)
+                .await
+            {
                 Ok(()) => {
-                    tsprintln!("\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m", item.name);
+                    tsprintln!(
+                        "\x1B[32m[SYNC] Successfully updated listing for {}!\x1B[0m",
+                        item.name
+                    );
                     return Ok(Some(SessionReportItem {
                         name: item.name.clone(),
                         slug: item.slug.clone(),
@@ -1493,14 +1665,27 @@ async fn handle_list_or_update(
                     }));
                 }
                 Err(e) => {
-                    tseprintln!("\x1B[31m[SYNC_ERROR] Failed to update listing {}: {}\x1B[0m", first_listing.id(), e);
+                    tseprintln!(
+                        "\x1B[31m[SYNC_ERROR] Failed to update listing {}: {}\x1B[0m",
+                        first_listing.id(),
+                        e
+                    );
                     return Ok(None);
                 }
             }
         }
     } else {
-        let rank_opt = if item.is_mod || item.is_arcane { item.rank } else { None };
-        tsprintln!("\x1B[33m[SYNC] Posting listing: {} (rank: {:?}) for {} plat...\x1B[0m", item.name, rank_opt, price);
+        let rank_opt = if item.is_mod || item.is_arcane {
+            item.rank
+        } else {
+            None
+        };
+        tsprintln!(
+            "\x1B[33m[SYNC] Posting listing: {} (rank: {:?}) for {} plat...\x1B[0m",
+            item.name,
+            rank_opt,
+            price
+        );
         sleep(Duration::from_millis(400)).await;
 
         // ── Build order using item ID ──────────────────────────────────────
@@ -1547,7 +1732,11 @@ async fn handle_list_or_update(
 
         match ctx.wfm_client.create_order(order).await {
             Ok(()) => {
-                tsprintln!("\x1B[32m[SYNC] Successfully listed {} x{}!\x1B[0m", item.name, quantity);
+                tsprintln!(
+                    "\x1B[32m[SYNC] Successfully listed {} x{}!\x1B[0m",
+                    item.name,
+                    quantity
+                );
                 *ctx.active_slots_count += 1;
                 return Ok(Some(SessionReportItem {
                     name: item.name.clone(),
@@ -1559,7 +1748,11 @@ async fn handle_list_or_update(
                 }));
             }
             Err(e) => {
-                tseprintln!("\x1B[31m[SYNC_ERROR] Failed to list {}: {}\x1B[0m", item.name, e);
+                tseprintln!(
+                    "\x1B[31m[SYNC_ERROR] Failed to list {}: {}\x1B[0m",
+                    item.name,
+                    e
+                );
                 return Ok(None);
             }
         }
@@ -1601,15 +1794,9 @@ async fn process_candidates(
     };
 
     for (item, wa_price, saturation, vol_30d, _score) in priced_candidates {
-        match handle_single_candidate(
-            item,
-            wa_price,
-            saturation,
-            vol_30d,
-            &mut ctx,
-        ).await {
+        match handle_single_candidate(item, wa_price, saturation, vol_30d, &mut ctx).await {
             Ok(Some(report_item)) => session_items.push(report_item),
-            Ok(None) => {},
+            Ok(None) => {}
             Err(e) if e.to_string() == "EXIT_REQUESTED" => break,
             Err(e) => return Err(e),
         }
@@ -1652,24 +1839,35 @@ pub async fn run_cli(
 
     let (user_listings, existing_listings_map) = fetch_user_listings(&wfm_client).await?;
     let candidates = filter_candidates(mapped_items, parent_map);
-    tsprintln!("Identified {} tradeable high-value candidates.", candidates.len());
+    tsprintln!(
+        "Identified {} tradeable high-value candidates.",
+        candidates.len()
+    );
 
     tsprintln!("Deriving dynamic Endo exchange rate from Ayatan prices...");
     let endo_rate = derive_endo_to_plat_from_mods().await;
-    print_info("Derived Endo Rate", &format!("{:.5} plat/endo (or {:.1} plat per 1000 endo)", endo_rate, endo_rate * 1000.0));
+    print_info(
+        "Derived Endo Rate",
+        &format!(
+            "{:.5} plat/endo (or {:.1} plat per 1000 endo)",
+            endo_rate,
+            endo_rate * 1000.0
+        ),
+    );
 
     print_header("Trade Candidate Evaluation");
     tsprintln!("Fetching WFM pricing and volume stats dynamically for candidates...");
 
     let (priced_candidates, upgrade_suggestions) = build_priced_candidates(
-            candidates,
-            endo_rate,
-            parent_map,
-            requirements,
-            wfcd_by_ref,
-            wfm_by_name,
-            &LiveStatsSource,
-        ).await;
+        candidates,
+        endo_rate,
+        parent_map,
+        requirements,
+        wfcd_by_ref,
+        wfm_by_name,
+        &LiveStatsSource,
+    )
+    .await;
     print_upgrade_suggestions(&upgrade_suggestions);
 
     let priced_candidates = sort_candidates(priced_candidates, &existing_listings_map);
@@ -1689,7 +1887,8 @@ pub async fn run_cli(
         parent_map,
         mastered_set,
         owned_built_set,
-    ).await?;
+    )
+    .await?;
 
     let report = SessionReport {
         timestamp: chrono::Utc::now().to_rfc3339(),
@@ -1743,6 +1942,7 @@ struct PricedIncompleteSet {
 /// # Errors
 /// Returns an error if caches can't be refreshed/loaded, the inventory can't be ingested, or
 /// inventory-to-WFM mapping fails.
+#[allow(clippy::too_many_lines)]
 pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn Error>> {
     print_header("Incomplete Set Profitability Check");
 
@@ -1757,9 +1957,17 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
     let (_parent_map, requirements) = mapping::load_build_maps()?;
     let (wfcd_by_ref, wfm_by_ref, wfm_by_name, _wfm_by_slug) = mapping::load_lookup_tables()?;
 
-    let incomplete = mapping::find_incomplete_sets(&mapped_items, &requirements, &wfcd_by_ref, &wfm_by_ref, &wfm_by_name);
+    let incomplete = mapping::find_incomplete_sets(
+        &mapped_items,
+        &requirements,
+        &wfcd_by_ref,
+        &wfm_by_ref,
+        &wfm_by_name,
+    );
     if incomplete.is_empty() {
-        tsprintln!("No incomplete Sets found — every Set you own parts of is either complete already or you don't own any of its parts yet.");
+        tsprintln!(
+            "No incomplete Sets found — every Set you own parts of is either complete already or you don't own any of its parts yet."
+        );
         return Ok(());
     }
 
@@ -1769,28 +1977,42 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
     // etc.), that's a detection-logic bug, independent of anything the pricing pass below does.
     print_header(&format!("Incomplete Sets Found ({})", incomplete.len()));
     for set in &incomplete {
-        let name = wfcd_by_ref.get(&set.build_unique).map_or(set.build_unique.as_str(), |w| w.name.as_str());
-        let parts: Vec<String> = set.missing.iter().map(|c| format!("{}x {}", c.deficit, c.name)).collect();
+        let name = wfcd_by_ref
+            .get(&set.build_unique)
+            .map_or(set.build_unique.as_str(), |w| w.name.as_str());
+        let parts: Vec<String> = set
+            .missing
+            .iter()
+            .map(|c| format!("{}x {}", c.deficit, c.name))
+            .collect();
         tsprintln!("  {name}: needs {}", parts.join(", "));
     }
-    tsprintln!("\nChecking current buy/sell orders for each (respects WFM's 3 req/s limit, so this may take a bit)...\n");
+    tsprintln!(
+        "\nChecking current buy/sell orders for each (respects WFM's 3 req/s limit, so this may take a bit)...\n"
+    );
 
     let mut priced = Vec::new();
 
     for set in &incomplete {
-        let Some(wfcd_item) = wfcd_by_ref.get(&set.build_unique) else { continue };
+        let Some(wfcd_item) = wfcd_by_ref.get(&set.build_unique) else {
+            continue;
+        };
         // find_incomplete_sets already only returns builds with a resolvable WFM Set
         // listing, so this should always succeed — treated as a hard skip (not silently
         // dropped: it still shows up in the "Incomplete Sets Found" list above) if the two
         // ever disagree.
         let Some(set_wfm_item) = resolve_set_item(&wfcd_item.name, &wfm_by_name) else {
-            tseprintln!("[WARNING] '{}' passed completeness detection but has no resolvable WFM Set listing — this is a bug, please report it.", wfcd_item.name);
+            tseprintln!(
+                "[WARNING] '{}' passed completeness detection but has no resolvable WFM Set listing — this is a bug, please report it.",
+                wfcd_item.name
+            );
             continue;
         };
 
         let mut unpriced_reason: Option<String> = None;
 
-        let set_sell_price = match wfm_client::fetch_item_orders(&client, &set_wfm_item.slug).await {
+        let set_sell_price = match wfm_client::fetch_item_orders(&client, &set_wfm_item.slug).await
+        {
             Ok(orders) => wfm_client::best_sell_price(&orders, None),
             Err(e) => {
                 unpriced_reason = Some(format!("failed to fetch orders for the Set: {e}"));
@@ -1819,7 +2041,8 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
             let orders = match wfm_client::fetch_item_orders(&client, &wfm_comp.slug).await {
                 Ok(o) => o,
                 Err(e) => {
-                    unpriced_reason = Some(format!("failed to fetch orders for '{}': {e}", comp.name));
+                    unpriced_reason =
+                        Some(format!("failed to fetch orders for '{}': {e}", comp.name));
                     break;
                 }
             };
@@ -1831,13 +2054,17 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
                 // best sell/ask price instead of giving up on pricing this Set entirely.
                 // Worse-case cost estimate (you're paying the ask instead of getting
                 // filled at your own bid), so it's flagged with a `*` in the output.
-                None => match wfm_client::best_sell_price(&orders, None) {
-                    Some(price) => (price, true),
-                    None => {
-                        unpriced_reason = Some(format!("no current buy or sell orders for missing part '{}'", comp.name));
+                None => {
+                    if let Some(price) = wfm_client::best_sell_price(&orders, None) {
+                        (price, true)
+                    } else {
+                        unpriced_reason = Some(format!(
+                            "no current buy or sell orders for missing part '{}'",
+                            comp.name
+                        ));
                         break;
                     }
-                },
+                }
             };
 
             total_cost += unit_price * comp.deficit;
@@ -1861,18 +2088,29 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
         });
     }
 
-    priced.sort_by(|a, b| b.profit.partial_cmp(&a.profit).unwrap_or(std::cmp::Ordering::Equal));
+    priced.sort_by(|a, b| {
+        b.profit
+            .partial_cmp(&a.profit)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     print_header("Set Completion Profitability");
-    tsprintln!("{:<32} {:>12} {:>15} {:>10}", "Set", "Parts Cost", "Set Sell Price", "Profit");
+    tsprintln!(
+        "{:<32} {:>12} {:>15} {:>10}",
+        "Set",
+        "Parts Cost",
+        "Set Sell Price",
+        "Profit"
+    );
     tsprintln!("{}", "-".repeat(73));
 
     let mut shown = 0;
     for set in &priced {
         if let Some(min) = min_profit
-            && set.profit < min {
-                continue;
-            }
+            && set.profit < min
+        {
+            continue;
+        }
         shown += 1;
         tsprintln!(
             "{:<32} {:>12} {:>15} {:>10.1}",
@@ -1883,9 +2121,13 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn E
         );
         for (part_name, deficit, unit_price, used_ask) in &set.missing {
             if *used_ask {
-                tsprintln!("    need {deficit}x {part_name} @ {unit_price}p* (no buy orders — priced off current best sell order instead)");
+                tsprintln!(
+                    "    need {deficit}x {part_name} @ {unit_price}p* (no buy orders — priced off current best sell order instead)"
+                );
             } else {
-                tsprintln!("    need {deficit}x {part_name} @ {unit_price}p (current best buy order)");
+                tsprintln!(
+                    "    need {deficit}x {part_name} @ {unit_price}p (current best buy order)"
+                );
             }
         }
     }
@@ -1951,6 +2193,7 @@ struct RelicSellMessage {
 /// Returns an error if caches can't be refreshed, the inventory file can't be found/decrypted,
 /// or inventory mapping fails outright. Per-item order-fetch failures are logged and skipped
 /// rather than aborting the whole run, matching `run_check_sets_cli`'s behavior.
+#[allow(clippy::too_many_lines)]
 pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn Error>> {
     print_header("Sell Relics — Matching Buy Orders");
 
@@ -1972,7 +2215,10 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
     let mut relic_qty: HashMap<(String, String), u32> = HashMap::new();
     let mut relic_names: HashMap<String, String> = HashMap::new(); // slug -> base display name
 
-    for item in mapped_items.iter().filter(|i| i.category() == "relic" && i.quantity > 0) {
+    for item in mapped_items
+        .iter()
+        .filter(|i| i.category() == "relic" && i.quantity > 0)
+    {
         let Some(tier) = &item.owned_subtype else {
             // Should be unreachable — mapping::process_relic always sets owned_subtype for
             // anything it produces, and category() == "relic" only matches slugs containing
@@ -1980,12 +2226,17 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
             // dropped in case that invariant ever breaks upstream.
             tseprintln!(
                 "[WARNING] '{}' ({}) matched the relic category but has no recorded refinement — skipping.",
-                item.name, item.slug
+                item.name,
+                item.slug
             );
             continue;
         };
-        *relic_qty.entry((item.slug.clone(), tier.clone())).or_insert(0) += item.quantity;
-        relic_names.entry(item.slug.clone()).or_insert_with(|| item.name.clone());
+        *relic_qty
+            .entry((item.slug.clone(), tier.clone()))
+            .or_insert(0) += item.quantity;
+        relic_names
+            .entry(item.slug.clone())
+            .or_insert_with(|| item.name.clone());
     }
 
     if relic_qty.is_empty() {
@@ -1997,7 +2248,10 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
     // a single `/v2/orders/item/{slug}` call returns every refinement's orders at once.
     let mut owned_tiers_by_slug: HashMap<String, Vec<String>> = HashMap::new();
     for (slug, tier) in relic_qty.keys() {
-        owned_tiers_by_slug.entry(slug.clone()).or_default().push(tier.clone());
+        owned_tiers_by_slug
+            .entry(slug.clone())
+            .or_default()
+            .push(tier.clone());
     }
 
     tsprintln!(
@@ -2016,7 +2270,10 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
     slugs.sort();
 
     for slug in slugs {
-        let display_name = relic_names.get(slug).cloned().unwrap_or_else(|| slug.clone());
+        let display_name = relic_names
+            .get(slug)
+            .cloned()
+            .unwrap_or_else(|| slug.clone());
 
         let orders = match wfm_client::fetch_item_orders(&client, slug).await {
             Ok(o) => o,
@@ -2032,24 +2289,32 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
         tiers.dedup();
 
         for tier in tiers {
-            let owned_qty = relic_qty.get(&(slug.clone(), tier.clone())).copied().unwrap_or(0);
+            let owned_qty = relic_qty
+                .get(&(slug.clone(), tier.clone()))
+                .copied()
+                .unwrap_or(0);
 
             let buy_orders_for_tier = || {
-                orders.iter().filter(|o| o.is_buy() && o.visible && o.subtype.as_deref() == Some(tier.as_str()))
+                orders.iter().filter(|o| {
+                    o.is_buy() && o.visible && o.subtype.as_deref() == Some(tier.as_str())
+                })
             };
 
             // Only buy orders whose lot size (perTrade) we can actually cover with what's in
             // inventory count as fulfillable — a buy order asking for a bigger lot than we own
             // of this exact relic/tier can't be delivered on, regardless of price.
-            let mut candidates: Vec<&crate::wfm_client::PublicOrder> =
-                buy_orders_for_tier().filter(|o| o.lot_size() <= owned_qty).collect();
+            let mut candidates: Vec<&crate::wfm_client::PublicOrder> = buy_orders_for_tier()
+                .filter(|o| o.lot_size() <= owned_qty)
+                .collect();
 
             // WFM's `platinum` is the price for the whole lot (perTrade relics), not per
             // relic — a 6-relic lot at platinum: 40 is ~6.67p/relic, not 40p/relic. Both
             // `--min-price` and "best" order selection need to compare on that per-relic rate,
             // or a large low-value lot can look like the best (or only qualifying) offer when
             // it's actually the worst.
-            let unit_price = |o: &crate::wfm_client::PublicOrder| f64::from(o.platinum) / f64::from(o.lot_size());
+            let unit_price = |o: &crate::wfm_client::PublicOrder| {
+                f64::from(o.platinum) / f64::from(o.lot_size())
+            };
 
             if let Some(min) = min_price {
                 candidates.retain(|o| unit_price(o) >= f64::from(min));
@@ -2070,7 +2335,8 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
             let Some(user) = &best.user else {
                 tseprintln!(
                     "[WARNING] Best buy order for {display_name} - {} at {}p has no attached trader info — skipping.",
-                    capitalize_tier(&tier), best.platinum
+                    capitalize_tier(&tier),
+                    best.platinum
                 );
                 continue;
             };
@@ -2097,19 +2363,36 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
 
     print_header(&format!("Whisper Messages ({})", messages.len()));
     if messages.is_empty() {
-        tsprintln!("(No owned relic had a fulfillable buy order{}.)", if min_price.is_some() { " at or above the requested minimum price" } else { "" });
+        tsprintln!(
+            "(No owned relic had a fulfillable buy order{}.)",
+            if min_price.is_some() {
+                " at or above the requested minimum price"
+            } else {
+                ""
+            }
+        );
     }
     for m in &messages {
         tsprintln!(
             "{} - {}  (listing wants {}, you own {})",
-            m.display_name, m.tier, m.listing_quantity, m.owned_quantity
+            m.display_name,
+            m.tier,
+            m.listing_quantity,
+            m.owned_quantity
         );
         // Unescaped: [Name] renders as an in-game item link (helps with localization) and
         // :platinum: as the in-game emote when pasted into WFM/Warframe chat directly.
-        let qty_prefix = if m.lot_size > 1 { format!("{}x ", m.lot_size) } else { String::new() };
+        let qty_prefix = if m.lot_size > 1 {
+            format!("{}x ", m.lot_size)
+        } else {
+            String::new()
+        };
         tsprintln!(
             "/w {} Hi! I want to sell: {qty_prefix}[{}] - {} for {}:platinum: (warframe.market)\n",
-            m.ign, m.display_name, m.tier, m.price
+            m.ign,
+            m.display_name,
+            m.tier,
+            m.price
         );
     }
 
@@ -2122,8 +2405,15 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn E
     Ok(())
 }
 
+/// # Errors
+/// Returns an error if caches can't be loaded, the WFM items cache is missing,
+/// or network requests fail.
 pub async fn run_primed_mod_prices(min_rank: bool) -> Result<(), Box<dyn Error>> {
-    print_header(if min_rank { "Primed Mod Prices (Unranked)" } else { "Primed Mod Prices (Maxed)" });
+    print_header(if min_rank {
+        "Primed Mod Prices (Unranked)"
+    } else {
+        "Primed Mod Prices (Maxed)"
+    });
 
     tsprintln!("Fetching current market statistics...\n");
 
@@ -2179,11 +2469,7 @@ pub async fn run_primed_mod_prices(min_rank: bool) -> Result<(), Box<dyn Error>>
             }
 
             Err(err) => {
-                tseprintln!(
-                    "[WARNING] Failed to fetch {}: {}",
-                    primed.name,
-                    err
-                );
+                tseprintln!("[WARNING] Failed to fetch {}: {}", primed.name, err);
             }
         }
     }
@@ -2194,13 +2480,7 @@ pub async fn run_primed_mod_prices(min_rank: bool) -> Result<(), Box<dyn Error>>
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    tsprintln!(
-        "{:<4} {:<34} {:>10} {:>10}",
-        "#",
-        "Mod",
-        "Price",
-        "30d Vol"
-    );
+    tsprintln!("{:<4} {:<34} {:>10} {:>10}", "#", "Mod", "Price", "30d Vol");
 
     tsprintln!("{}", "-".repeat(64));
 
@@ -2234,18 +2514,16 @@ fn save_blacklist(config: &BlacklistConfig) -> Result<(), Box<dyn Error + Send +
 
 fn load_keeplist() -> Result<KeepConfig, Box<dyn Error + Send + Sync>> {
     if !Path::new(KEEPLIST_FILE).exists() {
-        return Ok(KeepConfig { defaults: HashMap::default(), items: HashMap::default() });
+        return Ok(KeepConfig {
+            defaults: HashMap::default(),
+            items: HashMap::default(),
+        });
     }
     let raw = fs::read_to_string(KEEPLIST_FILE)?;
     Ok(toml::from_str(&raw)?)
 }
 
-fn get_keep_quantity(
-    keeplist: &KeepConfig,
-    slug: &str,
-    rank: Option<u8>,
-    category: &str,
-) -> u32 {
+fn get_keep_quantity(keeplist: &KeepConfig, slug: &str, rank: Option<u8>, category: &str) -> u32 {
     if let Some(rules) = keeplist.items.get(slug) {
         if let Some(rank_val) = rank
             && let Some(rule) = rules.iter().find(|r| r.rank == Some(rank_val))
@@ -2285,12 +2563,36 @@ mod price_conflict_tests {
         let mut map: HashMap<ListingKey, Vec<Order>> = HashMap::new();
         let item_id = "abc".to_string();
 
-        let key0 = ListingKey { item_id: item_id.clone(), rank: Some(0) };
-        let order0 = Order { id: "o0".into(), order_type: "sell".into(), platinum: 50, quantity: 1, item_id: item_id.clone(), visible: true, rank: Some(0), subtype: None };
+        let key0 = ListingKey {
+            item_id: item_id.clone(),
+            rank: Some(0),
+        };
+        let order0 = Order {
+            id: "o0".into(),
+            order_type: "sell".into(),
+            platinum: 50,
+            quantity: 1,
+            item_id: item_id.clone(),
+            visible: true,
+            rank: Some(0),
+            subtype: None,
+        };
         map.entry(key0).or_default().push(order0);
 
-        let key5 = ListingKey { item_id: item_id.clone(), rank: Some(5) };
-        let order5 = Order { id: "o5".into(), order_type: "sell".into(), platinum: 50, quantity: 1, item_id: item_id.clone(), visible: true, rank: Some(5), subtype: None };
+        let key5 = ListingKey {
+            item_id: item_id.clone(),
+            rank: Some(5),
+        };
+        let order5 = Order {
+            id: "o5".into(),
+            order_type: "sell".into(),
+            platinum: 50,
+            quantity: 1,
+            item_id: item_id.clone(),
+            visible: true,
+            rank: Some(5),
+            subtype: None,
+        };
         map.entry(key5).or_default().push(order5);
 
         let result = find_same_price_order(&map, &item_id, Some(5), 50);
@@ -2342,7 +2644,10 @@ mod no_op_decision_tests {
     #[test]
     fn stable_ayatan_star_is_a_true_noop() {
         // 100 owned, 100 listed, 1p suggested, 1p existing.
-        assert!(matches!(decide_no_op(1, 1, 100, 100), NoOpDecision::TrueNoOp));
+        assert!(matches!(
+            decide_no_op(1, 1, 100, 100),
+            NoOpDecision::TrueNoOp
+        ));
     }
 
     #[test]
@@ -2350,20 +2655,29 @@ mod no_op_decision_tests {
         // 105 owned (100 listed + 5 new), price unchanged at 1p.
         assert!(matches!(
             decide_no_op(1, 1, 105, 100),
-            NoOpDecision::QuantitySyncOnly { new_quantity: 105, .. }
+            NoOpDecision::QuantitySyncOnly {
+                new_quantity: 105,
+                ..
+            }
         ));
     }
 
     #[test]
     fn real_price_move_needs_review() {
         // existing listed at 40p, market now suggests 55p — well outside 3% tolerance.
-        assert!(matches!(decide_no_op(55, 40, 10, 10), NoOpDecision::NeedsReview));
+        assert!(matches!(
+            decide_no_op(55, 40, 10, 10),
+            NoOpDecision::NeedsReview
+        ));
     }
 
     #[test]
     fn small_drift_within_tolerance_is_still_noop() {
         // 41p existing vs 42p suggested on a price where 3% tolerance is >= 1.
-        assert!(matches!(decide_no_op(42, 41, 10, 10), NoOpDecision::TrueNoOp));
+        assert!(matches!(
+            decide_no_op(42, 41, 10, 10),
+            NoOpDecision::TrueNoOp
+        ));
     }
 }
 
@@ -2442,7 +2756,7 @@ mod threshold_calibration_tests {
 #[cfg(test)]
 mod set_aggregation_tests {
     use super::*;
-    use crate::models::{WfmItem, WfmI18n, WfmEn, WfcdItem};
+    use crate::models::{WfcdItem, WfmEn, WfmI18n, WfmItem};
     use std::collections::HashMap;
 
     fn build_test_wfm_item(slug: &str, name: &str) -> WfmItem {
@@ -2452,7 +2766,11 @@ mod set_aggregation_tests {
             game_ref: None,
             tags: vec![],
             max_rank: None,
-            i18n: WfmI18n { en: WfmEn { name: name.to_string() } },
+            i18n: WfmI18n {
+                en: WfmEn {
+                    name: name.to_string(),
+                },
+            },
             subtypes: vec![],
             set_root: true,
             bulk_tradable: false,
@@ -2487,32 +2805,62 @@ mod set_aggregation_tests {
         let build_unique = "/Lotus/Types/Recipes/WarframeRecipes/MagPrime".to_string();
 
         let mut wfcd_by_ref = HashMap::new();
-        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
-            unique_name: build_unique.clone(),
-            name: build_name.to_string(),
-            level_stats: None,
-            category: None,
-            rarity: None,
-            fusion_limit: None,
-            components: None,
-        });
+        wfcd_by_ref.insert(
+            build_unique.clone(),
+            WfcdItem {
+                unique_name: build_unique.clone(),
+                name: build_name.to_string(),
+                level_stats: None,
+                category: None,
+                rarity: None,
+                fusion_limit: None,
+                components: None,
+            },
+        );
 
         let mut requirements = BuildRequirements::new();
         let recipe = vec![
-            ("/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(), 1),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(),
+                1,
+            ),
         ];
         requirements.insert(build_unique.clone(), recipe.clone());
 
         // WFM by name: set item and component items
         let mut wfm_by_name = HashMap::new();
-        wfm_by_name.insert("mag prime set".to_string(), build_test_wfm_item("mag_prime_set", "Mag Prime Set"));
-        wfm_by_name.insert("mag prime blueprint".to_string(), build_test_wfm_item("mag_prime_blueprint", "Mag Prime Blueprint"));
-        wfm_by_name.insert("mag prime chassis".to_string(), build_test_wfm_item("mag_prime_chassis", "Mag Prime Chassis"));
-        wfm_by_name.insert("mag prime neuroptics".to_string(), build_test_wfm_item("mag_prime_neuroptics", "Mag Prime Neuroptics"));
-        wfm_by_name.insert("mag prime systems".to_string(), build_test_wfm_item("mag_prime_systems", "Mag Prime Systems"));
+        wfm_by_name.insert(
+            "mag prime set".to_string(),
+            build_test_wfm_item("mag_prime_set", "Mag Prime Set"),
+        );
+        wfm_by_name.insert(
+            "mag prime blueprint".to_string(),
+            build_test_wfm_item("mag_prime_blueprint", "Mag Prime Blueprint"),
+        );
+        wfm_by_name.insert(
+            "mag prime chassis".to_string(),
+            build_test_wfm_item("mag_prime_chassis", "Mag Prime Chassis"),
+        );
+        wfm_by_name.insert(
+            "mag prime neuroptics".to_string(),
+            build_test_wfm_item("mag_prime_neuroptics", "Mag Prime Neuroptics"),
+        );
+        wfm_by_name.insert(
+            "mag prime systems".to_string(),
+            build_test_wfm_item("mag_prime_systems", "Mag Prime Systems"),
+        );
 
         // Parent map: each component maps to the build
         let mut parent_map = BuildParentMap::new();
@@ -2522,10 +2870,30 @@ mod set_aggregation_tests {
 
         // Candidates: one of each component
         let candidates = vec![
-            build_test_candidate("mag_prime_blueprint", "Mag Prime Blueprint", "/Lotus/Types/Recipes/Components/MagPrimeBlueprint", 1),
-            build_test_candidate("mag_prime_chassis", "Mag Prime Chassis", "/Lotus/Types/Recipes/Components/MagPrimeChassis", 1),
-            build_test_candidate("mag_prime_neuroptics", "Mag Prime Neuroptics", "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics", 1),
-            build_test_candidate("mag_prime_systems", "Mag Prime Systems", "/Lotus/Types/Recipes/Components/MagPrimeSystems", 1),
+            build_test_candidate(
+                "mag_prime_blueprint",
+                "Mag Prime Blueprint",
+                "/Lotus/Types/Recipes/Components/MagPrimeBlueprint",
+                1,
+            ),
+            build_test_candidate(
+                "mag_prime_chassis",
+                "Mag Prime Chassis",
+                "/Lotus/Types/Recipes/Components/MagPrimeChassis",
+                1,
+            ),
+            build_test_candidate(
+                "mag_prime_neuroptics",
+                "Mag Prime Neuroptics",
+                "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics",
+                1,
+            ),
+            build_test_candidate(
+                "mag_prime_systems",
+                "Mag Prime Systems",
+                "/Lotus/Types/Recipes/Components/MagPrimeSystems",
+                1,
+            ),
         ];
 
         // Prices: set price 100, each component 10
@@ -2562,31 +2930,61 @@ mod set_aggregation_tests {
         let build_unique = "/Lotus/Types/Recipes/WarframeRecipes/MagPrime".to_string();
 
         let mut wfcd_by_ref = HashMap::new();
-        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
-            unique_name: build_unique.clone(),
-            name: build_name.to_string(),
-            level_stats: None,
-            category: None,
-            rarity: None,
-            fusion_limit: None,
-            components: None,
-        });
+        wfcd_by_ref.insert(
+            build_unique.clone(),
+            WfcdItem {
+                unique_name: build_unique.clone(),
+                name: build_name.to_string(),
+                level_stats: None,
+                category: None,
+                rarity: None,
+                fusion_limit: None,
+                components: None,
+            },
+        );
 
         let mut requirements = BuildRequirements::new();
         let recipe = vec![
-            ("/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(), 1),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(),
+                1,
+            ),
         ];
         requirements.insert(build_unique.clone(), recipe.clone());
 
         let mut wfm_by_name = HashMap::new();
-        wfm_by_name.insert("mag prime set".to_string(), build_test_wfm_item("mag_prime_set", "Mag Prime Set"));
-        wfm_by_name.insert("mag prime blueprint".to_string(), build_test_wfm_item("mag_prime_blueprint", "Mag Prime Blueprint"));
-        wfm_by_name.insert("mag prime chassis".to_string(), build_test_wfm_item("mag_prime_chassis", "Mag Prime Chassis"));
-        wfm_by_name.insert("mag prime neuroptics".to_string(), build_test_wfm_item("mag_prime_neuroptics", "Mag Prime Neuroptics"));
-        wfm_by_name.insert("mag prime systems".to_string(), build_test_wfm_item("mag_prime_systems", "Mag Prime Systems"));
+        wfm_by_name.insert(
+            "mag prime set".to_string(),
+            build_test_wfm_item("mag_prime_set", "Mag Prime Set"),
+        );
+        wfm_by_name.insert(
+            "mag prime blueprint".to_string(),
+            build_test_wfm_item("mag_prime_blueprint", "Mag Prime Blueprint"),
+        );
+        wfm_by_name.insert(
+            "mag prime chassis".to_string(),
+            build_test_wfm_item("mag_prime_chassis", "Mag Prime Chassis"),
+        );
+        wfm_by_name.insert(
+            "mag prime neuroptics".to_string(),
+            build_test_wfm_item("mag_prime_neuroptics", "Mag Prime Neuroptics"),
+        );
+        wfm_by_name.insert(
+            "mag prime systems".to_string(),
+            build_test_wfm_item("mag_prime_systems", "Mag Prime Systems"),
+        );
 
         let mut parent_map = BuildParentMap::new();
         for (comp, _) in &recipe {
@@ -2594,10 +2992,30 @@ mod set_aggregation_tests {
         }
 
         let candidates = vec![
-            build_test_candidate("mag_prime_blueprint", "Mag Prime Blueprint", "/Lotus/Types/Recipes/Components/MagPrimeBlueprint", 2),
-            build_test_candidate("mag_prime_chassis", "Mag Prime Chassis", "/Lotus/Types/Recipes/Components/MagPrimeChassis", 2),
-            build_test_candidate("mag_prime_neuroptics", "Mag Prime Neuroptics", "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics", 2),
-            build_test_candidate("mag_prime_systems", "Mag Prime Systems", "/Lotus/Types/Recipes/Components/MagPrimeSystems", 5),
+            build_test_candidate(
+                "mag_prime_blueprint",
+                "Mag Prime Blueprint",
+                "/Lotus/Types/Recipes/Components/MagPrimeBlueprint",
+                2,
+            ),
+            build_test_candidate(
+                "mag_prime_chassis",
+                "Mag Prime Chassis",
+                "/Lotus/Types/Recipes/Components/MagPrimeChassis",
+                2,
+            ),
+            build_test_candidate(
+                "mag_prime_neuroptics",
+                "Mag Prime Neuroptics",
+                "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics",
+                2,
+            ),
+            build_test_candidate(
+                "mag_prime_systems",
+                "Mag Prime Systems",
+                "/Lotus/Types/Recipes/Components/MagPrimeSystems",
+                5,
+            ),
         ];
 
         let mut prices = HashMap::new();
@@ -2618,10 +3036,16 @@ mod set_aggregation_tests {
 
         // Expect 2 sets + 1 leftover systems (qty 3)
         assert_eq!(result.len(), 2);
-        let sets: Vec<_> = result.iter().filter(|i| i.slug == "mag_prime_set").collect();
+        let sets: Vec<_> = result
+            .iter()
+            .filter(|i| i.slug == "mag_prime_set")
+            .collect();
         assert_eq!(sets.len(), 1);
         assert_eq!(sets[0].quantity, 2);
-        let leftovers: Vec<_> = result.iter().filter(|i| i.slug == "mag_prime_systems").collect();
+        let leftovers: Vec<_> = result
+            .iter()
+            .filter(|i| i.slug == "mag_prime_systems")
+            .collect();
         assert_eq!(leftovers.len(), 1);
         assert_eq!(leftovers[0].quantity, 3);
     }
@@ -2631,27 +3055,45 @@ mod set_aggregation_tests {
         // Missing one component -> no set
         let build_unique = "/Lotus/Types/Recipes/WarframeRecipes/MagPrime".to_string();
         let mut wfcd_by_ref = HashMap::new();
-        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
-            unique_name: build_unique.clone(),
-            name: "Mag Prime".to_string(),
-            level_stats: None,
-            category: None,
-            rarity: None,
-            fusion_limit: None,
-            components: None,
-        });
+        wfcd_by_ref.insert(
+            build_unique.clone(),
+            WfcdItem {
+                unique_name: build_unique.clone(),
+                name: "Mag Prime".to_string(),
+                level_stats: None,
+                category: None,
+                rarity: None,
+                fusion_limit: None,
+                components: None,
+            },
+        );
 
         let mut requirements = BuildRequirements::new();
         let recipe = vec![
-            ("/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(), 1),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(),
+                1,
+            ),
         ];
         requirements.insert(build_unique.clone(), recipe.clone());
 
         let mut wfm_by_name = HashMap::new();
-        wfm_by_name.insert("mag prime set".to_string(), build_test_wfm_item("mag_prime_set", "Mag Prime Set"));
+        wfm_by_name.insert(
+            "mag prime set".to_string(),
+            build_test_wfm_item("mag_prime_set", "Mag Prime Set"),
+        );
 
         let mut parent_map = BuildParentMap::new();
         for (comp, _) in &recipe {
@@ -2659,9 +3101,24 @@ mod set_aggregation_tests {
         }
 
         let candidates = vec![
-            build_test_candidate("mag_prime_blueprint", "Mag Prime Blueprint", "/Lotus/Types/Recipes/Components/MagPrimeBlueprint", 1),
-            build_test_candidate("mag_prime_chassis", "Mag Prime Chassis", "/Lotus/Types/Recipes/Components/MagPrimeChassis", 1),
-            build_test_candidate("mag_prime_neuroptics", "Mag Prime Neuroptics", "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics", 1),
+            build_test_candidate(
+                "mag_prime_blueprint",
+                "Mag Prime Blueprint",
+                "/Lotus/Types/Recipes/Components/MagPrimeBlueprint",
+                1,
+            ),
+            build_test_candidate(
+                "mag_prime_chassis",
+                "Mag Prime Chassis",
+                "/Lotus/Types/Recipes/Components/MagPrimeChassis",
+                1,
+            ),
+            build_test_candidate(
+                "mag_prime_neuroptics",
+                "Mag Prime Neuroptics",
+                "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics",
+                1,
+            ),
             // missing systems
         ];
 
@@ -2697,27 +3154,45 @@ mod set_aggregation_tests {
         // Prime Barrel' priced 45.3p exceeds 50% of set price 88.2p".
         let build_unique = "/Lotus/Types/Recipes/WarframeRecipes/MagPrime".to_string();
         let mut wfcd_by_ref = HashMap::new();
-        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
-            unique_name: build_unique.clone(),
-            name: "Mag Prime".to_string(),
-            level_stats: None,
-            category: None,
-            rarity: None,
-            fusion_limit: None,
-            components: None,
-        });
+        wfcd_by_ref.insert(
+            build_unique.clone(),
+            WfcdItem {
+                unique_name: build_unique.clone(),
+                name: "Mag Prime".to_string(),
+                level_stats: None,
+                category: None,
+                rarity: None,
+                fusion_limit: None,
+                components: None,
+            },
+        );
 
         let mut requirements = BuildRequirements::new();
         let recipe = vec![
-            ("/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(), 1),
-            ("/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(), 1),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeBlueprint".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeChassis".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Components/MagPrimeSystems".to_string(),
+                1,
+            ),
         ];
         requirements.insert(build_unique.clone(), recipe.clone());
 
         let mut wfm_by_name = HashMap::new();
-        wfm_by_name.insert("mag prime set".to_string(), build_test_wfm_item("mag_prime_set", "Mag Prime Set"));
+        wfm_by_name.insert(
+            "mag prime set".to_string(),
+            build_test_wfm_item("mag_prime_set", "Mag Prime Set"),
+        );
 
         let mut parent_map = BuildParentMap::new();
         for (comp, _) in &recipe {
@@ -2725,10 +3200,30 @@ mod set_aggregation_tests {
         }
 
         let candidates = vec![
-            build_test_candidate("mag_prime_blueprint", "Mag Prime Blueprint", "/Lotus/Types/Recipes/Components/MagPrimeBlueprint", 1),
-            build_test_candidate("mag_prime_chassis", "Mag Prime Chassis", "/Lotus/Types/Recipes/Components/MagPrimeChassis", 1),
-            build_test_candidate("mag_prime_neuroptics", "Mag Prime Neuroptics", "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics", 1),
-            build_test_candidate("mag_prime_systems", "Mag Prime Systems", "/Lotus/Types/Recipes/Components/MagPrimeSystems", 1),
+            build_test_candidate(
+                "mag_prime_blueprint",
+                "Mag Prime Blueprint",
+                "/Lotus/Types/Recipes/Components/MagPrimeBlueprint",
+                1,
+            ),
+            build_test_candidate(
+                "mag_prime_chassis",
+                "Mag Prime Chassis",
+                "/Lotus/Types/Recipes/Components/MagPrimeChassis",
+                1,
+            ),
+            build_test_candidate(
+                "mag_prime_neuroptics",
+                "Mag Prime Neuroptics",
+                "/Lotus/Types/Recipes/Components/MagPrimeNeuroptics",
+                1,
+            ),
+            build_test_candidate(
+                "mag_prime_systems",
+                "Mag Prime Systems",
+                "/Lotus/Types/Recipes/Components/MagPrimeSystems",
+                1,
+            ),
         ];
 
         let mut prices = HashMap::new();
@@ -2748,8 +3243,15 @@ mod set_aggregation_tests {
         );
 
         // Set forms despite one component being priced above 50% of the set's price.
-        let sets: Vec<_> = result.iter().filter(|i| i.slug == "mag_prime_set").collect();
-        assert_eq!(sets.len(), 1, "a complete set must form even with a disproportionately priced component");
+        let sets: Vec<_> = result
+            .iter()
+            .filter(|i| i.slug == "mag_prime_set")
+            .collect();
+        assert_eq!(
+            sets.len(),
+            1,
+            "a complete set must form even with a disproportionately priced component"
+        );
         assert_eq!(sets[0].quantity, 1);
     }
 
@@ -2766,26 +3268,41 @@ mod set_aggregation_tests {
         let build_unique = "/Lotus/Weapons/Tenno/Pistol/LatoVandal".to_string();
 
         let mut wfcd_by_ref = HashMap::new();
-        wfcd_by_ref.insert(build_unique.clone(), WfcdItem {
-            unique_name: build_unique.clone(),
-            name: build_name.to_string(),
-            level_stats: None,
-            category: None,
-            rarity: None,
-            fusion_limit: None,
-            components: None,
-        });
+        wfcd_by_ref.insert(
+            build_unique.clone(),
+            WfcdItem {
+                unique_name: build_unique.clone(),
+                name: build_name.to_string(),
+                level_stats: None,
+                category: None,
+                rarity: None,
+                fusion_limit: None,
+                components: None,
+            },
+        );
 
         let recipe = vec![
-            ("/Lotus/Types/Recipes/Weapons/LatoVandalBlueprint".to_string(), 1),
-            ("/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalBarrel".to_string(), 1),
-            ("/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalReceiver".to_string(), 1),
+            (
+                "/Lotus/Types/Recipes/Weapons/LatoVandalBlueprint".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalBarrel".to_string(),
+                1,
+            ),
+            (
+                "/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalReceiver".to_string(),
+                1,
+            ),
         ];
         let mut requirements = BuildRequirements::new();
         requirements.insert(build_unique.clone(), recipe.clone());
 
         let mut wfm_by_name = HashMap::new();
-        wfm_by_name.insert("lato vandal set".to_string(), build_test_wfm_item("lato_vandal_set", "Lato Vandal Set"));
+        wfm_by_name.insert(
+            "lato vandal set".to_string(),
+            build_test_wfm_item("lato_vandal_set", "Lato Vandal Set"),
+        );
 
         let mut parent_map = BuildParentMap::new();
         for (comp, _) in &recipe {
@@ -2795,9 +3312,24 @@ mod set_aggregation_tests {
         // Matches the real report exactly: Barrel x1, Receiver x3, Blueprint x4 — none of
         // "Barrel"/"Receiver" contain prime/set/blueprint in their names.
         let owned = vec![
-            build_test_candidate("lato_vandal_blueprint", "Lato Vandal Blueprint", "/Lotus/Types/Recipes/Weapons/LatoVandalBlueprint", 4),
-            build_test_candidate("lato_vandal_barrel", "Lato Vandal Barrel", "/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalBarrel", 1),
-            build_test_candidate("lato_vandal_receiver", "Lato Vandal Receiver", "/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalReceiver", 3),
+            build_test_candidate(
+                "lato_vandal_blueprint",
+                "Lato Vandal Blueprint",
+                "/Lotus/Types/Recipes/Weapons/LatoVandalBlueprint",
+                4,
+            ),
+            build_test_candidate(
+                "lato_vandal_barrel",
+                "Lato Vandal Barrel",
+                "/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalBarrel",
+                1,
+            ),
+            build_test_candidate(
+                "lato_vandal_receiver",
+                "Lato Vandal Receiver",
+                "/Lotus/Types/Recipes/Weapons/WeaponParts/LatoVandalReceiver",
+                3,
+            ),
         ];
 
         // Run through filter_candidates() first, exactly like the real pipeline does.
@@ -2823,12 +3355,21 @@ mod set_aggregation_tests {
         // post-aggregation "worth reviewing" heuristic, same as before this fix — the point of
         // this test is that the Set itself now forms and the Blueprint leftover is correctly
         // reduced, not left at the full unconsumed count of 4.
-        let sets: Vec<_> = result.iter().filter(|i| i.slug == "lato_vandal_set").collect();
+        let sets: Vec<_> = result
+            .iter()
+            .filter(|i| i.slug == "lato_vandal_set")
+            .collect();
         assert_eq!(sets.len(), 1, "a complete Lato Vandal Set must be detected");
         assert_eq!(sets[0].quantity, 1);
 
-        let blueprint_leftover: Vec<_> = result.iter().filter(|i| i.slug == "lato_vandal_blueprint").collect();
+        let blueprint_leftover: Vec<_> = result
+            .iter()
+            .filter(|i| i.slug == "lato_vandal_blueprint")
+            .collect();
         assert_eq!(blueprint_leftover.len(), 1);
-        assert_eq!(blueprint_leftover[0].quantity, 3, "3 spare blueprints should remain after 1 is consumed into the set");
+        assert_eq!(
+            blueprint_leftover[0].quantity, 3,
+            "3 spare blueprints should remain after 1 is consumed into the set"
+        );
     }
 }
