@@ -54,7 +54,7 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> AppResult<()> {
     mapping::update_caches().await?;
 
     tsprintln!("Ingesting inventory...");
-    let inventory_path = crate::resolve_inventory_path(None)?;
+    let inventory_path = crate::app::resolve_inventory_path(None)?;
     let inventory = crate::ingestion::ingest_inventory(&inventory_path)?;
 
     let client = http::shared_client();

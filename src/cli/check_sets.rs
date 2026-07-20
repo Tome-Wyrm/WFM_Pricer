@@ -46,7 +46,7 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> AppResult<()> {
     mapping::update_caches().await?;
 
     tsprintln!("Ingesting inventory...");
-    let inventory_path = crate::resolve_inventory_path(None)?;
+    let inventory_path = crate::app::resolve_inventory_path(None)?;
     let inventory = crate::ingestion::ingest_inventory(&inventory_path)?;
 
     let client = http::shared_client();
