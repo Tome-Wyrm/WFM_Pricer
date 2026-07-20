@@ -17,6 +17,7 @@ use super::{
 /// - WFM client authentication fails.
 /// - Network or file I/O operations fail.
 /// - TOML or JSON serialization/deserialization fails.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_cli(
     mapped_items: Vec<MappedItem>,
     parent_map: &BuildParentMap,
@@ -25,6 +26,7 @@ pub async fn run_cli(
     requirements: &BuildRequirements,
     wfcd_by_ref: &HashMap<String, WfcdItem>,
     wfm_by_name: &HashMap<String, WfmItem>,
+    min_price: Option<f64>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     print_header("Warframe.Market Advisor Session Init");
 
@@ -67,6 +69,14 @@ pub async fn run_cli(
     print_upgrade_suggestions(&upgrade_suggestions);
 
     let priced_candidates = sort_candidates(priced_candidates, &existing_listings_map);
+    let priced_candidates: Vec<_> = if let Some(min) = min_price {
+        priced_candidates
+            .into_iter()
+            .filter(|c| c.1 >= min)
+            .collect()
+    } else {
+        priced_candidates
+    };
 
     let mut blacklist_set = load_blacklist()?;
     let mut keeplist = load_keeplist()?;

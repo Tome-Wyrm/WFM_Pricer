@@ -32,6 +32,10 @@ struct Cli {
     #[arg(short, long, global = true)]
     inventory: Option<PathBuf>,
 
+    /// Skip listings priced below this platinum amount. Applies to the default pipeline.
+    #[arg(long, global = true)]
+    min_price: Option<f64>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -113,6 +117,7 @@ pub(crate) fn resolve_inventory_path(
 async fn run_default_pipeline(
     inventory_override: Option<PathBuf>,
     debug_mastery: bool,
+    min_price: Option<f64>,
 ) -> Result<(), Box<dyn Error>> {
     tsprintln!("--- WFM Pricer System Startup ---");
 
@@ -158,6 +163,7 @@ async fn run_default_pipeline(
         &requirements,
         &wfcd_by_ref,
         &wfm_by_name,
+        min_price,
     )
     .await
     .map_err(|e| e as Box<dyn Error>)?;
@@ -198,7 +204,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some(Commands::PrimedMods { min_rank }) => cli::run_primed_mod_prices(min_rank).await,
         Some(Commands::CheckSets { min_profit }) => cli::run_check_sets_cli(min_profit).await,
         Some(Commands::SellRelics { min_price }) => cli::run_sell_relics_cli(min_price).await,
-        Some(Commands::DebugMastery) => run_default_pipeline(cli_args.inventory, true).await,
-        None => run_default_pipeline(cli_args.inventory, false).await,
+        Some(Commands::DebugMastery) => {
+            run_default_pipeline(cli_args.inventory, true, cli_args.min_price).await
+        }
+        None => run_default_pipeline(cli_args.inventory, false, cli_args.min_price).await,
     }
 }
