@@ -37,7 +37,7 @@ pub struct CacheMetadata {
 pub async fn update_caches() -> AppResult<()> {
     fs::create_dir_all(CACHE_DIR)?;
 
-    let client = reqwest::Client::new();
+    let client = crate::http::shared_client();
     tsprintln!("Checking latest WFCD commit hash...");
     let response = client
         .get("https://api.github.com/repos/WFCD/warframe-items/commits/master")
@@ -118,7 +118,7 @@ pub async fn update_caches() -> AppResult<()> {
 
     // Vendor cache (from wiki Module:Vendors/data)
     tsprintln!("Updating vendor cache...");
-    vendor::fetch_and_cache_vendors(&client).await?;
+    vendor::fetch_and_cache_vendors(client).await?;
     tsprintln!("Vendor cache updated.");
 
     let needs_relics_refresh = cache_invalidated || !Path::new(RELICS_CACHE_FILE).exists();

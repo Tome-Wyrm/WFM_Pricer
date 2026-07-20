@@ -7,6 +7,7 @@ pub mod cli;
 pub mod config;
 mod debug_mastery;
 pub mod decryption;
+pub mod http;
 pub mod ingestion;
 pub mod logging;
 pub mod mapping;
@@ -133,8 +134,7 @@ async fn run_default_pipeline(
 
     // 3. Map inventory to WFM items
     tsprintln!("Mapping inventory items to Warframe.Market tradeable items...");
-    let client = reqwest::Client::new();
-    let mapped = mapping::map_inventory(&inventory, &client).await?;
+    let mapped = mapping::map_inventory(&inventory, http::shared_client()).await?;
 
     // 4. Load build maps and mastery status (needed for auto‑keep logic)
     tsprintln!("Loading build maps and mastery status...");

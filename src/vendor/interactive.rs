@@ -229,8 +229,7 @@ pub async fn run_vendor_cli(
     write_json: bool,
     max_saturation: Option<f64>,
 ) -> AppResult<()> {
-    let client = reqwest::Client::new();
-    fetch_and_cache_vendors(&client).await?;
+    fetch_and_cache_vendors(crate::http::shared_client()).await?;
     let vendors = build_and_write_vendor_cache()?;
     tsprintln!("Loaded {} vendors.", vendors.len());
 

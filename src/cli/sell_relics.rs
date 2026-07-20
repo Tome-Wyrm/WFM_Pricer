@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::AppResult;
+use crate::{AppResult, http};
 use tokio::time::{Duration, sleep};
 
 use super::{capitalize_tier, mapping, print_header, tseprintln, tsprintln, wfm_client};
@@ -57,8 +57,8 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> AppResult<()> {
     let inventory_path = crate::resolve_inventory_path(None)?;
     let inventory = crate::ingestion::ingest_inventory(&inventory_path)?;
 
-    let client = reqwest::Client::new();
-    let mapped_items = mapping::map_inventory(&inventory, &client).await?;
+    let client = http::shared_client();
+    let mapped_items = mapping::map_inventory(&inventory, client).await?;
 
     // Owned quantity per (base slug, refinement) — NOT just per slug, since one slug now
     // covers all four tiers (see doc comment above). Aggregated rather than trusting one
@@ -129,7 +129,7 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> AppResult<()> {
             .cloned()
             .unwrap_or_else(|| slug.clone());
 
-        let orders = match wfm_client::fetch_item_orders(&client, slug).await {
+        let orders = match wfm_client::fetch_item_orders(client, slug).await {
             Ok(o) => o,
             Err(e) => {
                 tseprintln!("Failed to fetch orders for {display_name}: {e}");

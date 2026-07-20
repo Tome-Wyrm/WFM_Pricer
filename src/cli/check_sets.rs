@@ -1,4 +1,4 @@
-use crate::AppResult;
+use crate::{AppResult, http};
 use tokio::time::{Duration, sleep};
 
 use super::{mapping, print_header, resolve_set_item, tseprintln, tsprintln, wfm_client};
@@ -49,8 +49,8 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> AppResult<()> {
     let inventory_path = crate::resolve_inventory_path(None)?;
     let inventory = crate::ingestion::ingest_inventory(&inventory_path)?;
 
-    let client = reqwest::Client::new();
-    let mapped_items = mapping::map_inventory(&inventory, &client).await?;
+    let client = http::shared_client();
+    let mapped_items = mapping::map_inventory(&inventory, client).await?;
     let (_parent_map, requirements) = mapping::load_build_maps()?;
     let (wfcd_by_ref, wfm_by_ref, wfm_by_name, _wfm_by_slug) = mapping::load_lookup_tables()?;
 
@@ -108,7 +108,7 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> AppResult<()> {
 
         let mut unpriced_reason: Option<String> = None;
 
-        let set_sell_price = match wfm_client::fetch_item_orders(&client, &set_wfm_item.slug).await
+        let set_sell_price = match wfm_client::fetch_item_orders(client, &set_wfm_item.slug).await
         {
             Ok(orders) => wfm_client::best_sell_price(&orders, None),
             Err(e) => {
@@ -135,7 +135,7 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> AppResult<()> {
                 break;
             };
 
-            let orders = match wfm_client::fetch_item_orders(&client, &wfm_comp.slug).await {
+            let orders = match wfm_client::fetch_item_orders(client, &wfm_comp.slug).await {
                 Ok(o) => o,
                 Err(e) => {
                     unpriced_reason =

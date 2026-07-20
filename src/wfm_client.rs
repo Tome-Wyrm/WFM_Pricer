@@ -406,7 +406,15 @@ impl WfmClient {
     pub async fn from_credentials(
         creds: Credentials,
     ) -> AppResult<Self> {
-        let client = reqwest::Client::builder().cookie_store(true).build()?;
+        // Deliberately its own client, not the shared `http::shared_client()` pool: this one
+        // carries session cookies for an authenticated user, and must not be reused for
+        // anonymous public requests (or vice versa). Timeouts match the shared client for
+        // consistency.
+        let client = reqwest::Client::builder()
+            .cookie_store(true)
+            .timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(8))
+            .build()?;
 
         let signin_url = "https://api.warframe.market/v1/auth/signin";
         let req_body = SignInRequest {
