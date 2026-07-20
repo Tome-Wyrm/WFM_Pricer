@@ -25,23 +25,12 @@ pub struct Order {
     #[serde(rename = "itemId")]
     pub item_id: String,
     pub visible: bool,
-    // Every other field on this struct uses v2 camelCase (itemId, not item_id), but this
-    // was tagged with only the v1-style "mod_rank". If the live v2 API actually sends
-    // "modRank" (as its camelCase convention suggests) instead of "mod_rank", this field
-    // silently deserializes as None for every order — exactly the same class of bug fixed
-    // in WfmStatsItem (see models.rs). The practical symptom: ListingKey lookups in cli.rs
-    // never match an existing mod/arcane listing (since the map is built from
-    // Order.rank), so already-listed items are treated as unlisted and the app attempts
-    // to create a duplicate order, which WFM rejects with
-    // "app.order.error.exceededOrderLimitSamePrice". Aliasing both spellings here means
-    // deserialization succeeds regardless of which one the live API actually sends —
-    // safer than guessing, given how expensive a wrong guess is (wasted order slots).
-    // Confirmed against the official WFM v2 API docs (Order schema): this field is
-    // literally named "rank" on the wire — no rename/alias needed. Two earlier guesses
-    // here (v1-style "mod_rank", then "modRank") were both wrong; this was always a
-    // straightforward field the plain derive already matched correctly. If listings ever
-    // fail to match via ListingKey again, look elsewhere first — this field name is now
-    // verified against the spec, not guessed.
+    /// WFM v2 order `rank` field. Verified against the official v2 API schema: it's
+    /// literally named `rank` on the wire, so the plain derive (no rename/alias) is
+    /// correct as written — despite every other field on this struct using v2
+    /// camelCase. Two earlier guesses here (`mod_rank`, then `modRank`) were both
+    /// wrong and broke `ListingKey` matching in `cli.rs`. If listings ever fail to
+    /// match again, look elsewhere first — this field name is verified, not guessed.
     pub rank: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subtype: Option<String>,
