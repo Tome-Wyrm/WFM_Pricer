@@ -1,6 +1,61 @@
 use serde::{Deserialize, Serialize};
 use crate::AppResult;
 
+/// Categorizes a non-2xx response from a WFM API endpoint, so callers (and eventually
+/// the CLI) can react differently to "back off and retry" (`RateLimited`), "the token is
+/// dead, re-authenticate" (`Authentication`), and "something else went wrong, log it and
+/// move on" (`ApiStatus`) instead of matching on a formatted string.
+#[derive(Debug)]
+pub enum WfmError {
+    /// 401/403 — the auth token is missing, expired, or was rejected.
+    Authentication { context: String },
+    /// 429 — too many requests; caller should back off and retry.
+    RateLimited { context: String },
+    /// Any other non-2xx status. Keeps the response body for context/logging.
+    ApiStatus {
+        status: reqwest::StatusCode,
+        body: String,
+        context: String,
+    },
+}
+
+impl std::fmt::Display for WfmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WfmError::Authentication { context } => {
+                write!(f, "WFM authentication failed ({context}) — token missing, expired, or rejected")
+            }
+            WfmError::RateLimited { context } => {
+                write!(f, "WFM API rate limited ({context}) — back off and retry")
+            }
+            WfmError::ApiStatus { status, body, context } => {
+                write!(f, "WFM API error ({context}): {status} - {body}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for WfmError {}
+
+/// Builds a categorized `WfmError` from a response already known to be non-2xx.
+/// `context` is a short description of what was being attempted (e.g. `"fetching
+/// orders for {slug}"`), kept for messages/logging regardless of category.
+/// Consumes the response to read its body for the `ApiStatus` case.
+pub async fn wfm_error_for_status(resp: reqwest::Response, context: impl Into<String>) -> WfmError {
+    let status = resp.status();
+    let context = context.into();
+    match status {
+        reqwest::StatusCode::TOO_MANY_REQUESTS => WfmError::RateLimited { context },
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            WfmError::Authentication { context }
+        }
+        _ => {
+            let body = resp.text().await.unwrap_or_default();
+            WfmError::ApiStatus { status, body, context }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WfmClient {
     client: reqwest::Client,
@@ -220,9 +275,9 @@ pub async fn fetch_item_orders(
         .await?;
 
     if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Failed to fetch orders for {slug}: {status} - {text}").into());
+        return Err(Box::new(
+            wfm_error_for_status(resp, format!("fetching orders for {slug}")).await,
+        ));
     }
 
     let body: PublicOrdersResponse = resp.json().await?;
@@ -425,9 +480,7 @@ impl WfmClient {
             .await?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(format!("Signin failed with status {status}: {body_text}").into());
+            return Err(Box::new(wfm_error_for_status(resp, "signing in").await));
         }
 
         // Extract token from Authorization header
@@ -487,7 +540,7 @@ impl WfmClient {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(format!("Failed to fetch username: {}", resp.status()).into());
+            return Err(Box::new(wfm_error_for_status(resp, "fetching username").await));
         }
 
         let val: serde_json::Value = resp.json().await?;
@@ -515,7 +568,9 @@ impl WfmClient {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(format!("Failed to fetch profile orders: {}", resp.status()).into());
+            return Err(Box::new(
+                wfm_error_for_status(resp, "fetching profile orders").await,
+            ));
         }
 
         let body: ApiResponse<Vec<Order>> = resp.json().await?;
@@ -541,9 +596,7 @@ impl WfmClient {
             .await?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Failed to create order: {status} - {text}").into());
+            return Err(Box::new(wfm_error_for_status(resp, "creating order").await));
         }
 
         Ok(())
@@ -570,9 +623,9 @@ impl WfmClient {
             .await?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Failed to update order: {status} - {text}").into());
+            return Err(Box::new(
+                wfm_error_for_status(resp, format!("updating order {order_id}")).await,
+            ));
         }
 
         Ok(())

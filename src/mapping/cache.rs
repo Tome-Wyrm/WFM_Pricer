@@ -18,6 +18,7 @@ use crate::config::{
 };
 use crate::models::WfmItem;
 use crate::vendor;
+use crate::wfm_client::wfm_error_for_status;
 use crate::{tseprintln, tsprintln};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,7 +186,9 @@ pub(crate) async fn fetch_full_item(
         .send()
         .await?;
     if !resp.status().is_success() {
-        return Err(format!("Failed to fetch full item for {}: {}", slug, resp.status()).into());
+        return Err(Box::new(
+            wfm_error_for_status(resp, format!("fetching full item {slug}")).await,
+        ));
     }
     let parsed: ApiResponse = resp.json().await?;
     cache.insert(slug.to_string(), parsed.data.clone());
