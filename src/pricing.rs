@@ -1,6 +1,6 @@
 use reqwest::header::USER_AGENT;
 use std::collections::HashMap;
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -46,7 +46,7 @@ fn stats_http_client() -> &'static reqwest::Client {
 /// # Errors
 /// Returns an error if file operations fail, JSON parsing fails, or all retry attempts
 /// are exhausted without a successful response.
-pub async fn fetch_statistics(slug: &str) -> Result<WfmStatsResponse, Box<dyn Error>> {
+pub async fn fetch_statistics(slug: &str) -> AppResult<WfmStatsResponse> {
     fs::create_dir_all(STATS_CACHE_DIR)?;
     let cache_path = PathBuf::from(STATS_CACHE_DIR).join(format!("{slug}.json"));
 

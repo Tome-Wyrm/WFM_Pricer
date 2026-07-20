@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::error::Error;
+use crate::AppResult;
 
 use super::{
     BuildParentMap, BuildRequirements, MappedItem, WfcdItem, WfmItem, WfmStatsResponse,
@@ -242,7 +242,7 @@ mod upgrade_suggestion_tests {
 /// Exists purely so tests can supply fixture data instead of making a real network call —
 /// production code always uses `LiveStatsSource`, which just delegates to `fetch_statistics`.
 pub(crate) trait StatsSource {
-    async fn fetch(&self, slug: &str) -> Result<WfmStatsResponse, Box<dyn Error>>;
+    async fn fetch(&self, slug: &str) -> AppResult<WfmStatsResponse>;
 }
 
 #[cfg(test)]

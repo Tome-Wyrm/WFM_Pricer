@@ -5,7 +5,7 @@ use super::metadata::CostMode;
 use super::raw::PriceSpec;
 use crate::config;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
+use crate::AppResult;
 
 // ================== Phase E: Cost model & multi-currency classification ==================
 
@@ -251,7 +251,7 @@ pub struct RankedOffering {
 pub async fn rank_offerings(
     vendors: &[MappedVendor],
     max_saturation: Option<f64>,
-) -> Result<Vec<RankedOffering>, Box<dyn Error>> {
+) -> AppResult<Vec<RankedOffering>> {
     use std::convert::TryFrom;
 
     let mut scored_inputs: Vec<(ScoreInput, RankedOffering)> = Vec::new();

@@ -1,7 +1,7 @@
 use aes::Aes128;
 use cbc::Decryptor;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit};
-use std::error::Error;
+use crate::AppResult;
 
 type Aes128CbcDec = Decryptor<Aes128>;
 
@@ -14,7 +14,7 @@ pub const IV: &[u8; 16] = &[
 ///
 /// # Errors
 /// Returns an error if decryption fails due to invalid key, IV, or padding.
-pub fn decrypt(ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+pub fn decrypt(ciphertext: &[u8]) -> AppResult<Vec<u8>> {
     let decryptor = Aes128CbcDec::new(KEY.into(), IV.into());
     let mut buf = ciphertext.to_vec();
     let decrypted = decryptor

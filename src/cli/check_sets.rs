@@ -1,4 +1,4 @@
-use std::error::Error;
+use crate::AppResult;
 use tokio::time::{Duration, sleep};
 
 use super::{mapping, print_header, resolve_set_item, tseprintln, tsprintln, wfm_client};
@@ -40,7 +40,7 @@ pub(crate) struct PricedIncompleteSet {
 /// Returns an error if caches can't be refreshed/loaded, the inventory can't be ingested, or
 /// inventory-to-WFM mapping fails.
 #[allow(clippy::too_many_lines)]
-pub async fn run_check_sets_cli(min_profit: Option<f64>) -> Result<(), Box<dyn Error>> {
+pub async fn run_check_sets_cli(min_profit: Option<f64>) -> AppResult<()> {
     print_header("Incomplete Set Profitability Check");
 
     mapping::update_caches().await?;

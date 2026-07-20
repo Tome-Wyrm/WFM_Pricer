@@ -1,4 +1,4 @@
-use std::error::Error;
+use crate::AppResult;
 
 use super::{
     PRIMED_MODS, PrimedPrice, calculate_weighted_average, fetch_statistics, print_header,
@@ -8,7 +8,7 @@ use super::{
 /// # Errors
 /// Returns an error if caches can't be loaded, the WFM items cache is missing,
 /// or network requests fail.
-pub async fn run_primed_mod_prices(min_rank: bool) -> Result<(), Box<dyn Error>> {
+pub async fn run_primed_mod_prices(min_rank: bool) -> AppResult<()> {
     print_header(if min_rank {
         "Primed Mod Prices (Unranked)"
     } else {

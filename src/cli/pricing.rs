@@ -1,6 +1,6 @@
 use crate::mapping::{BuildParentMap, BuildRequirements};
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
+use crate::AppResult;
 
 use super::{
     ListingKey, MIN_DAILY_VOLUME, MappedItem, OwnedOrder, StatsSource, WfcdItem, WfmItem,
@@ -12,7 +12,7 @@ use super::{
 pub(crate) struct LiveStatsSource;
 
 impl StatsSource for LiveStatsSource {
-    async fn fetch(&self, slug: &str) -> Result<WfmStatsResponse, Box<dyn Error>> {
+    async fn fetch(&self, slug: &str) -> AppResult<WfmStatsResponse> {
         fetch_statistics(slug).await
     }
 }
@@ -199,7 +199,7 @@ mod build_priced_candidates_tests {
     struct FixtureStatsSource(HashMap<String, WfmStatsResponse>);
 
     impl StatsSource for FixtureStatsSource {
-        async fn fetch(&self, slug: &str) -> Result<WfmStatsResponse, Box<dyn Error>> {
+        async fn fetch(&self, slug: &str) -> AppResult<WfmStatsResponse> {
             self.0
                 .get(slug)
                 .cloned()

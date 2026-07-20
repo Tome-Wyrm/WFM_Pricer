@@ -2,7 +2,7 @@
 //! display name against the WFM name index.
 
 use std::collections::HashMap;
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 
 use crate::config::{WFCD_CACHE_FILE, WFM_CACHE_FILE};
@@ -37,7 +37,7 @@ pub(crate) fn find_wfm_match<'a>(
     None
 }
 
-pub(crate) fn load_lookup_tables() -> Result<LookupTables, Box<dyn Error>> {
+pub(crate) fn load_lookup_tables() -> AppResult<LookupTables> {
     let wfcd_str = fs::read_to_string(WFCD_CACHE_FILE)?;
     let wfcd_items: Vec<WfcdItem> = serde_json::from_str(&wfcd_str)
         .map_err(|e| format!("Failed to parse cached WFCD All.json: {e:?}"))?;

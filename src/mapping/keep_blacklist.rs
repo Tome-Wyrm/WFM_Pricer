@@ -2,13 +2,13 @@
 //! merging/pooling duplicate mod & arcane entries across rank buckets before reservation runs.
 
 use std::collections::HashMap;
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 use std::path::Path;
 
 use crate::models::{BlacklistConfig, KeepConfig, MappedItem};
 
-pub(crate) fn load_keep_blacklist() -> Result<(KeepConfig, BlacklistConfig), Box<dyn Error>> {
+pub(crate) fn load_keep_blacklist() -> AppResult<(KeepConfig, BlacklistConfig)> {
     let keep_map = if Path::new(crate::config::KEEPLIST_FILE).exists() {
         let raw = fs::read_to_string(crate::config::KEEPLIST_FILE)?;
         toml::from_str(&raw).map_err(|e| format!("Failed to parse keeplist.toml: {e:?}"))?

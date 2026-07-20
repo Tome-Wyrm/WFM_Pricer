@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
+use crate::AppResult;
 
 use super::{
     BuildParentMap, BuildStatus, ListingKey, MappedItem, NoOpDecision, OwnedOrder,
@@ -150,7 +150,7 @@ pub(crate) fn print_error_ui(msg: &str) {
 
 // ── Helper functions for `run_cli` ──────────────────────────────────────────
 
-pub(crate) fn load_credentials() -> Result<(String, String), Box<dyn Error + Send + Sync>> {
+pub(crate) fn load_credentials() -> AppResult<(String, String)> {
     let email = std::env::var("WFM_EMAIL").unwrap_or_default();
     let password = std::env::var("WFM_PASSWORD").unwrap_or_default();
     if email.is_empty() || password.is_empty() {
@@ -166,7 +166,7 @@ pub(crate) fn load_credentials() -> Result<(String, String), Box<dyn Error + Sen
 
 pub(crate) async fn fetch_user_listings(
     wfm_client: &WfmClient,
-) -> Result<(Vec<OwnedOrder>, HashMap<ListingKey, Vec<OwnedOrder>>), Box<dyn Error + Send + Sync>> {
+) -> AppResult<(Vec<OwnedOrder>, HashMap<ListingKey, Vec<OwnedOrder>>)> {
     tsprintln!("Fetching your active listings from Warframe.Market...");
     let all_orders = wfm_client.my_orders().await?;
     let user_listings: Vec<OwnedOrder> =

@@ -3,7 +3,7 @@
 //! inventory mapping.
 
 use std::collections::HashMap;
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -34,7 +34,7 @@ pub struct CacheMetadata {
 /// - GitHub commit hash cannot be fetched.
 /// - File I/O operations fail.
 /// - JSON parsing of cache files fails.
-pub async fn update_caches() -> Result<(), Box<dyn Error>> {
+pub async fn update_caches() -> AppResult<()> {
     fs::create_dir_all(CACHE_DIR)?;
 
     let client = reqwest::Client::new();
@@ -147,7 +147,7 @@ pub async fn update_caches() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub(crate) fn load_full_items_cache() -> Result<HashMap<String, WfmItem>, Box<dyn Error>> {
+pub(crate) fn load_full_items_cache() -> AppResult<HashMap<String, WfmItem>> {
     if !Path::new(FULL_ITEMS_CACHE_FILE).exists() {
         return Ok(HashMap::new());
     }
@@ -157,7 +157,7 @@ pub(crate) fn load_full_items_cache() -> Result<HashMap<String, WfmItem>, Box<dy
 
 pub(crate) fn save_full_items_cache(
     cache: &HashMap<String, WfmItem>,
-) -> Result<(), Box<dyn Error>> {
+) -> AppResult<()> {
     let content = serde_json::to_string_pretty(cache)?;
     fs::write(FULL_ITEMS_CACHE_FILE, content)?;
     Ok(())
@@ -167,7 +167,7 @@ pub(crate) async fn fetch_full_item(
     slug: &str,
     client: &reqwest::Client,
     cache: &mut HashMap<String, WfmItem>,
-) -> Result<WfmItem, Box<dyn Error>> {
+) -> AppResult<WfmItem> {
     #[derive(Deserialize)]
     struct ApiResponse {
         data: WfmItem,

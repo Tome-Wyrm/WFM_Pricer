@@ -5,7 +5,7 @@ use super::lua::{LuaKey, parse, tokenize};
 use super::raw::{RawVendor, parse_raw_vendor, write_vendor_cache};
 use crate::tsprintln;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 use std::path::Path;
 
@@ -19,7 +19,7 @@ struct RevidCache {
 /// Reads the cached revid from disk, if present.
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed as JSON.
-pub fn read_cached_revid() -> Result<Option<u64>, Box<dyn Error>> {
+pub fn read_cached_revid() -> AppResult<Option<u64>> {
     let path = Path::new(crate::config::VENDOR_REVID_FILE);
     if !path.exists() {
         return Ok(None);
@@ -32,7 +32,7 @@ pub fn read_cached_revid() -> Result<Option<u64>, Box<dyn Error>> {
 /// Writes the given revid to the cache file.
 /// # Errors
 /// Returns an error if the cache file cannot be written or serialized to JSON.
-pub fn write_cached_revid(revid: u64) -> Result<(), Box<dyn Error>> {
+pub fn write_cached_revid(revid: u64) -> AppResult<()> {
     let path = Path::new(crate::config::VENDOR_REVID_FILE);
     let cache = RevidCache { revid };
     let content = serde_json::to_string_pretty(&cache)?;
@@ -44,7 +44,7 @@ pub fn write_cached_revid(revid: u64) -> Result<(), Box<dyn Error>> {
 ///
 /// # Errors
 /// Returns an error if the network request fails or the response doesn't contain a revid.
-pub async fn fetch_latest_revid(client: &reqwest::Client) -> Result<u64, Box<dyn Error>> {
+pub async fn fetch_latest_revid(client: &reqwest::Client) -> AppResult<u64> {
     let url = "https://wiki.warframe.com/api.php";
     let params = [
         ("action", "query"),
@@ -81,7 +81,7 @@ pub async fn fetch_latest_revid(client: &reqwest::Client) -> Result<u64, Box<dyn
 /// # Errors
 /// Returns an error if the network request fails, the API returns a non‑success status,
 /// or the response does not contain the expected content.
-pub async fn fetch_vendors_lua(client: &reqwest::Client) -> Result<String, Box<dyn Error>> {
+pub async fn fetch_vendors_lua(client: &reqwest::Client) -> AppResult<String> {
     let url = "https://wiki.warframe.com/api.php";
     let params = [
         ("action", "query"),
@@ -152,7 +152,7 @@ pub fn parse_vendors_from_lua(source: &str) -> Result<(Vec<RawVendor>, usize), S
 /// # Errors
 /// Returns an error if the network request fails, the wiki API returns a non‑success status,
 /// the Lua source cannot be parsed, or the cache files cannot be written.
-pub async fn fetch_and_cache_vendors(client: &reqwest::Client) -> Result<(), Box<dyn Error>> {
+pub async fn fetch_and_cache_vendors(client: &reqwest::Client) -> AppResult<()> {
     let remote_revid = fetch_latest_revid(client).await?;
     let cached_revid = read_cached_revid()?;
 

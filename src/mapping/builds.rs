@@ -3,7 +3,7 @@
 //! partially-assembled Sets.
 
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
+use crate::AppResult;
 
 use crate::models::{MappedItem, WfcdItem, WfmItem};
 
@@ -97,7 +97,7 @@ pub fn build_maps_from_items(
 /// # Errors
 /// Returns an error if the WFCD cache file is missing, cannot be read, or cannot be parsed as
 /// the expected JSON shape.
-pub fn load_build_maps() -> Result<(BuildParentMap, BuildRequirements), Box<dyn Error>> {
+pub fn load_build_maps() -> AppResult<(BuildParentMap, BuildRequirements)> {
     let cache_path = crate::config::WFCD_CACHE_FILE;
     if !std::path::Path::new(cache_path).exists() {
         return Err("WFCD cache file missing. Run update_caches first.".into());

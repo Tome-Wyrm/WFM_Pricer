@@ -16,8 +16,12 @@ pub mod vendor;
 pub mod wfm_client;
 
 use clap::{Parser, Subcommand};
-use std::error::Error;
 use std::path::{Path, PathBuf};
+
+/// Crate-wide result alias. `Send + Sync` is required so errors can cross `.await`
+/// points and be used from within `tokio::spawn`/async trait objects without every
+/// call site needing to know or care which error type actually flows through.
+pub type AppResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 // Timestamped session logging: see src/logging.rs. tsprintln!/tseprintln! behave exactly
 // like println!/eprintln! but also mirror into logs/session_<timestamp>.log.
 
@@ -95,9 +99,7 @@ enum Commands {
 
 /// Resolves the inventory file to ingest: an explicit `--inventory` override, else
 /// `inventory.json` in the cwd if present, else the `AlecaFrame` `lastData.dat` fallback.
-pub(crate) fn resolve_inventory_path(
-    override_path: Option<PathBuf>,
-) -> Result<PathBuf, Box<dyn Error>> {
+pub(crate) fn resolve_inventory_path(override_path: Option<PathBuf>) -> AppResult<PathBuf> {
     if let Some(p) = override_path {
         tsprintln!("Using --inventory override: {}", p.display());
         return Ok(p);
@@ -118,7 +120,7 @@ async fn run_default_pipeline(
     inventory_override: Option<PathBuf>,
     debug_mastery: bool,
     min_price: Option<f64>,
-) -> Result<(), Box<dyn Error>> {
+) -> AppResult<()> {
     tsprintln!("--- WFM Pricer System Startup ---");
 
     // 1. Update caches (fail fast if this doesn't work)
@@ -165,14 +167,13 @@ async fn run_default_pipeline(
         &wfm_by_name,
         min_price,
     )
-    .await
-    .map_err(|e| e as Box<dyn Error>)?;
+    .await?;
 
     Ok(())
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> AppResult<()> {
     // Must run before anything else prints: this is what populates
     // logs/session_<timestamp>.log for every tsprintln!/tsprint!/tseprintln! call below (and
     // throughout cli.rs/mapping.rs/vendor.rs/pricing.rs), with no need to pipe `cargo run`

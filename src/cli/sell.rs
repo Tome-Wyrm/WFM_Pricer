@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
+use crate::AppResult;
 
 use super::{
     BuildParentMap, BuildRequirements, Credentials, LiveStatsSource, MappedItem, SessionReport,
@@ -27,7 +27,7 @@ pub async fn run_cli(
     wfcd_by_ref: &HashMap<String, WfcdItem>,
     wfm_by_name: &HashMap<String, WfmItem>,
     min_price: Option<f64>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> AppResult<()> {
     print_header("Warframe.Market Advisor Session Init");
 
     let (email, password) = load_credentials()?;

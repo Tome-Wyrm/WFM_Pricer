@@ -5,7 +5,7 @@ use super::matching::{MappedVendor, build_and_write_vendor_cache, print_match_re
 use super::network::fetch_and_cache_vendors;
 use super::scoring::{RankedOffering, rank_offerings};
 use crate::{tsprint, tsprintln};
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 use std::io::Write;
 
@@ -70,7 +70,7 @@ fn vendors_for_entry<'a>(name: &str, vendors: &'a [MappedVendor]) -> Vec<&'a Map
 fn interactive_picker<'a>(
     root: &LocTree,
     vendors: &'a [MappedVendor],
-) -> Result<Vec<&'a MappedVendor>, Box<dyn Error>> {
+) -> AppResult<Vec<&'a MappedVendor>> {
     let mut node = root;
     loop {
         // Build the numbered menu: child directories first, then leaf entries at this level.
@@ -125,7 +125,7 @@ fn resolve_path<'a>(
     root: &LocTree,
     path: &str,
     vendors: &'a [MappedVendor],
-) -> Result<Vec<&'a MappedVendor>, Box<dyn Error>> {
+) -> AppResult<Vec<&'a MappedVendor>> {
     let mut node = root;
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if segments.is_empty() {
@@ -207,7 +207,7 @@ fn print_ranked_table(rows: &[RankedOffering]) {
 
 /// Writes `rows` as JSON to `vendor_rankings.json` in the project root (matching the
 /// observed, if undocumented, location of `session_report.json`).
-fn write_rankings_json(rows: &[RankedOffering]) -> Result<(), Box<dyn Error>> {
+fn write_rankings_json(rows: &[RankedOffering]) -> AppResult<()> {
     let json = serde_json::to_string_pretty(rows)?;
     fs::write("vendor_rankings.json", json)?;
     tsprintln!("Wrote vendor_rankings.json ({} rows).", rows.len());
@@ -228,7 +228,7 @@ pub async fn run_vendor_cli(
     match_report: bool,
     write_json: bool,
     max_saturation: Option<f64>,
-) -> Result<(), Box<dyn Error>> {
+) -> AppResult<()> {
     let client = reqwest::Client::new();
     fetch_and_cache_vendors(&client).await?;
     let vendors = build_and_write_vendor_cache()?;

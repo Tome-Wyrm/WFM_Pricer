@@ -2,7 +2,7 @@
 //! `MappedItem`s, wiring together lookup tables, item-type filtering, live subtype fetches, and
 //! keep/blacklist reservation.
 
-use std::error::Error;
+use crate::AppResult;
 use std::path::Path;
 
 use crate::config::{WFCD_CACHE_FILE, WFM_CACHE_FILE};
@@ -27,7 +27,7 @@ use super::{
 pub async fn map_inventory(
     inventory: &serde_json::Value,
     client: &reqwest::Client,
-) -> Result<Vec<MappedItem>, Box<dyn Error>> {
+) -> AppResult<Vec<MappedItem>> {
     if !Path::new(WFCD_CACHE_FILE).exists() || !Path::new(WFM_CACHE_FILE).exists() {
         return Err("Cache files missing. Please run update_caches first.".into());
     }

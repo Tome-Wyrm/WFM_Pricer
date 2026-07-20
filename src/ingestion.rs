@@ -1,5 +1,5 @@
 use crate::decryption::decrypt;
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// # Errors
 /// Returns an error if the inventory path cannot be determined from arguments or environment,
 /// or if environment variables are not properly configured.
-pub fn get_inventory_path() -> Result<PathBuf, Box<dyn Error>> {
+pub fn get_inventory_path() -> AppResult<PathBuf> {
     let args: Vec<String> = std::env::args().collect();
 
     // Check for --inventory or -i flag
@@ -34,7 +34,7 @@ pub fn get_inventory_path() -> Result<PathBuf, Box<dyn Error>> {
 /// # Errors
 /// Returns an error if the file does not exist, cannot be read,
 /// decryption fails, or JSON parsing fails.
-pub fn ingest_inventory<P: AsRef<Path>>(path: P) -> Result<serde_json::Value, Box<dyn Error>> {
+pub fn ingest_inventory<P: AsRef<Path>>(path: P) -> AppResult<serde_json::Value> {
     let path = path.as_ref();
     if !path.exists() {
         return Err(format!("Inventory file does not exist: {}", path.display()).into());

@@ -8,7 +8,7 @@ use super::raw::{CurrencySpec, PrereqSpec, PriceSpec, RawOffering, load_vendor_d
 use crate::config;
 use crate::tsprintln;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 
 /// A `RawOffering` combined with its `vendors.toml` overlay context and WFM match
@@ -64,7 +64,7 @@ fn match_offering(
 /// # Errors
 /// Returns an error if the raw vendor cache, `vendors.toml`, or the WFM lookup tables
 /// can't be loaded, or if the resulting cache can't be serialized/written.
-pub fn build_and_write_vendor_cache() -> Result<Vec<MappedVendor>, Box<dyn Error>> {
+pub fn build_and_write_vendor_cache() -> AppResult<Vec<MappedVendor>> {
     let raw_vendors = load_vendor_data()?;
     let meta = load_vendor_metadata()?;
     let (_, _, wfm_by_name, _) = crate::mapping::load_lookup_tables()?;

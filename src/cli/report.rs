@@ -1,4 +1,4 @@
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -21,7 +21,7 @@ pub struct SessionReport {
 /// Writes the session report to `session_report.json`.
 pub(crate) fn write_session_report(
     report: &SessionReport,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> AppResult<()> {
     let content = serde_json::to_string_pretty(report)?;
     fs::write("session_report.json", content)?;
     Ok(())

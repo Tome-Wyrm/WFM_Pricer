@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 use std::path::Path;
 
 use super::{BLACKLIST_FILE, BlacklistConfig, KEEPLIST_FILE, KeepConfig, KeepRule};
 
-pub(crate) fn load_blacklist() -> Result<BlacklistConfig, Box<dyn Error + Send + Sync>> {
+pub(crate) fn load_blacklist() -> AppResult<BlacklistConfig> {
     if !Path::new(BLACKLIST_FILE).exists() {
         return Ok(BlacklistConfig::default());
     }
@@ -13,12 +13,12 @@ pub(crate) fn load_blacklist() -> Result<BlacklistConfig, Box<dyn Error + Send +
     Ok(toml::from_str(&raw)?)
 }
 
-pub(crate) fn save_blacklist(config: &BlacklistConfig) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub(crate) fn save_blacklist(config: &BlacklistConfig) -> AppResult<()> {
     fs::write(BLACKLIST_FILE, toml::to_string(config)?)?;
     Ok(())
 }
 
-pub(crate) fn load_keeplist() -> Result<KeepConfig, Box<dyn Error + Send + Sync>> {
+pub(crate) fn load_keeplist() -> AppResult<KeepConfig> {
     if !Path::new(KEEPLIST_FILE).exists() {
         return Ok(KeepConfig {
             defaults: HashMap::default(),
@@ -56,7 +56,7 @@ pub(crate) fn add_to_keeplist(
     slug: &str,
     rank: Option<u8>,
     qty: u32,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> AppResult<()> {
     let rules = keeplist.items.entry(slug.to_string()).or_default();
     rules.retain(|r| r.rank != rank);
     rules.push(KeepRule { keep: qty, rank });

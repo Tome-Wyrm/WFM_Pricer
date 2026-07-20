@@ -3,7 +3,7 @@
 //! Extracted out of `main.rs` (Pass 1 mechanical refactor) — no behavior change.
 
 use crate::mapping;
-use crate::{tseprintln, tsprintln};
+use crate::{AppResult, tseprintln, tsprintln};
 
 pub(crate) fn is_eligible_for_mastery_checklist(unique_name: &str) -> bool {
     !unique_name.starts_with("SolNode")
@@ -166,7 +166,7 @@ pub(crate) fn run_debug_mastery_checklist(
     wfm_by_name: &std::collections::HashMap<String, crate::models::WfmItem>,
     mastered_set: &std::collections::HashSet<String>,
     frame_tier_uniques: &std::collections::HashSet<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AppResult<()> {
     let xp_map = build_xp_map(inventory);
     let name_to_unique = build_name_to_unique_map(wfcd_by_ref, wfm_by_name);
 

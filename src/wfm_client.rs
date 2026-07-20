@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::error::Error;
+use crate::AppResult;
 
 #[derive(Debug, Clone)]
 pub struct WfmClient {
@@ -219,7 +219,7 @@ struct PublicOrdersResponse {
 pub async fn fetch_item_orders(
     client: &reqwest::Client,
     slug: &str,
-) -> Result<Vec<PublicOrder>, Box<dyn Error + Send + Sync>> {
+) -> AppResult<Vec<PublicOrder>> {
     let url = format!("https://api.warframe.market/v2/orders/item/{slug}");
     let resp = client
         .get(&url)
@@ -405,7 +405,7 @@ impl WfmClient {
     /// either the `Authorization` header or the response body.
     pub async fn from_credentials(
         creds: Credentials,
-    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+    ) -> AppResult<Self> {
         let client = reqwest::Client::builder().cookie_store(true).build()?;
 
         let signin_url = "https://api.warframe.market/v1/auth/signin";
@@ -477,7 +477,7 @@ impl WfmClient {
     /// # Errors
     /// Returns an error if the request fails, the server returns a non-success status, or the
     /// response body doesn't contain the expected `ingameName` field.
-    pub async fn get_username(&self) -> Result<String, Box<dyn Error + Send + Sync>> {
+    pub async fn get_username(&self) -> AppResult<String> {
         let resp = self
             .client
             .get("https://api.warframe.market/v2/me")
@@ -505,7 +505,7 @@ impl WfmClient {
     /// # Errors
     /// Returns an error if the request fails, the server returns a non-success status, or the
     /// response body cannot be parsed as the expected order-list shape.
-    pub async fn my_orders(&self) -> Result<Vec<Order>, Box<dyn Error + Send + Sync>> {
+    pub async fn my_orders(&self) -> AppResult<Vec<Order>> {
         let resp = self
             .client
             .get("https://api.warframe.market/v2/orders/my")
@@ -530,7 +530,7 @@ impl WfmClient {
     pub async fn create_order(
         &self,
         order: CreateOrder,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ) -> AppResult<()> {
         let resp = self
             .client
             .post("https://api.warframe.market/v2/order")
@@ -558,7 +558,7 @@ impl WfmClient {
         &self,
         order_id: &str,
         update: UpdateOrder,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ) -> AppResult<()> {
         let url = format!("https://api.warframe.market/v2/order/{order_id}");
         let resp = self
             .client

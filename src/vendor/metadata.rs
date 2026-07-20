@@ -2,7 +2,7 @@
 //! `config/vendors.toml` overlay: per-vendor metadata, category tradeability, and item
 //! name normalization (Phase C/D).
 use serde::{Deserialize, Serialize};
-use std::error::Error;
+use crate::AppResult;
 use std::fs;
 use std::path::Path;
 
@@ -53,7 +53,7 @@ pub struct VendorConfig {
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
 pub fn load_vendor_metadata()
--> Result<std::collections::HashMap<String, VendorMeta>, Box<dyn Error>> {
+-> AppResult<std::collections::HashMap<String, VendorMeta>> {
     let path = Path::new(crate::config::VENDORS_CONFIG_FILE);
     if !path.exists() {
         return Ok(std::collections::HashMap::new());

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::error::Error;
+use crate::AppResult;
 use tokio::time::{Duration, sleep};
 
 use super::{capitalize_tier, mapping, print_header, tseprintln, tsprintln, wfm_client};
@@ -48,7 +48,7 @@ pub(crate) struct RelicSellMessage {
 /// or inventory mapping fails outright. Per-item order-fetch failures are logged and skipped
 /// rather than aborting the whole run, matching `run_check_sets_cli`'s behavior.
 #[allow(clippy::too_many_lines)]
-pub async fn run_sell_relics_cli(min_price: Option<u32>) -> Result<(), Box<dyn Error>> {
+pub async fn run_sell_relics_cli(min_price: Option<u32>) -> AppResult<()> {
     print_header("Sell Relics — Matching Buy Orders");
 
     mapping::update_caches().await?;

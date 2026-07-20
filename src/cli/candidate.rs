@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
+use crate::AppResult;
 use std::io::{self, Write};
 use tokio::time::{Duration, sleep};
 
@@ -23,7 +23,7 @@ pub(crate) async fn handle_single_candidate(
     saturation: f64,
     vol_30d: u32,
     ctx: &mut CandidateContext<'_>,
-) -> Result<Option<SessionReportItem>, Box<dyn Error + Send + Sync>> {
+) -> AppResult<Option<SessionReportItem>> {
     // ── Keep list / blacklist handling ─────────────────────────────────────
     if ctx.blacklist_set.slugs.contains(&item.slug) {
         return Ok(None);
@@ -246,7 +246,7 @@ pub(crate) async fn handle_list_or_update(
     is_already_listed: bool,
     listing_key: &ListingKey,
     ctx: &mut CandidateContext<'_>,
-) -> Result<Option<SessionReportItem>, Box<dyn Error + Send + Sync>> {
+) -> AppResult<Option<SessionReportItem>> {
     // Price prompt
     tsprint!("  Price to list (default {wa_price:.1}): ");
     let _ = ctx.stdout.flush();
@@ -471,7 +471,7 @@ pub(crate) async fn process_candidates(
     parent_map: &BuildParentMap,
     mastered_set: &HashSet<String>,
     owned_built_set: &HashSet<String>,
-) -> Result<Vec<SessionReportItem>, Box<dyn Error + Send + Sync>> {
+) -> AppResult<Vec<SessionReportItem>> {
     let mut session_items = Vec::new();
     let mut stdout = io::stdout();
     let mut ctx = CandidateContext {
