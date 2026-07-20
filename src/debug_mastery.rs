@@ -40,7 +40,20 @@ fn build_name_to_unique_map(
     wfm_by_name: &std::collections::HashMap<String, crate::models::WfmItem>,
 ) -> std::collections::HashMap<String, String> {
     let mut name_to_unique = std::collections::HashMap::new();
-    for (unique, item) in wfcd_by_ref {
+
+    // `wfcd_by_ref`/`wfm_by_name` are HashMaps used elsewhere purely for point lookups
+    // (`.get()`), which is fine — but here they're *iterated*, and which entry "wins" an
+    // ambiguous display name (the `if let Some(existing) ... picking first` branch below, and
+    // the WFM fallback's `.or_insert`) depends on iteration order. A HashMap's iteration
+    // order is randomized per-process, so which uniqueName a collided name resolved to (and
+    // which warning got printed) could change from run to run on identical caches. Sorting
+    // the keys before iterating makes both the resolution and the warning output
+    // deterministic; this runs once per `--debug-mastery` invocation over the full item
+    // cache, so the sort cost is negligible relative to the JSON parse that already happened.
+    let mut wfcd_keys: Vec<&String> = wfcd_by_ref.keys().collect();
+    wfcd_keys.sort();
+    for unique in wfcd_keys {
+        let item = &wfcd_by_ref[unique];
         if is_eligible_for_mastery_checklist(unique) {
             let norm = item.name.to_lowercase();
             if let Some(existing) = name_to_unique.get(&norm) {
@@ -55,8 +68,11 @@ fn build_name_to_unique_map(
             }
         }
     }
-    // WFM fallback (also filtered)
-    for (name, item) in wfm_by_name {
+    // WFM fallback (also filtered) — same determinism concern as above.
+    let mut wfm_keys: Vec<&String> = wfm_by_name.keys().collect();
+    wfm_keys.sort();
+    for name in wfm_keys {
+        let item = &wfm_by_name[name];
         let norm = name.to_lowercase();
         if let Some(gr) = &item.game_ref
             && let Some(wfcd_item) = wfcd_by_ref.get(gr)

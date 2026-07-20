@@ -10,10 +10,21 @@ use crate::models::{MappedItem, WfcdItem, WfmItem};
 use super::{find_wfm_match, load_lookup_tables};
 
 /// Mapping from a component's `uniqueName` to its parent build's `uniqueName`.
-pub type BuildParentMap = std::collections::HashMap<String, String>;
+///
+/// `BTreeMap`, not `HashMap`: this map is *iterated* (not just looked up) by the greedy
+/// set-formation pass in `cli::aggregation::aggregate_sets_with_prices` and by
+/// `find_incomplete_sets` below, where the order builds are processed in determines which
+/// build "wins" a contested shared component and the order results are reported in. A
+/// `HashMap`'s iteration order is randomized per-process (`SipHash` + random seed), which made
+/// both non-deterministic across runs on identical input. `BTreeMap` iterates in sorted-key
+/// order, which is deterministic and stable for free — and both maps are only ever built
+/// once per run from a fixed cache file and then read many times, so the O(log n) insert cost
+/// relative to `HashMap` is negligible.
+pub type BuildParentMap = std::collections::BTreeMap<String, String>;
 
 /// Mapping from a build's `uniqueName` to its list of required components and quantities.
-pub type BuildRequirements = std::collections::HashMap<String, Vec<(String, u32)>>;
+/// `BTreeMap` for the same reason as `BuildParentMap` above.
+pub type BuildRequirements = std::collections::BTreeMap<String, Vec<(String, u32)>>;
 
 /// Pure helper: builds the parent map and requirements map from an already-parsed list of WFCD
 /// items. Split out from `load_build_maps` so the parsing logic can be unit tested against a

@@ -50,7 +50,7 @@ pub(crate) fn aggregate_sets_with_prices(
         let mut possible_sets = u32::MAX;
         for (comp_unique, required_qty) in recipe {
             if let Some((qty, _)) = component_qty.get(comp_unique) {
-                let avail = *qty - consumed.get(comp_unique).copied().unwrap_or(0);
+                let avail = qty.saturating_sub(consumed.get(comp_unique).copied().unwrap_or(0));
                 possible_sets = possible_sets.min(avail / required_qty);
                 if possible_sets == 0 {
                     break;
@@ -99,7 +99,17 @@ pub(crate) fn aggregate_sets_with_prices(
     // Build final list: sets + leftovers + other_items
     let mut result = set_items;
 
-    for (comp_unique, (total_qty, comp_item_template)) in component_qty {
+    // `component_qty` is a HashMap (fine for the .get() lookups above — those are point
+    // lookups, not iteration), but this loop iterates it and pushes straight into `result`,
+    // so a HashMap's randomized per-process iteration order would make the displayed
+    // leftover-part ordering non-deterministic across runs on identical input. Sorting the
+    // keys first is cheap here (this runs once per CLI invocation over a small candidate
+    // list) and avoids widening `component_qty`'s type just for this one call site.
+    let mut leftover_keys: Vec<String> = component_qty.keys().cloned().collect();
+    leftover_keys.sort();
+
+    for comp_unique in leftover_keys {
+        let (total_qty, comp_item_template) = &component_qty[&comp_unique];
         let used = consumed.get(&comp_unique).copied().unwrap_or(0);
         let leftover = total_qty.saturating_sub(used);
         if leftover > 0 {
