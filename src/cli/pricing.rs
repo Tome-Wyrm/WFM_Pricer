@@ -451,7 +451,8 @@ pub(crate) fn sort_candidates(
         } else if !a_listed && b_listed {
             std::cmp::Ordering::Greater
         } else {
-            b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal)
+            // .1 = wa_price (list price), not .4 (score) — descending
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
         }
     });
     priced
