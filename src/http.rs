@@ -9,6 +9,7 @@
 //!
 //! This mirrors the `stats_http_client()` pattern already used in `pricing.rs`
 //! for the (higher-volume) statistics endpoint; this one is for everything else.
+
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -16,6 +17,11 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Returns the process-wide shared HTTP client, building it on first use.
+///
+/// # Panics
+/// Panics if the underlying `reqwest::Client` cannot be built (e.g., due to an
+/// invalid configuration or system resource exhaustion). This is a fatal error
+/// because the application cannot function without an HTTP client.
 pub fn shared_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
