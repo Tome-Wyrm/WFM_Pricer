@@ -9,8 +9,10 @@ use crate::models::{
     BlacklistConfig, KeepConfig, KeepRule, MappedItem, WfcdItem, WfmItem, WfmStatsResponse,
 };
 use crate::pricing::{
-    calculate_saturation_ratio, calculate_weighted_average, derive_endo_to_plat_from_mods,
-    fetch_statistics, get_ayatan_endo_yield, get_fusion_cost_from_zero, is_antique, recent_volume,
+    StatsSource, aggregate_sets_with_prices, calculate_saturation_ratio,
+    calculate_weighted_average, derive_endo_to_plat_from_mods, fetch_statistics, filter_candidates,
+    get_ayatan_endo_yield, get_fusion_cost_from_zero, is_antique, recent_volume,
+    upgrade_suggestion,
 };
 use crate::wfm_client::{
     self, CreateOrder, Credentials, Order as OwnedOrder, UpdateOrder, WfmClient,
@@ -20,7 +22,6 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 
 // ── Submodule declarations ─────────────────────────────────────────────
-mod aggregation;
 mod candidate;
 mod check_sets;
 mod config_io;
@@ -39,7 +40,6 @@ pub use sell::run_cli;
 pub use sell_relics::run_sell_relics_cli;
 
 // ── Re‑export everything needed by submodules (via super::*) ──────────
-pub(crate) use aggregation::*;
 pub(crate) use candidate::*;
 pub(crate) use config_io::*;
 pub(crate) use data::*;
