@@ -1,15 +1,20 @@
 use crate::AppResult;
+use crate::services::ListingSyncService;
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    BuildParentMap, BuildRequirements, Credentials, LiveStatsSource, MappedItem, SessionReport,
-    WfcdItem, WfmClient, WfmItem, build_priced_candidates, derive_endo_to_plat_from_mods,
-    fetch_user_listings, filter_candidates, load_blacklist, load_credentials, load_keeplist,
-    print_header, print_info, print_upgrade_suggestions, process_candidates, sort_candidates,
-    tsprintln, write_session_report,
+    BuildParentMap, BuildRequirements, MappedItem, SessionReport, WfcdItem, WfmItem,
+    print_header, print_info, print_upgrade_suggestions, process_candidates, tsprintln,
+    write_session_report,
 };
 
 /// Runs the interactive CLI loop.
+///
+/// Setup (auth, fetching current listings, pricing/ranking every candidate) is handled by
+/// `services::ListingSyncService` — this function announces progress around that one call,
+/// then runs the interactive per-item loop (`process_candidates`) that has to stay here
+/// since it prompts the user for a decision on each candidate as it goes, not after the
+/// whole list is ready.
 ///
 /// # Errors
 /// Returns an error if:
@@ -30,66 +35,40 @@ pub async fn run_cli(
 ) -> AppResult<()> {
     print_header("Warframe.Market Advisor Session Init");
 
-    let (email, password) = load_credentials()?;
-    let creds = Credentials::new(&email, &password, Credentials::generate_device_id());
-    let wfm_client = WfmClient::from_credentials(creds).await?;
-    let username = wfm_client.get_username().await?;
-
-    let (user_listings, existing_listings_map) = fetch_user_listings(&wfm_client).await?;
-    let candidates = filter_candidates(mapped_items, parent_map);
-    tsprintln!(
-        "Identified {} tradeable high-value candidates.",
-        candidates.len()
-    );
-
-    tsprintln!("Deriving dynamic Endo exchange rate from Ayatan prices...");
-    let endo_rate = derive_endo_to_plat_from_mods().await;
-    print_info(
-        "Derived Endo Rate",
-        &format!(
-            "{:.5} plat/endo (or {:.1} plat per 1000 endo)",
-            endo_rate,
-            endo_rate * 1000.0
-        ),
-    );
-
-    print_header("Trade Candidate Evaluation");
-    tsprintln!("Fetching WFM pricing and volume stats dynamically for candidates...");
-
-    let (priced_candidates, upgrade_suggestions) = build_priced_candidates(
-        candidates,
-        endo_rate,
+    let mut sync = ListingSyncService::sync(
+        mapped_items,
         parent_map,
         requirements,
         wfcd_by_ref,
         wfm_by_name,
-        &LiveStatsSource,
+        min_price,
     )
-    .await;
-    print_upgrade_suggestions(&upgrade_suggestions);
+    .await?;
 
-    let priced_candidates = sort_candidates(priced_candidates, &existing_listings_map);
-    let priced_candidates: Vec<_> = if let Some(min) = min_price {
-        priced_candidates
-            .into_iter()
-            .filter(|c| c.1 >= min)
-            .collect()
-    } else {
-        priced_candidates
-    };
+    tsprintln!(
+        "Identified {} tradeable high-value candidates.",
+        sync.candidate_count
+    );
+    print_info(
+        "Derived Endo Rate",
+        &format!(
+            "{:.5} plat/endo (or {:.1} plat per 1000 endo)",
+            sync.endo_rate,
+            sync.endo_rate * 1000.0
+        ),
+    );
 
-    let mut blacklist_set = load_blacklist()?;
-    let mut keeplist = load_keeplist()?;
-    let mut active_slots_count = user_listings.len();
+    print_header("Trade Candidate Evaluation");
+    print_upgrade_suggestions(&sync.upgrade_suggestions);
 
     let session_items = process_candidates(
-        priced_candidates,
-        &existing_listings_map,
-        &wfm_client,
-        endo_rate,
-        &mut blacklist_set,
-        &mut keeplist,
-        &mut active_slots_count,
+        sync.priced_candidates,
+        &sync.existing_listings_map,
+        &sync.wfm_client,
+        sync.endo_rate,
+        &mut sync.blacklist_set,
+        &mut sync.keeplist,
+        &mut sync.active_slots_count,
         parent_map,
         mastered_set,
         owned_built_set,
@@ -98,7 +77,7 @@ pub async fn run_cli(
 
     let report = SessionReport {
         timestamp: chrono::Utc::now().to_rfc3339(),
-        username,
+        username: sync.username,
         items_processed: session_items,
     };
     write_session_report(&report)?;
