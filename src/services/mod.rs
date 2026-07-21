@@ -16,5 +16,9 @@
 //! doc comment for exactly what it replaced.
 
 mod inventory_import;
+mod set_analysis;
 
 pub use inventory_import::{ImportedInventory, InventoryImportService};
+pub use set_analysis::{
+    IncompleteSetInfo, PricedIncompleteSet, SetAnalysis, SetAnalysisService, SetPricingResult,
+};

@@ -7,7 +7,8 @@
 //! orchestration logic itself.
 
 use crate::{
-    AppResult, Cli, Commands, cli, debug_mastery, http, ingestion, mapping, tsprintln, vendor,
+    AppResult, Cli, Commands, cli, debug_mastery, ingestion, mapping,
+    services::InventoryImportService, tsprintln, vendor,
 };
 use std::path::{Path, PathBuf};
 
@@ -40,44 +41,34 @@ async fn run_default_pipeline(
     // 1. Update caches (fail fast if this doesn't work)
     mapping::update_caches().await?;
 
-    // 2. Ingest inventory
-    tsprintln!("Ingesting inventory...");
-    let inventory_path = resolve_inventory_path(inventory_override)?;
-    let inventory = ingestion::ingest_inventory(&inventory_path)?;
+    // 2-4. Ingest + map inventory, load build/lookup/mastery context. Same sequence
+    // `--check-sets` runs — pulled into a shared application service (Phase 1.5) so the
+    // two can't drift apart the way they had started to.
+    tsprintln!("Ingesting and mapping inventory...");
+    let imported = InventoryImportService::import(inventory_override).await?;
 
-    // 3. Map inventory to WFM items
-    tsprintln!("Mapping inventory items to Warframe.Market tradeable items...");
-    let mapped = mapping::map_inventory(&inventory, http::shared_client()).await?;
-
-    // 4. Load build maps and mastery status (needed for auto‑keep logic)
-    tsprintln!("Loading build maps and mastery status...");
-    let (parent_map, requirements) = mapping::load_build_maps()?;
-    let (wfcd_by_ref, wfm_by_ref, wfm_by_name, _wfm_by_slug) = mapping::load_lookup_tables()?;
-    let (mastered_set, owned_built_set, frame_tier_uniques) =
-        mapping::load_mastery_and_ownership(&inventory, &wfcd_by_ref);
-
-    tsprintln!("Successfully mapped {} items!", mapped.len());
+    tsprintln!("Successfully mapped {} items!", imported.mapped.len());
 
     if debug_mastery {
         debug_mastery::run_debug_mastery_checklist(
-            &inventory,
-            &wfcd_by_ref,
-            &wfm_by_ref,
-            &wfm_by_name,
-            &mastered_set,
-            &frame_tier_uniques,
+            &imported.inventory,
+            &imported.wfcd_by_ref,
+            &imported.wfm_by_ref,
+            &imported.wfm_by_name,
+            &imported.mastered_set,
+            &imported.frame_tier_uniques,
         )?;
     }
 
     // 5. Run interactive CLI
     cli::run_cli(
-        mapped,
-        &parent_map,
-        &mastered_set,
-        &owned_built_set,
-        &requirements,
-        &wfcd_by_ref,
-        &wfm_by_name,
+        imported.mapped,
+        &imported.parent_map,
+        &imported.mastered_set,
+        &imported.owned_built_set,
+        &imported.requirements,
+        &imported.wfcd_by_ref,
+        &imported.wfm_by_name,
         min_price,
     )
     .await?;
