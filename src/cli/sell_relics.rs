@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::{AppResult, http};
+use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
 use super::{capitalize_tier, mapping, print_header, tseprintln, tsprintln, wfm_client};

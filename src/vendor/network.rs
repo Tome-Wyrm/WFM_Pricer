@@ -3,9 +3,9 @@
 //! into `RawVendor`s.
 use super::lua::{LuaKey, parse, tokenize};
 use super::raw::{RawVendor, parse_raw_vendor, write_vendor_cache};
+use crate::AppResult;
 use crate::tsprintln;
 use serde::{Deserialize, Serialize};
-use crate::AppResult;
 use std::fs;
 use std::path::Path;
 

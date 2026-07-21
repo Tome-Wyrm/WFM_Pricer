@@ -1,7 +1,7 @@
+use crate::AppResult;
 use aes::Aes128;
 use cbc::Decryptor;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit};
-use crate::AppResult;
 
 type Aes128CbcDec = Decryptor<Aes128>;
 

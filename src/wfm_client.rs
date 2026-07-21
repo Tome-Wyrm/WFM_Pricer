@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::AppResult;
+use serde::{Deserialize, Serialize};
 
 /// Categorizes a non-2xx response from a WFM API endpoint, so callers (and eventually
 /// the CLI) can react differently to "back off and retry" (`RateLimited`), "the token is
@@ -23,12 +23,19 @@ impl std::fmt::Display for WfmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WfmError::Authentication { context } => {
-                write!(f, "WFM authentication failed ({context}) — token missing, expired, or rejected")
+                write!(
+                    f,
+                    "WFM authentication failed ({context}) — token missing, expired, or rejected"
+                )
             }
             WfmError::RateLimited { context } => {
                 write!(f, "WFM API rate limited ({context}) — back off and retry")
             }
-            WfmError::ApiStatus { status, body, context } => {
+            WfmError::ApiStatus {
+                status,
+                body,
+                context,
+            } => {
                 write!(f, "WFM API error ({context}): {status} - {body}")
             }
         }
@@ -51,7 +58,11 @@ pub async fn wfm_error_for_status(resp: reqwest::Response, context: impl Into<St
         }
         _ => {
             let body = resp.text().await.unwrap_or_default();
-            WfmError::ApiStatus { status, body, context }
+            WfmError::ApiStatus {
+                status,
+                body,
+                context,
+            }
         }
     }
 }
@@ -447,9 +458,7 @@ impl WfmClient {
     /// Returns an error if the HTTP client cannot be built, the sign-in request fails or
     /// returns a non-success status, or the response doesn't contain a usable JWT token in
     /// either the `Authorization` header or the response body.
-    pub async fn from_credentials(
-        creds: Credentials,
-    ) -> AppResult<Self> {
+    pub async fn from_credentials(creds: Credentials) -> AppResult<Self> {
         // Deliberately its own client, not the shared `http::shared_client()` pool: this one
         // carries session cookies for an authenticated user, and must not be reused for
         // anonymous public requests (or vice versa). Timeouts match the shared client for
@@ -540,7 +549,9 @@ impl WfmClient {
             .await?;
 
         if !resp.status().is_success() {
-            return Err(Box::new(wfm_error_for_status(resp, "fetching username").await));
+            return Err(Box::new(
+                wfm_error_for_status(resp, "fetching username").await,
+            ));
         }
 
         let val: serde_json::Value = resp.json().await?;
@@ -579,10 +590,7 @@ impl WfmClient {
 
     /// # Errors
     /// Returns an error if the request fails or the server returns a non-success status.
-    pub async fn create_order(
-        &self,
-        order: CreateOrder,
-    ) -> AppResult<()> {
+    pub async fn create_order(&self, order: CreateOrder) -> AppResult<()> {
         let resp = self
             .client
             .post("https://api.warframe.market/v2/order")
@@ -604,11 +612,7 @@ impl WfmClient {
 
     /// # Errors
     /// Returns an error if the request fails or the server returns a non-success status.
-    pub async fn update_order(
-        &self,
-        order_id: &str,
-        update: UpdateOrder,
-    ) -> AppResult<()> {
+    pub async fn update_order(&self, order_id: &str, update: UpdateOrder) -> AppResult<()> {
         let url = format!("https://api.warframe.market/v2/order/{order_id}");
         let resp = self
             .client

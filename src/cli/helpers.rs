@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet};
 use crate::AppResult;
+use std::collections::{HashMap, HashSet};
 
 use super::{
-    BuildParentMap, BuildStatus, ListingKey, MappedItem, NoOpDecision, OwnedOrder,
-    PRICE_TOLERANCE_PCT, WfmClient, get_build_status, tsprintln,
+    BuildParentMap, BuildStatus, ENDO_LISTING_MARGIN, ListingKey, MAX_LISTING_SLOTS, MappedItem,
+    NoOpDecision, OwnedOrder, PRICE_TOLERANCE_PCT, WfmClient, get_build_status, tsprintln,
 };
 
 pub(crate) fn get_auto_keep(
@@ -47,6 +47,142 @@ mod keep_quantity_tests {
         // manual keeplist says 0 (or doesn't mention the item), but the build is still
         // "not built" — the auto floor of 1 must still win.
         assert_eq!(resolve_keep_copies(0, 1), 1);
+    }
+}
+
+/// Decides whether reserving `keep_copies` out of `quantity` leaves anything to sell.
+/// Returns `None` if the whole quantity should be reserved (skip this candidate);
+/// otherwise `Some(remaining)` with the keep-copies already subtracted.
+pub(crate) fn apply_keep_reservation(quantity: u32, keep_copies: u32) -> Option<u32> {
+    if keep_copies == 0 {
+        return Some(quantity);
+    }
+    if quantity <= keep_copies {
+        None
+    } else {
+        Some(quantity - keep_copies)
+    }
+}
+
+#[cfg(test)]
+mod keep_reservation_tests {
+    use super::*;
+
+    #[test]
+    fn no_keep_copies_leaves_quantity_untouched() {
+        assert_eq!(apply_keep_reservation(10, 0), Some(10));
+    }
+
+    #[test]
+    fn keep_equal_to_quantity_reserves_everything() {
+        assert_eq!(apply_keep_reservation(2, 2), None);
+    }
+
+    #[test]
+    fn keep_greater_than_quantity_reserves_everything() {
+        assert_eq!(apply_keep_reservation(1, 5), None);
+    }
+
+    #[test]
+    fn keep_less_than_quantity_leaves_the_remainder() {
+        assert_eq!(apply_keep_reservation(5, 2), Some(3));
+    }
+}
+
+/// True if the market price is worth listing rather than melting an Ayatan sculpture for
+/// Endo. `endo_value` is `endo_yield * endo_rate`; see `ENDO_LISTING_MARGIN` for why a
+/// margin over the guaranteed melt value is required.
+pub(crate) fn is_worth_listing_over_endo(wa_price: f64, endo_value: f64) -> bool {
+    wa_price >= endo_value * ENDO_LISTING_MARGIN
+}
+
+#[cfg(test)]
+mod endo_worth_listing_tests {
+    use super::*;
+
+    #[test]
+    fn price_below_margin_is_not_worth_listing() {
+        // endo_value 100 * 1.15 margin = 115 required; 110 falls short.
+        assert!(!is_worth_listing_over_endo(110.0, 100.0));
+    }
+
+    #[test]
+    fn price_at_or_above_margin_is_worth_listing() {
+        assert!(is_worth_listing_over_endo(115.0, 100.0));
+        assert!(is_worth_listing_over_endo(200.0, 100.0));
+    }
+}
+
+/// How much of `item_qty` is available to list given what's already listed across
+/// matching orders. Saturating: a stale/over-counted `listed_qty` never underflows.
+pub(crate) fn compute_available_quantity(item_qty: u32, listed_qty: u32) -> u32 {
+    item_qty.saturating_sub(listed_qty)
+}
+
+#[cfg(test)]
+mod available_quantity_tests {
+    use super::*;
+
+    #[test]
+    fn subtracts_listed_from_owned() {
+        assert_eq!(compute_available_quantity(10, 3), 7);
+    }
+
+    #[test]
+    fn never_underflows_when_listed_exceeds_owned() {
+        assert_eq!(compute_available_quantity(2, 5), 0);
+    }
+}
+
+/// True if creating a new listing for this candidate would exceed WFM's slot budget.
+/// Already-listed items are exempt since they're updated in place, not given a new slot.
+pub(crate) fn slot_budget_exceeded(active_slots_count: usize, is_already_listed: bool) -> bool {
+    active_slots_count >= MAX_LISTING_SLOTS && !is_already_listed
+}
+
+#[cfg(test)]
+mod slot_budget_tests {
+    use super::*;
+
+    #[test]
+    fn new_listing_at_full_budget_is_blocked() {
+        assert!(slot_budget_exceeded(MAX_LISTING_SLOTS, false));
+    }
+
+    #[test]
+    fn update_to_existing_listing_is_never_blocked() {
+        assert!(!slot_budget_exceeded(MAX_LISTING_SLOTS, true));
+    }
+
+    #[test]
+    fn below_budget_is_not_blocked() {
+        assert!(!slot_budget_exceeded(MAX_LISTING_SLOTS - 1, false));
+    }
+}
+
+/// Clamps a user-entered (or default) Ayatan star count to the sculpture's max for that
+/// color slot.
+pub(crate) fn clamp_ayatan_stars(stars: Option<u8>, max: u8) -> u8 {
+    stars.unwrap_or(max).min(max)
+}
+
+#[cfg(test)]
+mod clamp_ayatan_stars_tests {
+    use super::*;
+
+    #[test]
+    fn missing_input_defaults_to_max() {
+        assert_eq!(clamp_ayatan_stars(None, 3), 3);
+    }
+
+    #[test]
+    fn input_over_max_is_clamped() {
+        assert_eq!(clamp_ayatan_stars(Some(9), 3), 3);
+    }
+
+    #[test]
+    fn input_within_range_passes_through() {
+        assert_eq!(clamp_ayatan_stars(Some(1), 3), 1);
     }
 }
 

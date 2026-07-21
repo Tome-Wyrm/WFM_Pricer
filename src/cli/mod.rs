@@ -50,6 +50,14 @@ pub(crate) use report::*;
 // ── Shared types and constants ────────────────────────────────────────
 pub(crate) const PRICE_TOLERANCE_PCT: f64 = 0.03;
 
+/// WFM's maximum number of simultaneous sell listings per account.
+pub(crate) const MAX_LISTING_SLOTS: usize = 100;
+
+/// Minimum ratio of (market price / Endo-melt value) required before a sculpture is worth
+/// listing rather than melting. Melting is instant and riskless; a market listing carries
+/// time and platform-fee risk, so it needs a margin over the guaranteed Endo value.
+pub(crate) const ENDO_LISTING_MARGIN: f64 = 1.15;
+
 pub(crate) enum NoOpDecision {
     TrueNoOp,
     QuantitySyncOnly { new_quantity: u32, keep_price: u32 },

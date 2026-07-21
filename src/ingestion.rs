@@ -1,5 +1,5 @@
-use crate::decryption::decrypt;
 use crate::AppResult;
+use crate::decryption::decrypt;
 use std::fs;
 use std::path::{Path, PathBuf};
 

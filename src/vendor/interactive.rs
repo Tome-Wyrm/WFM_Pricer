@@ -4,8 +4,8 @@
 use super::matching::{MappedVendor, build_and_write_vendor_cache, print_match_report};
 use super::network::fetch_and_cache_vendors;
 use super::scoring::{RankedOffering, rank_offerings};
-use crate::{tsprint, tsprintln};
 use crate::AppResult;
+use crate::{tsprint, tsprintln};
 use std::fs;
 use std::io::Write;
 

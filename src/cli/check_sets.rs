@@ -108,8 +108,7 @@ pub async fn run_check_sets_cli(min_profit: Option<f64>) -> AppResult<()> {
 
         let mut unpriced_reason: Option<String> = None;
 
-        let set_sell_price = match wfm_client::fetch_item_orders(client, &set_wfm_item.slug).await
-        {
+        let set_sell_price = match wfm_client::fetch_item_orders(client, &set_wfm_item.slug).await {
             Ok(orders) => wfm_client::best_sell_price(&orders, None),
             Err(e) => {
                 unpriced_reason = Some(format!("failed to fetch orders for the Set: {e}"));

@@ -2,8 +2,8 @@
 //! build's WFM "Set" item, tracking build status against mastery/ownership, and finding
 //! partially-assembled Sets.
 
-use std::collections::{HashMap, HashSet};
 use crate::AppResult;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::{MappedItem, WfcdItem, WfmItem};
 

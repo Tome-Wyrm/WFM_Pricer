@@ -5,10 +5,10 @@ use super::metadata::{
     CostMode, is_tradeable_category, load_vendor_metadata, normalize_item_name, target_rank_for,
 };
 use super::raw::{CurrencySpec, PrereqSpec, PriceSpec, RawOffering, load_vendor_data};
+use crate::AppResult;
 use crate::config;
 use crate::tsprintln;
 use serde::{Deserialize, Serialize};
-use crate::AppResult;
 use std::fs;
 
 /// A `RawOffering` combined with its `vendors.toml` overlay context and WFM match

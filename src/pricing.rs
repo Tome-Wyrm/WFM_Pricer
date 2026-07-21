@@ -1,6 +1,6 @@
+use crate::AppResult;
 use reqwest::header::USER_AGENT;
 use std::collections::HashMap;
-use crate::AppResult;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;

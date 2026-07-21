@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::AppResult;
+use std::collections::HashMap;
 
 use super::{
     BuildParentMap, BuildRequirements, MappedItem, WfcdItem, WfmItem, WfmStatsResponse,

@@ -1,14 +1,16 @@
-use std::collections::{HashMap, HashSet};
 use crate::AppResult;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use tokio::time::{Duration, sleep};
 
 use super::{
     BlacklistConfig, BuildParentMap, CandidateContext, CreateOrder, KeepConfig, ListingKey,
     MappedItem, NoOpDecision, OwnedOrder, SessionReportItem, UpdateOrder, WfmClient,
-    add_to_keeplist, ayatan_max_stars, decide_no_op, find_same_price_order, get_auto_keep,
-    get_ayatan_endo_yield, get_keep_quantity, print_warning, quantity_default,
-    resolve_action_choice, resolve_keep_copies, save_blacklist, tseprintln, tsprint, tsprintln,
+    add_to_keeplist, apply_keep_reservation, ayatan_max_stars, clamp_ayatan_stars,
+    compute_available_quantity, decide_no_op, find_same_price_order, get_auto_keep,
+    get_ayatan_endo_yield, get_keep_quantity, is_worth_listing_over_endo, print_warning,
+    quantity_default, resolve_action_choice, resolve_keep_copies, save_blacklist,
+    slot_budget_exceeded, tseprintln, tsprint, tsprintln,
 };
 
 // This function is a single linear decision pipeline (keep/blacklist checks, price-vs-Endo
@@ -39,18 +41,16 @@ pub(crate) async fn handle_single_candidate(
     };
     let auto_keep = get_auto_keep(&item, ctx.parent_map, ctx.mastered_set, ctx.owned_built_set);
     let keep_copies = resolve_keep_copies(manual_keep, auto_keep);
-    if keep_copies > 0 {
-        if item.quantity <= keep_copies {
-            return Ok(None);
-        }
-        item.quantity -= keep_copies;
+    match apply_keep_reservation(item.quantity, keep_copies) {
+        None => return Ok(None),
+        Some(remaining) => item.quantity = remaining,
     }
 
     if item.is_ayatan
         && let Some(endo_yield) = get_ayatan_endo_yield(&item.slug)
     {
         let endo_value = f64::from(endo_yield) * ctx.endo_rate;
-        if wa_price < endo_value * 1.15 {
+        if !is_worth_listing_over_endo(wa_price, endo_value) {
             tsprintln!(
                 "[SKIP] {} worth {:.1}p as Endo (vs {:.1}p market)",
                 item.name,
@@ -78,14 +78,14 @@ pub(crate) async fn handle_single_candidate(
             .sum()
     });
 
-    let available_qty = item.quantity.saturating_sub(listed_qty);
+    let available_qty = compute_available_quantity(item.quantity, listed_qty);
     let is_already_listed = matching_listings.is_some();
 
     if available_qty == 0 {
         return Ok(None);
     }
 
-    if *ctx.active_slots_count >= 100 && !is_already_listed {
+    if slot_budget_exceeded(*ctx.active_slots_count, is_already_listed) {
         print_warning(&format!(
             "Budget limit reached (100/100 slots). Skipping listing creation candidate: {}",
             item.name
@@ -411,8 +411,8 @@ pub(crate) async fn handle_list_or_update(
         // ── Ayatan stars ──────────────────────────────────────────────────────
         if item.is_ayatan {
             let (max_cyan, max_amber) = ayatan_max_stars(&item.slug);
-            cyan_stars = Some(cyan_stars.unwrap_or(max_cyan).min(max_cyan));
-            amber_stars = Some(amber_stars.unwrap_or(max_amber).min(max_amber));
+            cyan_stars = Some(clamp_ayatan_stars(cyan_stars, max_cyan));
+            amber_stars = Some(clamp_ayatan_stars(amber_stars, max_amber));
 
             if let (Some(c), Some(a)) = (cyan_stars, amber_stars)
                 && (c > 0 || a > 0)

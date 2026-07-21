@@ -3,9 +3,9 @@
 use super::matching::{MappedOffering, MappedVendor};
 use super::metadata::CostMode;
 use super::raw::PriceSpec;
+use crate::AppResult;
 use crate::config;
 use serde::{Deserialize, Serialize};
-use crate::AppResult;
 
 // ================== Phase E: Cost model & multi-currency classification ==================
 

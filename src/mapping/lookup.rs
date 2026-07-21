@@ -1,8 +1,8 @@
 //! Loading the WFCD/WFM cache files into in-memory lookup tables, and matching a WFCD item's
 //! display name against the WFM name index.
 
-use std::collections::HashMap;
 use crate::AppResult;
+use std::collections::HashMap;
 use std::fs;
 
 use crate::config::{WFCD_CACHE_FILE, WFM_CACHE_FILE};

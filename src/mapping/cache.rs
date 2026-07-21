@@ -2,8 +2,8 @@
 //! sources, and the per-item "full item" (subtypes, live `bulkTradable`) cache used during
 //! inventory mapping.
 
-use std::collections::HashMap;
 use crate::AppResult;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -156,9 +156,7 @@ pub(crate) fn load_full_items_cache() -> AppResult<HashMap<String, WfmItem>> {
     Ok(serde_json::from_str(&content)?)
 }
 
-pub(crate) fn save_full_items_cache(
-    cache: &HashMap<String, WfmItem>,
-) -> AppResult<()> {
+pub(crate) fn save_full_items_cache(cache: &HashMap<String, WfmItem>) -> AppResult<()> {
     let content = serde_json::to_string_pretty(cache)?;
     fs::write(FULL_ITEMS_CACHE_FILE, content)?;
     Ok(())

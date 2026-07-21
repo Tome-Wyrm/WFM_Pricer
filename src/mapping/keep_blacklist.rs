@@ -1,8 +1,8 @@
 //! Keeplist/blacklist resolution: filtering blacklisted slugs, reserving kept quantities, and
 //! merging/pooling duplicate mod & arcane entries across rank buckets before reservation runs.
 
-use std::collections::HashMap;
 use crate::AppResult;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 

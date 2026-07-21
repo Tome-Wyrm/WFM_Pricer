@@ -6,7 +6,9 @@
 //! (logging/env/config-dir setup), and handing off to [`run`] — not also owning the
 //! orchestration logic itself.
 
-use crate::{AppResult, Cli, Commands, cli, debug_mastery, http, ingestion, mapping, vendor, tsprintln};
+use crate::{
+    AppResult, Cli, Commands, cli, debug_mastery, http, ingestion, mapping, tsprintln, vendor,
+};
 use std::path::{Path, PathBuf};
 
 /// Resolves the inventory file to ingest: an explicit `--inventory` override, else

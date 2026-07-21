@@ -19,9 +19,7 @@ pub struct SessionReport {
 }
 
 /// Writes the session report to `session_report.json`.
-pub(crate) fn write_session_report(
-    report: &SessionReport,
-) -> AppResult<()> {
+pub(crate) fn write_session_report(report: &SessionReport) -> AppResult<()> {
     let content = serde_json::to_string_pretty(report)?;
     fs::write("session_report.json", content)?;
     Ok(())
