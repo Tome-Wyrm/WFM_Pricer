@@ -28,6 +28,147 @@ pub(crate) struct RelicSellMessage {
     owned_quantity: u32,
 }
 
+/// Outcome of matching one relic/tier's owned quantity against its live buy-order book.
+pub(crate) enum RelicMatch<'a> {
+    /// Best-paying order this account can actually fulfill (lot size ≤ owned quantity, and
+    /// meets `min_price` if one was given).
+    Best(&'a crate::wfm_client::PublicOrder),
+    /// No visible buy orders exist for this tier at all.
+    NoBuyOrders,
+    /// Buy orders exist, but none clear the lot-size/min-price bar.
+    NoFulfillableOrder,
+}
+
+/// Finds the best-paying, fulfillable buy order for one relic/tier. "Fulfillable" means the
+/// order's lot size (`perTrade`) doesn't exceed `owned_qty` — a buy order asking for a bigger
+/// lot than we own of this exact relic/tier can't be delivered on, regardless of price.
+/// Ranks by per-relic rate (`platinum / lot_size`), not raw lot total, since WFM's `platinum`
+/// is the price for the whole lot, not per relic.
+///
+/// Pulled out of `run_sell_relics_cli`'s per-tier loop specifically so the matching rules are
+/// unit-testable against hand-built `PublicOrder` fixtures, without a live order-book fetch.
+pub(crate) fn best_fulfillable_relic_order<'a>(
+    orders: &'a [crate::wfm_client::PublicOrder],
+    tier: &str,
+    owned_qty: u32,
+    min_price: Option<u32>,
+) -> RelicMatch<'a> {
+    let buy_orders_for_tier = || {
+        orders
+            .iter()
+            .filter(|o| o.is_buy() && o.visible && o.subtype.as_deref() == Some(tier))
+    };
+    let unit_price =
+        |o: &crate::wfm_client::PublicOrder| f64::from(o.platinum) / f64::from(o.lot_size());
+
+    let mut candidates: Vec<&crate::wfm_client::PublicOrder> = buy_orders_for_tier()
+        .filter(|o| o.lot_size() <= owned_qty)
+        .collect();
+    if let Some(min) = min_price {
+        candidates.retain(|o| unit_price(o) >= f64::from(min));
+    }
+
+    match candidates
+        .iter()
+        .max_by(|a, b| unit_price(a).total_cmp(&unit_price(b)))
+    {
+        Some(best) => RelicMatch::Best(best),
+        None => {
+            if buy_orders_for_tier().next().is_some() {
+                RelicMatch::NoFulfillableOrder
+            } else {
+                RelicMatch::NoBuyOrders
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod relic_match_tests {
+    use super::*;
+    use crate::wfm_client::{PublicOrder, PublicOrderUser};
+
+    fn buy_order(
+        platinum: u32,
+        per_trade: Option<u32>,
+        subtype: &str,
+        visible: bool,
+    ) -> PublicOrder {
+        PublicOrder {
+            order_type: "buy".to_string(),
+            platinum,
+            quantity: 100,
+            visible,
+            rank: None,
+            subtype: Some(subtype.to_string()),
+            per_trade,
+            user: Some(PublicOrderUser {
+                ingame_name: "buyer".to_string(),
+                status: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn no_orders_at_all_is_no_buy_orders() {
+        let orders: Vec<PublicOrder> = vec![];
+        assert!(matches!(
+            best_fulfillable_relic_order(&orders, "radiant", 5, None),
+            RelicMatch::NoBuyOrders
+        ));
+    }
+
+    #[test]
+    fn orders_exist_but_lot_too_big_is_no_fulfillable_order() {
+        let orders = vec![buy_order(40, Some(6), "radiant", true)];
+        assert!(matches!(
+            best_fulfillable_relic_order(&orders, "radiant", 3, None),
+            RelicMatch::NoFulfillableOrder
+        ));
+    }
+
+    #[test]
+    fn invisible_order_is_ignored() {
+        let orders = vec![buy_order(100, Some(1), "radiant", false)];
+        assert!(matches!(
+            best_fulfillable_relic_order(&orders, "radiant", 5, None),
+            RelicMatch::NoBuyOrders
+        ));
+    }
+
+    #[test]
+    fn picks_best_per_relic_rate_not_raw_total() {
+        // 6-relic lot at 40p total (~6.67p/relic) should lose to a single-relic order at 10p.
+        let orders = vec![
+            buy_order(40, Some(6), "radiant", true),
+            buy_order(10, Some(1), "radiant", true),
+        ];
+        let RelicMatch::Best(best) = best_fulfillable_relic_order(&orders, "radiant", 10, None)
+        else {
+            panic!("expected a fulfillable match");
+        };
+        assert_eq!(best.platinum, 10);
+    }
+
+    #[test]
+    fn min_price_filters_out_low_rate_orders() {
+        let orders = vec![buy_order(40, Some(6), "radiant", true)]; // ~6.67p/relic
+        assert!(matches!(
+            best_fulfillable_relic_order(&orders, "radiant", 10, Some(10)),
+            RelicMatch::NoFulfillableOrder
+        ));
+    }
+
+    #[test]
+    fn wrong_tier_is_not_matched() {
+        let orders = vec![buy_order(100, Some(1), "intact", true)];
+        assert!(matches!(
+            best_fulfillable_relic_order(&orders, "radiant", 5, None),
+            RelicMatch::NoBuyOrders
+        ));
+    }
+}
+
 /// `sell-relics`: matches owned relics (by refinement/tier) against the live public buy-order
 /// book and prints a whisper message for the best-paying, fulfillable buy order on each one,
 /// sorted descending by per-relic rate (platinum ÷ perTrade lot size — see the `unit_price`
@@ -148,42 +289,16 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> AppResult<()> {
                 .copied()
                 .unwrap_or(0);
 
-            let buy_orders_for_tier = || {
-                orders.iter().filter(|o| {
-                    o.is_buy() && o.visible && o.subtype.as_deref() == Some(tier.as_str())
-                })
-            };
-
-            // Only buy orders whose lot size (perTrade) we can actually cover with what's in
-            // inventory count as fulfillable — a buy order asking for a bigger lot than we own
-            // of this exact relic/tier can't be delivered on, regardless of price.
-            let mut candidates: Vec<&crate::wfm_client::PublicOrder> = buy_orders_for_tier()
-                .filter(|o| o.lot_size() <= owned_qty)
-                .collect();
-
-            // WFM's `platinum` is the price for the whole lot (perTrade relics), not per
-            // relic — a 6-relic lot at platinum: 40 is ~6.67p/relic, not 40p/relic. Both
-            // `--min-price` and "best" order selection need to compare on that per-relic rate,
-            // or a large low-value lot can look like the best (or only qualifying) offer when
-            // it's actually the worst.
-            let unit_price = |o: &crate::wfm_client::PublicOrder| {
-                f64::from(o.platinum) / f64::from(o.lot_size())
-            };
-
-            if let Some(min) = min_price {
-                candidates.retain(|o| unit_price(o) >= f64::from(min));
-            }
-
-            let Some(best) = candidates
-                .iter()
-                .max_by(|a, b| unit_price(a).total_cmp(&unit_price(b)))
-            else {
-                if buy_orders_for_tier().next().is_some() {
-                    no_fulfillable_order += 1;
-                } else {
+            let best = match best_fulfillable_relic_order(&orders, &tier, owned_qty, min_price) {
+                RelicMatch::Best(order) => order,
+                RelicMatch::NoBuyOrders => {
                     no_buy_orders += 1;
+                    continue;
                 }
-                continue;
+                RelicMatch::NoFulfillableOrder => {
+                    no_fulfillable_order += 1;
+                    continue;
+                }
             };
 
             let Some(user) = &best.user else {
