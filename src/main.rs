@@ -19,6 +19,7 @@ pub mod logging;
 pub mod mapping;
 pub mod models;
 pub mod pricing;
+pub mod services;
 pub mod vendor;
 pub mod wfm_client;
 
