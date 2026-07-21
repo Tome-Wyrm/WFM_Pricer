@@ -1,0 +1,545 @@
+# WFM Pricer — Architecture Evolution Plan (v0.2)
+
+## Purpose
+
+WFM Pricer is evolving from a command-line pricing utility into a modular, local-first desktop application.
+
+The project's long-term goals are:
+
+* Accurate market analysis
+* Historical price analytics
+* Automated pricing recommendations
+* Vendor profitability analysis
+* Inventory valuation
+* Future graphical interface
+* Clean, maintainable architecture
+
+The CLI remains a supported interface but should become one presentation layer over a reusable application core.
+
+---
+
+# Current Architecture Status
+
+## Completed
+
+* Modular CLI architecture
+* Application orchestration (`app.rs`)
+* HTTP abstraction
+* WFM client abstraction
+* Pricing engine
+* Mapping subsystem
+* Vendor subsystem
+* Logging subsystem
+* Configuration system
+* Phase 1 architecture cleanup
+
+## In Progress
+
+* Vendor reference data
+* Database design
+* Application service planning
+
+## Planned
+
+* Repository layer
+* SQLite persistence
+* Historical market database
+* GUI
+* Interactive analytics
+
+---
+
+# Guiding Principles
+
+## Separation of Concerns
+
+The application should clearly separate:
+
+Presentation
+
+* CLI
+* Future GUI
+
+Application
+
+* User-facing workflows
+* Cross-domain coordination
+
+Domain
+
+* Pricing
+* Mapping
+* Vendors
+* Inventory
+* Market analysis
+
+Persistence
+
+* Repositories
+* Validation
+* Data migration
+
+Storage
+
+* SQLite databases
+
+---
+
+## Domain Ownership
+
+Each subsystem owns its own rules.
+
+Pricing determines value.
+
+Mapping determines identity.
+
+Vendor handles vendor-specific mechanics.
+
+Repositories handle persistence.
+
+Presentation formats results.
+
+No layer should depend on implementation details of another.
+
+---
+
+## Temporary Systems Are Acceptable
+
+Temporary implementations are encouraged when they provide immediate value and have a clear migration path.
+
+Examples:
+
+JSON statistics cache
+
+↓
+
+Market database
+
+CLI-only workflow
+
+↓
+
+CLI + GUI
+
+Hardcoded/configured vendor watchlists
+
+↓
+
+Reference database
+
+The project should prefer incremental migration over large rewrites.
+
+---
+
+## Local-First
+
+The application is designed to function primarily from locally stored data.
+
+Network services update local databases.
+
+Analytics operate against local data.
+
+---
+
+# Target Architecture
+
+```text
+                 GUI
+                  │
+                  │
+                 CLI
+                  │
+                  ▼
+        Application Services
+                  │
+      ┌───────────┼───────────┐
+      │           │           │
+  Pricing     Vendor      Mapping
+    Engine      Engine       Engine
+      │           │           │
+      └───────────┼───────────┘
+                  │
+            Repositories
+                  │
+      ┌───────────┼───────────┐
+      │           │           │
+   market.db  reference.db profile.db
+```
+
+Presentation layers should contain minimal business logic.
+
+---
+
+# Phase 1 — Clarify Module Boundaries ✅
+
+## Goal
+
+Separate presentation from decision logic.
+
+### Completed
+
+* Extracted pure decision logic from interactive CLI workflows.
+* Relocated misplaced aggregation logic into the pricing domain.
+* Removed magic constants.
+* Increased unit-test coverage.
+* Moved temporary Primed Mods data toward configuration.
+* Added module documentation.
+* Established clearer ownership boundaries.
+
+## Ongoing Rule
+
+CLI modules should primarily:
+
+* Parse arguments
+* Collect user input
+* Display output
+* Invoke application services
+
+Business decisions belong elsewhere.
+
+---
+
+# Phase 1.5 — Introduce Application Services
+
+## Goal
+
+Create presentation-independent workflows shared by CLI and future GUI.
+
+These services coordinate multiple domains without containing presentation logic.
+
+Examples:
+
+* PriceInventoryService
+* VendorAnalysisService
+* ListingSyncService
+* MarketRefreshService
+* InventoryImportService
+* SetAnalysisService
+
+Application services may depend on multiple domain modules.
+
+Domain modules should not depend on application services.
+
+### Acceptance Criteria
+
+* CLI becomes thin orchestration.
+* GUI can invoke services directly.
+* Cross-domain workflows have a single implementation.
+* Services return structured models instead of formatted text.
+
+---
+
+# Phase 2 — Repository Layer
+
+## Goal
+
+Introduce persistence abstractions before changing storage.
+
+Repositories define the application's persistence API.
+
+Examples:
+
+* StatisticsRepository
+* MarketRepository
+* ReferenceRepository
+* InventoryRepository
+* VendorRepository
+* SettingsRepository
+
+Initially repositories may wrap existing JSON or in-memory implementations.
+
+Later they become SQLite-backed without affecting domain logic.
+
+### Acceptance Criteria
+
+* Business logic does not execute SQL directly.
+* Storage implementation becomes replaceable.
+* Validation occurs at repository boundaries.
+
+---
+
+# Phase 3 — SQLite Persistence
+
+## Goal
+
+Replace file-based caches with structured storage.
+
+Three SQLite databases will be used.
+
+---
+
+## market.db
+
+Purpose:
+
+Market knowledge.
+
+Stores:
+
+* Market statistics
+* Historical snapshots
+* Volatility
+* Shock detection
+* Price models
+* API refresh history
+* Market metadata
+
+Characteristics:
+
+* Frequently updated
+* Fully regenerable
+* Analytics-focused
+
+---
+
+## reference.db
+
+Purpose:
+
+Canonical game knowledge.
+
+Stores:
+
+* Vendors
+* Vendor inventories
+* Item metadata
+* Blueprint relationships
+* Mastery requirements
+* Standing systems
+* Alias tables
+* Other curated reference data
+
+Characteristics:
+
+* Slowly changing
+* Curated
+* Version-controlled
+
+---
+
+## profile.db
+
+Purpose:
+
+User-specific information.
+
+Stores:
+
+* Inventory
+* Mastery
+* Settings
+* Authentication
+* Listing history
+* Watchlists
+* Saved filters
+
+Characteristics:
+
+* Unique per user
+* Highest backup priority
+* Never regenerated
+
+---
+
+### Acceptance Criteria
+
+* Transactions replace file writes.
+* Historical data is queryable.
+* Corruption from partial writes is eliminated.
+* Business logic remains storage-agnostic.
+
+---
+
+# Phase 4 — Reference Data System
+
+## Goal
+
+Build a curated authoritative reference database.
+
+The application should not rely on community sources being perfectly accurate.
+
+Community data becomes an input.
+
+The reference database becomes the authority.
+
+---
+
+## Initial Modules
+
+* Vendors
+* Vendor inventories
+* Standing currencies
+* Blueprint relationships
+* Item aliases
+* Item metadata
+
+---
+
+## Import Pipeline
+
+Reference spreadsheets
+
+↓
+
+Validation
+
+↓
+
+Importer
+
+↓
+
+reference.db
+
+Validation should detect:
+
+* Duplicate entries
+* Unknown items
+* Invalid currencies
+* Broken references
+* Missing required fields
+
+---
+
+## Future Reference Modules
+
+* Crafting recipes
+* Drop tables
+* Prime Vault history
+* Mission rewards
+* Syndicates
+* Resources
+* Event schedules
+
+---
+
+### Acceptance Criteria
+
+* New vendors can be added through curated data.
+* External sources become optional.
+* Data quality is deterministic and reproducible.
+
+---
+
+# Phase 5 — Market Knowledge
+
+## Goal
+
+Treat market information as historical knowledge instead of cached downloads.
+
+Examples:
+
+* Price history
+* Rolling averages
+* Volatility
+* Seasonal behavior
+* Recovery detection
+* Market shocks
+
+Future analytics should operate from stored history rather than downloaded snapshots.
+
+### Acceptance Criteria
+
+* Historical analysis becomes first-class.
+* Missing data is detectable.
+* Confidence metrics become available.
+
+---
+
+# Phase 6 — GUI
+
+## Goal
+
+Create a desktop application using the existing architecture.
+
+Potential sections:
+
+Dashboard
+
+* Portfolio value
+* Market changes
+* Alerts
+
+Inventory
+
+* Owned items
+* Missing components
+* Sell recommendations
+
+Market
+
+* Historical charts
+* Volatility
+* Trend analysis
+
+Vendors
+
+* Current inventories
+* Profit opportunities
+
+Listings
+
+* Active orders
+* Synchronization
+* Recommendations
+
+Settings
+
+* Profiles
+* Databases
+* Refresh scheduling
+
+### Acceptance Criteria
+
+* GUI contains minimal business logic.
+* Existing CLI functionality remains.
+* Both interfaces use identical application services.
+
+---
+
+# Future Features
+
+Once the architecture is complete, the project can support:
+
+* Historical market graphs
+* Better price prediction
+* Automatic listing recommendations
+* Portfolio tracking
+* Vendor arbitrage
+* Set profitability analysis
+* Build profitability
+* Multi-profile support
+* Background synchronization
+* Data export/import
+* Advanced search
+* Saved reports
+* Interactive dashboards
+
+---
+
+# Development Philosophy
+
+When implementing new features:
+
+1. Prefer small, behavior-preserving refactors.
+2. Move logic closer to its owning domain.
+3. Keep presentation separate from decisions.
+4. Build repositories before changing storage.
+5. Treat spreadsheets as source data and SQLite as generated state where appropriate.
+6. Keep temporary implementations replaceable.
+7. Add tests whenever logic becomes pure.
+8. Favor incremental migration over architectural rewrites.
+
+---
+
+# Definition of Success
+
+A completed architecture should satisfy the following:
+
+* Business logic is independent of presentation.
+* Business logic is independent of storage.
+* The CLI and GUI invoke the same application services.
+* Market analysis operates on structured historical data.
+* Reference data is curated, validated, and reproducible.
+* User data is isolated from downloaded data.
+* New analytical features can be added without restructuring the application.
