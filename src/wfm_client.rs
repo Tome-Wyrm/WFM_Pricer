@@ -1,3 +1,9 @@
+//! Authenticated `warframe.market` API client: login/session handling, the account-scoped
+//! `my_orders` CRUD (`CreateOrder`/`UpdateOrder`/`Order`), and the public per-item order book
+//! (`PublicOrder`, used by `cli::sell_relics` without needing auth at all). `WfmError`
+//! distinguishes rate-limiting/auth failures from other API errors so callers can react
+//! differently instead of matching on a formatted string.
+
 use crate::AppResult;
 use serde::{Deserialize, Serialize};
 

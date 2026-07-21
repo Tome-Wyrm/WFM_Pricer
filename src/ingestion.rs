@@ -1,3 +1,8 @@
+//! Loads the raw inventory export off disk, from either a plain `inventory.json` or an
+//! `AlecaFrame`-encrypted `lastData.dat` (see `decryption.rs`), and resolves which path to use
+//! from CLI args/env defaults. Output here is still the raw/unmapped inventory shape — turning
+//! it into tradeable WFM items is `mapping::map_inventory`'s job, not this module's.
+
 use crate::AppResult;
 use crate::decryption::decrypt;
 use std::fs;

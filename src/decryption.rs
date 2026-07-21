@@ -1,3 +1,7 @@
+//! AES-128-CBC decryption for `AlecaFrame`'s `lastData.dat` inventory export — the fallback
+//! inventory source `ingestion.rs` reaches for when no plain `inventory.json` is given. Key/IV
+//! are `AlecaFrame`'s own (not a secret we're protecting; this only needs to *read* its output).
+
 use crate::AppResult;
 use aes::Aes128;
 use cbc::Decryptor;

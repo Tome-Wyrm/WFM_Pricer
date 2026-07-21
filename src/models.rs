@@ -1,3 +1,8 @@
+//! Wire-format and config-file data shapes shared across the crate: WFM API responses,
+//! `AlecaFrame` inventory items, and the serde structs backing `config/*.toml` (keeplist,
+//! blacklist, primed-mod watchlist). No behavior lives here — deliberately just `struct`s/
+//! `enum`s plus their `serde` annotations, so a type's shape has exactly one place to look.
+
 use serde::{Deserialize, Serialize};
 
 /// Represents a tradeable item from Warframe.Market.

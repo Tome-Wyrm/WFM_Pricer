@@ -1,3 +1,10 @@
+//! Pricing domain logic: WFM market-statistics fetch/caching, weighted-average and
+//! saturation-ratio calculations, Endo/fusion-cost math, and set-aggregation/upgrade-
+//! suggestion logic (moved here from `cli::aggregation` — see git history — since none of it
+//! is presentation code). Consumed by `cli::pricing`/`cli::sell` for the interactive sell
+//! flow and by `cli::primed_mods`/`cli::check_sets` for their reports; this module itself
+//! has no knowledge of the CLI.
+
 use crate::AppResult;
 use reqwest::header::USER_AGENT;
 use std::collections::HashMap;

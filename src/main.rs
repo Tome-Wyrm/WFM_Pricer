@@ -1,3 +1,8 @@
+//! Binary entry point: argument parsing (`Cli`/`Commands` below), startup (logging/env/
+//! config-dir setup), and handing off to `app::run` for the actual command dispatch and
+//! default pipeline. See `app.rs` for the orchestration logic itself — kept out of this
+//! file deliberately, so `main.rs` stays limited to "what does the process do on startup".
+//!
 // This is a binary, not a published library — nothing here is meant to be called by code that
 // needs a custom `BuildHasher`, so the generic-hasher churn this pedantic lint wants throughout
 // cli.rs/mapping.rs would add noise without real benefit. Allowed crate-wide deliberately.

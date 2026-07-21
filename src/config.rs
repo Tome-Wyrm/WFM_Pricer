@@ -1,3 +1,8 @@
+//! Central registry of on-disk paths and a handful of cross-cutting tuning constants
+//! (`cache/`, `config/`, and per-file paths within each). No logic lives here — this is
+//! deliberately just the "where does X live" reference for every other module's file I/O,
+//! so a path never needs to be duplicated/hardcoded at a second call site.
+
 pub const CONFIG_DIR: &str = "config";
 pub const CACHE_DIR: &str = "cache";
 pub const STATISTICS_DIR: &str = "cache/statistics";
