@@ -20,7 +20,7 @@ mod listing_sync;
 mod set_analysis;
 
 pub use inventory_import::{ImportedInventory, InventoryImportService};
-pub use listing_sync::{ListingSync, ListingSyncService};
+pub(crate) use listing_sync::{ListingSync, ListingSyncService};
 pub use set_analysis::{
     IncompleteSetInfo, PricedIncompleteSet, SetAnalysis, SetAnalysisService, SetPricingResult,
 };

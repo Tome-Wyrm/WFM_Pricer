@@ -39,31 +39,31 @@ use crate::{AppResult, cli, cli::ListingKey, pricing};
 /// Everything ready for `process_candidates` to start its interactive loop: an
 /// authenticated client, the account's current listings, and priced/sorted/filtered
 /// trade candidates.
-pub struct ListingSync {
-    pub username: String,
-    pub wfm_client: WfmClient,
-    pub existing_listings_map: HashMap<ListingKey, Vec<OwnedOrder>>,
-    pub active_slots_count: usize,
+pub(crate) struct ListingSync {
+    pub(crate) username: String,
+    pub(crate) wfm_client: WfmClient,
+    pub(crate) existing_listings_map: HashMap<ListingKey, Vec<OwnedOrder>>,
+    pub(crate) active_slots_count: usize,
     /// How many tradeable candidates were identified before pricing — the number the CLI
     /// used to announce with "Identified N tradeable high-value candidates."
-    pub candidate_count: usize,
-    pub endo_rate: f64,
-    pub priced_candidates: Vec<(MappedItem, f64, f64, u32, f64)>,
-    pub upgrade_suggestions: Vec<(String, f64, u32, u32, f64)>,
-    pub blacklist_set: BlacklistConfig,
-    pub keeplist: KeepConfig,
+    pub(crate) candidate_count: usize,
+    pub(crate) endo_rate: f64,
+    pub(crate) priced_candidates: Vec<(MappedItem, f64, f64, u32, f64)>,
+    pub(crate) upgrade_suggestions: Vec<(String, f64, u32, u32, f64)>,
+    pub(crate) blacklist_set: BlacklistConfig,
+    pub(crate) keeplist: KeepConfig,
 }
 
 /// Stateless application service (aside from the network calls it makes on the caller's
 /// behalf): authenticates against WFM, fetches the account's current listings, and
 /// builds/prices/sorts the full trade-candidate list.
-pub struct ListingSyncService;
+pub(crate) struct ListingSyncService;
 
 impl ListingSyncService {
     /// # Errors
     /// Returns an error if credentials are missing, WFM authentication fails, or any of
     /// the network/file-I/O calls this coordinates fail.
-    pub async fn sync(
+    pub(crate) async fn sync(
         mapped_items: Vec<MappedItem>,
         parent_map: &BuildParentMap,
         requirements: &BuildRequirements,
