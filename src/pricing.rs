@@ -17,6 +17,7 @@ use tokio::time::{Duration, sleep};
 use crate::config::MIN_DAILY_VOLUME;
 use crate::mapping::{BuildParentMap, BuildRequirements, resolve_set_item};
 use crate::models::{MappedItem, WfcdItem, WfmItem, WfmStatsItem, WfmStatsResponse};
+use crate::repository::{StatisticsRepository, StatisticsRepositoryJson};
 use crate::wfm_client::{ListingKey, Order as OwnedOrder};
 use crate::{tseprintln, tsprintln};
 
@@ -60,15 +61,21 @@ pub async fn fetch_statistics(slug: &str) -> AppResult<WfmStatsResponse> {
     fs::create_dir_all(STATS_CACHE_DIR)?;
     let cache_path = PathBuf::from(STATS_CACHE_DIR).join(format!("{slug}.json"));
 
+    // Phase 2 cleanup: the TTL check still needs the file's own mtime directly
+    // (not part of the StatisticsRepository trait), but the actual cached-value
+    // read now goes through StatisticsRepositoryJson instead of a second
+    // hand-rolled read_to_string + from_str here.
     if cache_path.exists()
         && let Ok(metadata) = fs::metadata(&cache_path)
         && let Ok(modified) = metadata.modified()
         && let Ok(duration) = SystemTime::now().duration_since(modified)
         && duration < Duration::from_secs(24 * 60 * 60)
-        && let Ok(content) = fs::read_to_string(&cache_path)
-        && let Ok(stats) = serde_json::from_str::<WfmStatsResponse>(&content)
     {
-        return Ok(stats);
+        let stats_repo: StatisticsRepositoryJson<WfmStatsResponse> =
+            StatisticsRepositoryJson::open_default();
+        if let Ok(stats) = stats_repo.get(&slug.to_string()) {
+            return Ok(stats);
+        }
     }
 
     sleep(Duration::from_millis(400)).await;
@@ -89,9 +96,11 @@ pub async fn fetch_statistics(slug: &str) -> AppResult<WfmStatsResponse> {
         match send_result {
             Ok(response) if response.status().is_success() => {
                 let stats: WfmStatsResponse = response.json().await?;
-                if let Ok(serialized) = serde_json::to_string_pretty(&stats) {
-                    let _ = fs::write(&cache_path, serialized);
-                }
+                let mut stats_repo: StatisticsRepositoryJson<WfmStatsResponse> =
+                    StatisticsRepositoryJson::open_default();
+                // Same as before: caching is best-effort, a write failure
+                // doesn't fail the fetch itself.
+                let _ = stats_repo.upsert_ref(slug, &stats);
                 return Ok(stats);
             }
             Ok(response) => {

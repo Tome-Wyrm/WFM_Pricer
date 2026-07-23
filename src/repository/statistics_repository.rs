@@ -1,15 +1,12 @@
 //! `StatisticsRepository` wrapping the existing `cache/statistics/`
-//! directory (`config::STATISTICS_DIR`) — one JSON file per item slug,
-//! matching the layout the `tests/fixtures/test_statistics` manifest
-//! (referenced in `config.rs`) already assumes.
+//! directory (`config::STATISTICS_DIR`) — one JSON file per item slug.
+//! Real backing type is `WfmStatsResponse`, currently read/written by
+//! `pricing::fetch_statistics`.
 //!
-//! Generic over the record type: this crate's actual per-item statistics
-//! struct lives wherever `STATISTICS_DIR` is currently read from (not
-//! part of this pass), so this repository stores/retrieves whatever
-//! `Serialize + DeserializeOwned` type the caller wires up, keyed by
-//! slug. Once that struct is identified, a type alias
-//! (`pub type Statistics = StatisticsRepositoryJson<ItemStatistics>;`)
-//! is the only extra step.
+//! Kept generic over the record type (rather than hardcoding
+//! `WfmStatsResponse` here) so this file doesn't need to depend on
+//! `pricing`/`models` — `pricing::fetch_statistics` is the one that
+//! names the concrete type when it opens `StatisticsRepositoryJson::<WfmStatsResponse>`.
 
 use super::json_backend::JsonDirStore;
 use super::traits::{RepositoryError, StatisticsRepository};
@@ -30,6 +27,16 @@ where
         Self {
             store: JsonDirStore::new(crate::config::STATISTICS_DIR),
         }
+    }
+
+    /// Same as [`StatisticsRepository::upsert`] but takes `record` by
+    /// reference instead of by value. `pricing::fetch_statistics` still
+    /// needs to return the freshly-fetched value to its own caller after
+    /// caching it, and requiring `V: Clone` purely to satisfy the
+    /// trait's owned-`upsert` signature wasn't worth it — this avoids
+    /// that bound entirely.
+    pub fn upsert_ref(&mut self, key: &str, record: &V) -> Result<(), RepositoryError> {
+        self.store.upsert(key, record)
     }
 }
 
