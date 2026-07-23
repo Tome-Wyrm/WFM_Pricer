@@ -60,3 +60,36 @@ impl MarketRepository for MarketRepositoryJson {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These only exercise the wrong-key branches, which return before any
+    // filesystem access — safe to run without touching the real
+    // cache/metadata_cache.json. Right-key behavior isn't covered here
+    // since it reads/writes that real file; covering it would need
+    // METADATA_FILE to be injectable rather than a crate::config constant.
+
+    #[test]
+    fn get_with_wrong_key_is_not_found_without_touching_disk() {
+        let repo = MarketRepositoryJson;
+        match repo.get(&"not_the_real_key".to_string()) {
+            Err(RepositoryError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upsert_with_wrong_key_is_validation_error_without_touching_disk() {
+        let mut repo = MarketRepositoryJson;
+        let record = CacheMetadata {
+            wfcd_commit_hash: "deadbeef".into(),
+            last_updated: "irrelevant".into(),
+        };
+        match repo.upsert("not_the_real_key".to_string(), record) {
+            Err(RepositoryError::Validation(_)) => {}
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+}

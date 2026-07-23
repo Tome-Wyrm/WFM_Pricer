@@ -42,6 +42,9 @@ The CLI remains a supported interface but should become one presentation layer o
 * CLI modules are now thin orchestration layers (`header → call service → print`)
 * Domain logic extracted from CLI into services
 * `mapping::` and `wfm_client::` exports cleaned up (no `self`)
+* **Phase 2 — Repository Layer (JSON/TOML-backed initial implementations)**:
+  * `StatisticsRepository` / `MarketRepository` / `ReferenceRepository` / `VendorRepository` — wired to existing on-disk sources (`cache/statistics/`, `cache/metadata_cache.json`, `cache/vendors_raw_cache.json`, `config/vendors.toml`) and called from real code paths (`pricing::fetch_statistics`, `mapping::cache::update_caches`, `VendorAnalysisService::load_vendors`)
+  * `InventoryRepository` / `SettingsRepository` — trait + struct scaffolding only; both return `RepositoryError::Backend` rather than being wired up, pending `ingestion.rs`'s inventory type and a settings file that doesn't exist yet
 
 ## In Progress
 
@@ -51,8 +54,7 @@ The CLI remains a supported interface but should become one presentation layer o
 
 ## Planned
 
-* Repository layer
-* SQLite persistence
+* SQLite persistence (repositories currently JSON/TOML-backed — see Phase 2 status)
 * Historical market database
 * GUI
 * Interactive analytics
@@ -277,6 +279,25 @@ Later they become SQLite-backed without affecting domain logic.
 * Business logic does not execute SQL directly.
 * Storage implementation becomes replaceable.
 * Validation occurs at repository boundaries.
+
+### Status
+
+* **Business logic does not execute SQL directly** — N/A yet; no SQL exists until Phase 3. What's true today: `StatisticsRepository`/`MarketRepository`/`ReferenceRepository`/`VendorRepository` callers (`pricing::fetch_statistics`, `mapping::cache::update_caches`, `VendorAnalysisService::load_vendors`) go through the trait rather than calling `fs`/`serde_json`/`toml` directly at the call site.
+* **Storage implementation becomes replaceable** — ✓ for the four wired repositories. Each is JSON- or TOML-backed today (`JsonDirStore`, direct file I/O, or existing `vendor::raw`/`vendor::metadata` functions) behind the same trait Phase 3 will re-implement over SQLite.
+* **Validation occurs at repository boundaries** — ✓ where meaningful today: `JsonDirStore` rejects path-unsafe keys; `MarketRepositoryJson` rejects any key other than its one fixed record. Deeper validation (duplicate detection, broken references — see Phase 4) is out of scope until there's curated data to validate against.
+* **Repository traits have unit tests** — partial. `JsonDirStore` (the statistics backing store) and `MarketRepositoryJson`'s key-validation branches are covered. `ReferenceRepositoryJson`/`VendorRepositoryToml` aren't yet — their logic is currently coupled to real hardcoded file paths (`cache/vendors_raw_cache.json`, `config/vendors.toml`) rather than an injectable path, so testing them without touching real cache files would mean extracting the dedup/upsert logic first.
+
+### Notes on Deliberate Exceptions
+
+Same six repositories named in the plan were all scaffolded, but only four are wired to a real source:
+
+* `StatisticsRepository` → `cache/statistics/` (`StatisticsRepositoryJson<WfmStatsResponse>`), used by `pricing::fetch_statistics`.
+* `MarketRepository` → `cache/metadata_cache.json` (`MarketRepositoryJson`), used by `mapping::cache::update_caches`.
+* `ReferenceRepository` → `cache/vendors_raw_cache.json` via `vendor::raw` (`ReferenceRepositoryJson`), used by `VendorAnalysisService::load_vendors`.
+* `VendorRepository` → `config/vendors.toml` via `vendor::metadata` (`VendorRepositoryToml`), used by `VendorAnalysisService::load_vendors`.
+* `InventoryRepository` / `SettingsRepository` — trait + struct only, both fail safely with `RepositoryError::Backend` rather than panicking. `InventoryRepository`'s real source (`ingestion.rs`'s `inventory.json` handling) wasn't part of this pass; `SettingsRepository` has no real source to wrap yet — no `config/settings.toml` (or equivalent) exists in the current tree.
+
+**Phase 2 (JSON/TOML-backed) is functionally complete for the four sources that exist today.** The SQLite migration (Phase 3) and the two unwired repositories remain.
 
 ---
 

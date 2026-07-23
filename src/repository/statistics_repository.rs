@@ -35,6 +35,9 @@ where
     /// caching it, and requiring `V: Clone` purely to satisfy the
     /// trait's owned-`upsert` signature wasn't worth it — this avoids
     /// that bound entirely.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying storage can't be written.
     pub fn upsert_ref(&mut self, key: &str, record: &V) -> Result<(), RepositoryError> {
         self.store.upsert(key, record)
     }

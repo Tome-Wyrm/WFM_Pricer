@@ -9,6 +9,10 @@
 //! `vendor::raw` once `ingestion.rs`'s inventory type is available —
 //! reuse its existing load/save functions rather than re-parsing
 //! `inventory.json` a second way.
+//!
+//! Every method currently returns `RepositoryError::Backend` rather than
+//! panicking (`todo!()`), so an accidental early call fails safely
+//! instead of crashing the process.
 
 use super::traits::{InventoryRepository, RepositoryError};
 
@@ -18,19 +22,44 @@ impl InventoryRepository for InventoryRepositoryJson {
     type Key = String;
     type Record = String;
 
+    /// # Errors
+    /// Always returns `RepositoryError::Backend` — not wired up yet. See
+    /// the module doc for what needs to land first.
     fn get(&self, _key: &Self::Key) -> Result<Self::Record, RepositoryError> {
-        todo!("wire InventoryRepositoryJson to ingestion.rs's inventory.json loader")
+        Err(RepositoryError::Backend(
+            "InventoryRepositoryJson is not wired to a real source yet \
+             (needs ingestion.rs's inventory.json loader)"
+                .into(),
+        ))
     }
 
+    /// # Errors
+    /// Always returns `RepositoryError::Backend` — not wired up yet.
     fn upsert(&mut self, _key: Self::Key, _record: Self::Record) -> Result<(), RepositoryError> {
-        todo!("wire InventoryRepositoryJson to ingestion.rs's inventory.json loader")
+        Err(RepositoryError::Backend(
+            "InventoryRepositoryJson is not wired to a real source yet \
+             (needs ingestion.rs's inventory.json loader)"
+                .into(),
+        ))
     }
 
+    /// # Errors
+    /// Always returns `RepositoryError::Backend` — not wired up yet.
     fn list_keys(&self) -> Result<Vec<Self::Key>, RepositoryError> {
-        todo!("wire InventoryRepositoryJson to ingestion.rs's inventory.json loader")
+        Err(RepositoryError::Backend(
+            "InventoryRepositoryJson is not wired to a real source yet \
+             (needs ingestion.rs's inventory.json loader)"
+                .into(),
+        ))
     }
 
+    /// # Errors
+    /// Always returns `RepositoryError::Backend` — not wired up yet.
     fn remove(&mut self, _key: &Self::Key) -> Result<(), RepositoryError> {
-        todo!("wire InventoryRepositoryJson to ingestion.rs's inventory.json loader")
+        Err(RepositoryError::Backend(
+            "InventoryRepositoryJson is not wired to a real source yet \
+             (needs ingestion.rs's inventory.json loader)"
+                .into(),
+        ))
     }
 }
