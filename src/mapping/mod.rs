@@ -4,7 +4,7 @@
 // ── Submodule declarations ─────────────────────────────────────────────
 mod ayatans;
 mod builds;
-mod cache;
+pub mod cache;
 mod filters;
 mod inventory;
 mod item_mapping;

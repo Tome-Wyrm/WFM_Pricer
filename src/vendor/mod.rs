@@ -15,9 +15,9 @@
 mod interactive;
 mod lua;
 mod matching;
-mod metadata;
+pub mod metadata;
 mod network;
-mod raw;
+pub mod raw;
 mod scoring;
 
 pub use interactive::run_vendor_cli;
