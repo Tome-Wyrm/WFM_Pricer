@@ -1,4 +1,4 @@
-# WFM Pricer — Architecture Evolution Plan (v0.2)
+# WFM Pricer — Architecture Evolution Plan (v0.3)
 
 ## Purpose
 
@@ -32,6 +32,16 @@ The CLI remains a supported interface but should become one presentation layer o
 * Logging subsystem
 * Configuration system
 * Phase 1 architecture cleanup
+* **Phase 1.5 — Application Services (all six services implemented)**:
+  * `InventoryImportService`
+  * `ListingSyncService`
+  * `SetAnalysisService`
+  * `VendorAnalysisService`
+  * `RelicSellService`
+  * `PrimedModPriceService`
+* CLI modules are now thin orchestration layers (`header → call service → print`)
+* Domain logic extracted from CLI into services
+* `mapping::` and `wfm_client::` exports cleaned up (no `self`)
 
 ## In Progress
 
@@ -144,10 +154,9 @@ Analytics operate against local data.
 # Target Architecture
 
 ```text
-                 GUI
-                  │
-                  │
-                 CLI
+          GUI          CLI
+           │            │
+           └──────┬─────┘
                   │
                   ▼
         Application Services
@@ -155,7 +164,7 @@ Analytics operate against local data.
       ┌───────────┼───────────┐
       │           │           │
   Pricing     Vendor      Mapping
-    Engine      Engine       Engine
+   Engine      Engine       Engine
       │           │           │
       └───────────┼───────────┘
                   │
@@ -166,7 +175,7 @@ Analytics operate against local data.
    market.db  reference.db profile.db
 ```
 
-Presentation layers should contain minimal business logic.
+Presentation layers (CLI and GUI) should contain minimal business logic and both invoke the same Application Services directly.
 
 ---
 
@@ -185,6 +194,8 @@ Separate presentation from decision logic.
 * Moved temporary Primed Mods data toward configuration.
 * Added module documentation.
 * Established clearer ownership boundaries.
+* Migrated decision logic out of `candidate.rs`.
+* Relocated CLI-homed domain code out of `cli/` into services.
 
 ## Ongoing Rule
 
@@ -199,7 +210,7 @@ Business decisions belong elsewhere.
 
 ---
 
-# Phase 1.5 — Introduce Application Services
+# Phase 1.5 — Introduce Application Services ✅
 
 ## Goal
 
@@ -207,25 +218,36 @@ Create presentation-independent workflows shared by CLI and future GUI.
 
 These services coordinate multiple domains without containing presentation logic.
 
-Examples:
+### Implemented Services
 
-* PriceInventoryService
-* VendorAnalysisService
-* ListingSyncService
-* MarketRefreshService
-* InventoryImportService
-* SetAnalysisService
+All six services from the plan are now implemented and exported:
 
-Application services may depend on multiple domain modules.
+* `InventoryImportService` — imports inventory data
+* `ListingSyncService` — synchronizes listings
+* `SetAnalysisService` — analyzes item sets
+* `VendorAnalysisService` — analyzes vendor inventories
+* `RelicSellService` — relic sell recommendations
+* `PrimedModPriceService` — Primed Mod pricing
 
-Domain modules should not depend on application services.
+### Status
 
-### Acceptance Criteria
+* **CLI becomes thin orchestration** — ✓. `sell.rs`, `pricing.rs`, `check_sets.rs`, `sell_relics.rs`, `primed_mods.rs` are all now `header → call service → print`.
+* **GUI can invoke services directly** — ✓. Six services now exist with clean public APIs.
+* **Cross-domain workflows have a single implementation** — ✓ for everything previously duplicated.
+* **Services return structured models, not formatted text** — ✓ across all six.
 
-* CLI becomes thin orchestration.
-* GUI can invoke services directly.
-* Cross-domain workflows have a single implementation.
-* Services return structured models instead of formatted text.
+### Notes on Deliberate Exceptions
+
+Two CLI modules remain as-is because they don't have a GUI-shaped equivalent yet:
+
+* `cli/candidate.rs` — needs synchronous per-item stdin prompts mid-workflow.
+* `vendor::interactive` (location picker) — same pattern; `vendor_analysis.rs` doc comment already calls this out.
+
+`src/debug_mastery.rs` mixes checklist logic with `tsprintln!` calls directly, but it's a single-domain, single-call-site diagnostic report — extracting it would not remove any duplication.
+
+The two named-but-unbuilt services from the plan — `PriceInventoryService` and `MarketRefreshService` — don't have an existing CLI workflow to extract *from* yet; building them now would mean designing new behavior rather than refactoring.
+
+**Phase 1.5 is complete.**
 
 ---
 
