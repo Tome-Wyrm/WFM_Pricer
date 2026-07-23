@@ -111,6 +111,7 @@ impl RelicSellService {
     /// Returns an error if caches can't be refreshed, the inventory file can't be
     /// found/decrypted, or inventory mapping fails outright. Per-item order-fetch
     /// failures are logged and skipped rather than aborting the whole run.
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn sync(min_price: Option<u32>) -> AppResult<RelicSellResult> {
         mapping::update_caches().await?;
 
