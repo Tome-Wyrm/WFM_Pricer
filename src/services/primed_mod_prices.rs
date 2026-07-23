@@ -1,3 +1,20 @@
+//! `PrimedModPriceService` — fetches current market price/volume for every mod in
+//! `PRIMED_MODS`, at either max rank or unranked, and returns them sorted price-descending.
+//!
+//! Extracted from `cli::primed_mods::run_primed_mod_prices` (Architecture Evolution Plan,
+//! Phase 1.5), same split as `RelicSellService`/`SetAnalysisService`: the service does the
+//! lookups/fetches/sorting and returns plain data; `cli::primed_mods` only prints it.
+//!
+//! `PrimedMod`/`PrimedPrice`/`PRIMED_MODS` moved here too (formerly `cli::data`) since this
+//! was their only caller — nothing presentation-specific about a static reference list of
+//! mod name/slug pairs. Per the plan's Phase 4, this hardcoded list is itself a temporary
+//! stand-in for a curated `reference.db` table; moving it under `services` now means the
+//! eventual swap to `ReferenceRepository` only touches this one file, not `cli`.
+
+use crate::AppResult;
+use crate::mapping;
+use crate::pricing::{calculate_weighted_average, fetch_statistics, recent_volume};
+
 pub(crate) struct PrimedMod {
     pub(crate) name: &'static str,
     pub(crate) slug: &'static str,
@@ -7,6 +24,19 @@ pub(crate) struct PrimedPrice {
     pub(crate) name: &'static str,
     pub(crate) price: f64,
     pub(crate) volume: u32,
+}
+
+/// A mod in `PRIMED_MODS` that couldn't be priced, plus a ready-to-print reason. Kept as
+/// preformatted text rather than a structured enum since the CLI just relays these verbatim —
+/// there's no decision left for the caller to make on a skip/failure.
+pub(crate) struct PrimedModWarning {
+    pub(crate) message: String,
+}
+
+pub(crate) struct PrimedModPriceResult {
+    /// Sorted price-descending, matching the CLI table's display order.
+    pub(crate) prices: Vec<PrimedPrice>,
+    pub(crate) warnings: Vec<PrimedModWarning>,
 }
 
 pub(crate) const PRIMED_MODS: &[PrimedMod] = &[
@@ -371,3 +401,81 @@ pub(crate) const PRIMED_MODS: &[PrimedMod] = &[
         slug: "peculiar_audience",
     },
 ];
+
+pub(crate) struct PrimedModPriceService;
+
+impl PrimedModPriceService {
+    /// # Errors
+    /// Returns an error if the WFM items cache can't be loaded. Per-mod lookup/fetch
+    /// failures are recorded as warnings and skipped rather than aborting the whole run.
+    pub(crate) async fn fetch(min_rank: bool) -> AppResult<PrimedModPriceResult> {
+        // Max rank varies per mod (most Primed set mods cap at 5, but some — e.g. the
+        // ammo-mutation/ammo-chain/ammo-stock mods — cap lower or higher). We used to
+        // hardcode Some(10) here, which silently returned (0.0, 0) for every mod whose
+        // real max rank wasn't exactly 10, since calculate_weighted_average/recent_volume
+        // filter WFM stats on an exact rank match. Pull the real maxRank from the WFM
+        // items cache (keyed by slug) instead, so this can't drift out of sync again.
+        // Still needed even in --min-rank mode, just to confirm each slug is a known item.
+        let (_wfcd_by_ref, _wfm_by_ref, _wfm_by_name, wfm_by_slug) = mapping::load_lookup_tables()?;
+
+        let mut prices = Vec::<PrimedPrice>::new();
+        let mut warnings = Vec::<PrimedModWarning>::new();
+
+        for primed in PRIMED_MODS {
+            let Some(raw_max_rank) = wfm_by_slug.get(primed.slug).and_then(|item| item.max_rank)
+            else {
+                warnings.push(PrimedModWarning {
+                    message: format!(
+                        "Could not resolve max rank for {} ('{}') from WFM items cache — skipping.",
+                        primed.name, primed.slug
+                    ),
+                });
+                continue;
+            };
+            // WFM's statistics rank field is u32 while max_rank on WfmItem is also u32,
+            // but calculate_weighted_average/recent_volume take Option<u8> — narrow safely.
+            let Ok(raw_max_rank) = u8::try_from(raw_max_rank) else {
+                warnings.push(PrimedModWarning {
+                    message: format!(
+                        "Max rank {raw_max_rank} for {} doesn't fit in u8 — skipping.",
+                        primed.name
+                    ),
+                });
+                continue;
+            };
+            // Unranked is always rank 0 regardless of the mod's max rank; --min-rank just
+            // pins the target to that instead of raw_max_rank.
+            let target_rank: u8 = if min_rank { 0 } else { raw_max_rank };
+
+            // calculate_weighted_average/recent_volume now self-correct if this guessed rank
+            // doesn't match any real statistics row but null-ranked rows exist instead (see
+            // resolve_target_rank in pricing.rs) — e.g. items like "Peculiar Audience" that WFM
+            // tracks with rank: null on every row rather than numeric ranks.
+            match fetch_statistics(primed.slug).await {
+                Ok(stats) => {
+                    let (price, _) = calculate_weighted_average(&stats, Some(target_rank));
+                    let (volume, _) = recent_volume(&stats, Some(target_rank), 30);
+
+                    prices.push(PrimedPrice {
+                        name: primed.name,
+                        price,
+                        volume,
+                    });
+                }
+                Err(err) => {
+                    warnings.push(PrimedModWarning {
+                        message: format!("Failed to fetch {}: {err}", primed.name),
+                    });
+                }
+            }
+        }
+
+        prices.sort_by(|a, b| {
+            b.price
+                .partial_cmp(&a.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        Ok(PrimedModPriceResult { prices, warnings })
+    }
+}
