@@ -1,14 +1,12 @@
 //! CLI entry points and shared types.
 
 // ── Imports used by every submodule ───────────────────────────────────
-use crate::mapping::{
-    self, BuildParentMap, BuildRequirements, BuildStatus, get_build_status,
-};
+use crate::mapping::{BuildParentMap, BuildRequirements, BuildStatus, get_build_status};
 use crate::models::{BlacklistConfig, KeepConfig, MappedItem, WfcdItem, WfmItem};
 use crate::pricing::{
     calculate_weighted_average, fetch_statistics, get_ayatan_endo_yield, recent_volume,
 };
-use crate::wfm_client::{self, CreateOrder, Order as OwnedOrder, UpdateOrder, WfmClient};
+use crate::wfm_client::{CreateOrder, Order as OwnedOrder, UpdateOrder, WfmClient};
 use crate::{tseprintln, tsprint, tsprintln};
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -31,9 +29,7 @@ pub use sell::run_cli;
 pub use sell_relics::run_sell_relics_cli;
 
 // ── Re‑export everything needed by submodules (via super::*) ──────────
-pub(crate) use crate::config_io::{
-    add_to_keeplist, get_keep_quantity, save_blacklist,
-};
+pub(crate) use crate::config_io::{add_to_keeplist, get_keep_quantity, save_blacklist};
 pub(crate) use crate::wfm_client::ListingKey;
 pub(crate) use candidate::*;
 pub(crate) use data::*;

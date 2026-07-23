@@ -17,11 +17,13 @@
 
 mod inventory_import;
 mod listing_sync;
+mod relic_sell;
 mod set_analysis;
 mod vendor_analysis;
 
 pub use inventory_import::{ImportedInventory, InventoryImportService};
 pub(crate) use listing_sync::ListingSyncService;
+pub(crate) use relic_sell::RelicSellService;
 pub use set_analysis::{
     IncompleteSetInfo, PricedIncompleteSet, SetAnalysis, SetAnalysisService, SetPricingResult,
 };
