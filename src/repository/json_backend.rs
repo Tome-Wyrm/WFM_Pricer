@@ -1,84 +1,23 @@
-//! Two small generic JSON storage helpers backing the initial (pre-SQLite)
-//! repository implementations, matching the two on-disk shapes already
-//! used elsewhere in this crate:
+//! Generic JSON storage helper backing the initial (pre-SQLite)
+//! `StatisticsRepository` implementation, matching the on-disk shape
+//! already used for `cache/statistics/` (`config::STATISTICS_DIR`): one
+//! JSON file per key.
 //!
-//! - `JsonStore<K, V>` — one JSON file holding a `{key: record}` map.
-//!   Mirrors the existing single-file caches (`cache/metadata_cache.json`
-//!   via `mapping::cache`, `cache/full_items_cache.json`).
-//! - `JsonDirStore<V>` — one JSON file per key inside a directory.
-//!   Mirrors the existing `cache/statistics/` layout referenced in
-//!   `config::STATISTICS_DIR`.
+//! `MarketRepositoryJson` reads/writes its single `cache/metadata_cache.json`
+//! record directly rather than through a generic single-file store — it's
+//! one fixed key, so a keyed map abstraction added a layer without buying
+//! anything. If a second singleton-file repository shows up, revisit.
 //!
-//! Phase 3 replaces both with SQLite-backed storage behind the same
-//! repository traits; nothing above the repository layer depends on
-//! these types directly.
+//! Phase 3 replaces this with SQLite-backed storage behind the same
+//! repository trait; nothing above the repository layer depends on this
+//! type directly.
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::collections::HashMap;
+use serde::de::DeserializeOwned;
 use std::fs;
-use std::hash::Hash;
 use std::path::{Path, PathBuf};
 
 use super::traits::RepositoryError;
-
-/// Single-file `{key: record}` JSON map.
-pub struct JsonStore<K, V> {
-    path: PathBuf,
-    data: HashMap<K, V>,
-}
-
-impl<K, V> JsonStore<K, V>
-where
-    K: Eq + Hash + Serialize + DeserializeOwned + Clone,
-    V: Serialize + DeserializeOwned + Clone,
-{
-    /// Loads `path` if it exists (empty file = empty map), otherwise
-    /// starts empty. The file is not created on disk until the first
-    /// `upsert`/`remove`.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, RepositoryError> {
-        let path = path.as_ref().to_path_buf();
-        let data = if path.exists() {
-            let raw = fs::read_to_string(&path)?;
-            if raw.trim().is_empty() {
-                HashMap::new()
-            } else {
-                serde_json::from_str(&raw)?
-            }
-        } else {
-            HashMap::new()
-        };
-        Ok(Self { path, data })
-    }
-
-    pub fn get(&self, key: &K) -> Option<&V> {
-        self.data.get(key)
-    }
-
-    pub fn upsert(&mut self, key: K, value: V) -> Result<(), RepositoryError> {
-        self.data.insert(key, value);
-        self.flush()
-    }
-
-    pub fn remove(&mut self, key: &K) -> Result<Option<V>, RepositoryError> {
-        let removed = self.data.remove(key);
-        self.flush()?;
-        Ok(removed)
-    }
-
-    pub fn keys(&self) -> Vec<K> {
-        self.data.keys().cloned().collect()
-    }
-
-    fn flush(&self) -> Result<(), RepositoryError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let raw = serde_json::to_string_pretty(&self.data)?;
-        fs::write(&self.path, raw)?;
-        Ok(())
-    }
-}
 
 /// One JSON file per key, inside a directory (`{dir}/{key}.json`).
 /// Keys are restricted to plain filename-safe strings.

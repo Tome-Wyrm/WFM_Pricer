@@ -13,7 +13,7 @@
 
 use super::json_backend::JsonDirStore;
 use super::traits::{RepositoryError, StatisticsRepository};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 pub struct StatisticsRepositoryJson<V> {
     store: JsonDirStore<V>,

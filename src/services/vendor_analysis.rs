@@ -9,8 +9,11 @@
 //! build the mapped vendor cache, rank a set of vendors' offerings — lives here instead
 //! of being called directly from `vendor::interactive::run_vendor_cli`.
 
+use crate::repository::{
+    ReferenceRepository, ReferenceRepositoryJson, VendorRepository, VendorRepositoryToml,
+};
 use crate::vendor::{MappedVendor, RankedOffering};
-use crate::{AppResult, http, vendor};
+use crate::{AppResult, http, tseprintln, tsprintln, vendor};
 
 pub(crate) struct VendorAnalysisService;
 
@@ -24,7 +27,31 @@ impl VendorAnalysisService {
     /// Returns an error if the wiki fetch, Lua parse, or vendor-cache write fails.
     pub(crate) async fn load_vendors() -> AppResult<Vec<MappedVendor>> {
         vendor::fetch_and_cache_vendors(http::shared_client()).await?;
-        vendor::build_and_write_vendor_cache()
+        let mapped = vendor::build_and_write_vendor_cache()?;
+
+        // Phase 2 cleanup: read the cache this fetch just wrote back through
+        // ReferenceRepository/VendorRepository, so those repositories are
+        // exercised on every real vendor load instead of sitting unused.
+        // build_and_write_vendor_cache's own read/parse of these same files
+        // stays untouched — this is a read-only summary alongside it, not a
+        // replacement, until matching.rs itself is migrated onto the
+        // repository layer.
+        let reference_repo = ReferenceRepositoryJson;
+        let vendor_repo = VendorRepositoryToml;
+        match (reference_repo.list_keys(), vendor_repo.list_keys()) {
+            (Ok(raw_keys), Ok(overlay_keys)) => {
+                tsprintln!(
+                    "Vendor repositories: {} raw vendor(s) cached, {} triaged in vendors.toml.",
+                    raw_keys.len(),
+                    overlay_keys.len()
+                );
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                tseprintln!("Warning: could not read vendor repositories for summary: {e}");
+            }
+        }
+
+        Ok(mapped)
     }
 
     /// Ranks `vendors`' offerings by cost-efficiency score, applying the demand-floor and

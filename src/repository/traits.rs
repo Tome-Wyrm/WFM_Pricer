@@ -73,8 +73,17 @@ pub trait StatisticsRepository {
     type Key;
     type Record;
 
+    /// # Errors
+    /// Returns an error if no record exists for `key`, or if the
+    /// underlying storage can't be read/parsed.
     fn get(&self, key: &Self::Key) -> Result<Self::Record, RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be written.
     fn upsert(&mut self, key: Self::Key, record: Self::Record) -> Result<(), RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be listed/read.
     fn list_keys(&self) -> Result<Vec<Self::Key>, RepositoryError>;
 }
 
@@ -85,8 +94,17 @@ pub trait MarketRepository {
     type Key;
     type Record;
 
+    /// # Errors
+    /// Returns an error if no record exists for `key`, or if the
+    /// underlying storage can't be read/parsed.
     fn get(&self, key: &Self::Key) -> Result<Self::Record, RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be written.
     fn upsert(&mut self, key: Self::Key, record: Self::Record) -> Result<(), RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be listed/read.
     fn list_keys(&self) -> Result<Vec<Self::Key>, RepositoryError>;
 }
 
@@ -97,9 +115,22 @@ pub trait ReferenceRepository {
     type Key;
     type Record;
 
+    /// # Errors
+    /// Returns an error if no record exists for `key`, or if the
+    /// underlying storage can't be read/parsed.
     fn get(&self, key: &Self::Key) -> Result<Self::Record, RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be written.
     fn upsert(&mut self, key: Self::Key, record: Self::Record) -> Result<(), RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be listed/read.
     fn list_keys(&self) -> Result<Vec<Self::Key>, RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if no record exists for `key`, or if the
+    /// underlying storage can't be written.
     fn remove(&mut self, key: &Self::Key) -> Result<(), RepositoryError>;
 }
 
@@ -108,9 +139,22 @@ pub trait InventoryRepository {
     type Key;
     type Record;
 
+    /// # Errors
+    /// Returns an error if no record exists for `key`, or if the
+    /// underlying storage can't be read/parsed.
     fn get(&self, key: &Self::Key) -> Result<Self::Record, RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be written.
     fn upsert(&mut self, key: Self::Key, record: Self::Record) -> Result<(), RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be listed/read.
     fn list_keys(&self) -> Result<Vec<Self::Key>, RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if no record exists for `key`, or if the
+    /// underlying storage can't be written.
     fn remove(&mut self, key: &Self::Key) -> Result<(), RepositoryError>;
 }
 
@@ -122,8 +166,17 @@ pub trait VendorRepository {
     type Key;
     type Record;
 
+    /// # Errors
+    /// Returns an error if no record exists for `key`, or if the
+    /// underlying storage can't be read/parsed.
     fn get(&self, key: &Self::Key) -> Result<Self::Record, RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be written.
     fn upsert(&mut self, key: Self::Key, record: Self::Record) -> Result<(), RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be listed/read.
     fn list_keys(&self) -> Result<Vec<Self::Key>, RepositoryError>;
 }
 
@@ -132,6 +185,12 @@ pub trait VendorRepository {
 pub trait SettingsRepository {
     type Record;
 
+    /// # Errors
+    /// Returns an error if no settings record exists yet, or if the
+    /// underlying storage can't be read/parsed.
     fn load(&self) -> Result<Self::Record, RepositoryError>;
+
+    /// # Errors
+    /// Returns an error if the underlying storage can't be written.
     fn save(&mut self, record: Self::Record) -> Result<(), RepositoryError>;
 }
