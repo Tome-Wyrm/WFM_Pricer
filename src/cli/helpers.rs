@@ -1,9 +1,8 @@
-use crate::AppResult;
 use std::collections::{HashMap, HashSet};
 
 use super::{
     BuildParentMap, BuildStatus, ENDO_LISTING_MARGIN, ListingKey, MAX_LISTING_SLOTS, MappedItem,
-    NoOpDecision, OwnedOrder, PRICE_TOLERANCE_PCT, WfmClient, get_build_status, tsprintln,
+    NoOpDecision, OwnedOrder, PRICE_TOLERANCE_PCT, get_build_status, tsprintln,
 };
 
 pub(crate) fn get_auto_keep(
@@ -285,45 +284,8 @@ pub(crate) fn print_error_ui(msg: &str) {
 }
 
 // ── Helper functions for `run_cli` ──────────────────────────────────────────
-
-pub(crate) fn load_credentials() -> AppResult<(String, String)> {
-    let email = std::env::var("WFM_EMAIL").unwrap_or_default();
-    let password = std::env::var("WFM_PASSWORD").unwrap_or_default();
-    if email.is_empty() || password.is_empty() {
-        print_warning("WFM_EMAIL or WFM_PASSWORD not found in environment.");
-        print_info(
-            "Please supply them",
-            "e.g., set WFM_EMAIL=email in environment or .env file.",
-        );
-        return Err("Missing credentials".into());
-    }
-    Ok((email, password))
-}
-
-pub(crate) async fn fetch_user_listings(
-    wfm_client: &WfmClient,
-) -> AppResult<(Vec<OwnedOrder>, HashMap<ListingKey, Vec<OwnedOrder>>)> {
-    tsprintln!("Fetching your active listings from Warframe.Market...");
-    let all_orders = wfm_client.my_orders().await?;
-    let user_listings: Vec<OwnedOrder> =
-        all_orders.into_iter().filter(OwnedOrder::is_sell).collect();
-    let current_count = user_listings.len();
-    print_info(
-        "Active Listings on WFM",
-        &format!("{current_count}/100 slots used"),
-    );
-
-    let mut map: HashMap<ListingKey, Vec<OwnedOrder>> = HashMap::new();
-    for listing in &user_listings {
-        map.entry(ListingKey {
-            item_id: listing.item_id().to_string(),
-            rank: listing.rank,
-        })
-        .or_default()
-        .push(listing.clone());
-    }
-    Ok((user_listings, map))
-}
+// (load_credentials and fetch_user_listings moved to wfm_client.rs — Architecture
+// Evolution Plan Phase 1.5 — since neither is presentation logic.)
 
 /// Core set‑aggregation logic: takes a list of candidate items (which may include components),
 /// the build maps, and a price map (slug → `wa_price`). Returns a new list of items where complete

@@ -1,10 +1,10 @@
 // src/vendor/interactive.rs
 //! CLI entry point for vendor mode: the location picker, ranked-table printing, and
 //! `run_vendor_cli` orchestration (Phase G2/G3).
-use super::matching::{MappedVendor, build_and_write_vendor_cache, print_match_report};
-use super::network::fetch_and_cache_vendors;
-use super::scoring::{RankedOffering, rank_offerings};
+use super::matching::{MappedVendor, print_match_report};
+use super::scoring::RankedOffering;
 use crate::AppResult;
+use crate::services::VendorAnalysisService;
 use crate::{tsprint, tsprintln};
 use std::fs;
 use std::io::Write;
@@ -229,8 +229,7 @@ pub async fn run_vendor_cli(
     write_json: bool,
     max_saturation: Option<f64>,
 ) -> AppResult<()> {
-    fetch_and_cache_vendors(crate::http::shared_client()).await?;
-    let vendors = build_and_write_vendor_cache()?;
+    let vendors = VendorAnalysisService::load_vendors().await?;
     tsprintln!("Loaded {} vendors.", vendors.len());
 
     if match_report {
@@ -250,7 +249,7 @@ pub async fn run_vendor_cli(
     }
 
     let owned: Vec<MappedVendor> = selected.into_iter().cloned().collect();
-    let rows = rank_offerings(&owned, max_saturation).await?;
+    let rows = VendorAnalysisService::rank(&owned, max_saturation).await?;
     print_ranked_table(&rows);
 
     if write_json {

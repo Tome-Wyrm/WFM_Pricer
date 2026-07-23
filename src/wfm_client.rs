@@ -5,7 +5,9 @@
 //! differently instead of matching on a formatted string.
 
 use crate::AppResult;
+use crate::{tseprintln, tsprintln};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Categorizes a non-2xx response from a WFM API endpoint, so callers (and eventually
 /// the CLI) can react differently to "back off and retry" (`RateLimited`), "the token is
@@ -640,4 +642,67 @@ impl WfmClient {
 
         Ok(())
     }
+}
+
+/// Dedup/lookup key for the account's existing listings: an item ID plus the rank a
+/// listing applies to (`None` for anything that isn't rank-tracked — most non-mod,
+/// non-arcane items). Moved here from `cli::mod` (Architecture Evolution Plan Phase 1.5)
+/// since it's a WFM-session concept, not a presentation one — `load_credentials` and
+/// `fetch_user_listings` below both need it, and neither belongs in `cli/` either.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ListingKey {
+    pub(crate) item_id: String,
+    pub(crate) rank: Option<u8>,
+}
+
+/// Reads `WFM_EMAIL`/`WFM_PASSWORD` from the environment.
+///
+/// Moved out of `cli::helpers` (Architecture Evolution Plan Phase 1.5) since reading
+/// account credentials isn't presentation logic — it just used to sit next to `cli`'s
+/// other session-setup helpers. The missing-credentials message below used to go through
+/// `cli::print_warning`/`cli::print_info` for ANSI styling; calling back into `cli` from
+/// here would recreate the same "domain depends on presentation" problem this move is
+/// meant to fix, so it's a plain `tsprintln!`/`tseprintln!` now instead — the two lines
+/// lose their color/alignment, but the message is otherwise unchanged.
+///
+/// # Errors
+/// Returns an error if either `WFM_EMAIL` or `WFM_PASSWORD` is unset or empty.
+pub(crate) fn load_credentials() -> AppResult<(String, String)> {
+    let email = std::env::var("WFM_EMAIL").unwrap_or_default();
+    let password = std::env::var("WFM_PASSWORD").unwrap_or_default();
+    if email.is_empty() || password.is_empty() {
+        tseprintln!("[WARNING] WFM_EMAIL or WFM_PASSWORD not found in environment.");
+        tsprintln!("  Please supply them: e.g., set WFM_EMAIL=email in environment or .env file.");
+        return Err("Missing credentials".into());
+    }
+    Ok((email, password))
+}
+
+/// Fetches the account's current sell listings and indexes them by [`ListingKey`] for
+/// fast "is this item/rank already listed" lookups.
+///
+/// Moved out of `cli::helpers` (Architecture Evolution Plan Phase 1.5) for the same
+/// reason as `load_credentials` above — same styling trade-off on its progress line.
+///
+/// # Errors
+/// Returns an error if the `my_orders` request fails.
+pub(crate) async fn fetch_user_listings(
+    wfm_client: &WfmClient,
+) -> AppResult<(Vec<Order>, HashMap<ListingKey, Vec<Order>>)> {
+    tsprintln!("Fetching your active listings from Warframe.Market...");
+    let all_orders = wfm_client.my_orders().await?;
+    let user_listings: Vec<Order> = all_orders.into_iter().filter(Order::is_sell).collect();
+    let current_count = user_listings.len();
+    tsprintln!("  Active Listings on WFM: {current_count}/100 slots used");
+
+    let mut map: HashMap<ListingKey, Vec<Order>> = HashMap::new();
+    for listing in &user_listings {
+        map.entry(ListingKey {
+            item_id: listing.item_id().to_string(),
+            rank: listing.rank,
+        })
+        .or_default()
+        .push(listing.clone());
+    }
+    Ok((user_listings, map))
 }

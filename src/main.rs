@@ -11,6 +11,7 @@
 pub mod app;
 pub mod cli;
 pub mod config;
+mod config_io;
 mod debug_mastery;
 pub mod decryption;
 pub mod http;

@@ -1,17 +1,12 @@
 //! CLI entry points and shared types.
 
 // ── Imports used by every submodule ───────────────────────────────────
-use crate::config::{BLACKLIST_FILE, KEEPLIST_FILE, MIN_DAILY_VOLUME};
 use crate::mapping::{
-    self, BuildParentMap, BuildRequirements, BuildStatus, get_build_status, resolve_set_item,
+    self, BuildParentMap, BuildRequirements, BuildStatus, get_build_status,
 };
-use crate::models::{
-    BlacklistConfig, KeepConfig, KeepRule, MappedItem, WfcdItem, WfmItem, WfmStatsResponse,
-};
+use crate::models::{BlacklistConfig, KeepConfig, MappedItem, WfcdItem, WfmItem};
 use crate::pricing::{
-    StatsSource, aggregate_sets_with_prices, calculate_saturation_ratio,
-    calculate_weighted_average, fetch_statistics, get_ayatan_endo_yield, is_antique,
-    recent_volume, upgrade_suggestion,
+    calculate_weighted_average, fetch_statistics, get_ayatan_endo_yield, recent_volume,
 };
 use crate::wfm_client::{self, CreateOrder, Order as OwnedOrder, UpdateOrder, WfmClient};
 use crate::{tseprintln, tsprint, tsprintln};
@@ -21,7 +16,6 @@ use std::io;
 // ── Submodule declarations ─────────────────────────────────────────────
 mod candidate;
 mod check_sets;
-mod config_io;
 mod data;
 mod helpers;
 mod pricing;
@@ -37,8 +31,11 @@ pub use sell::run_cli;
 pub use sell_relics::run_sell_relics_cli;
 
 // ── Re‑export everything needed by submodules (via super::*) ──────────
+pub(crate) use crate::config_io::{
+    add_to_keeplist, get_keep_quantity, save_blacklist,
+};
+pub(crate) use crate::wfm_client::ListingKey;
 pub(crate) use candidate::*;
-pub(crate) use config_io::*;
 pub(crate) use data::*;
 pub(crate) use helpers::*;
 pub(crate) use pricing::*;
@@ -59,12 +56,6 @@ pub(crate) enum NoOpDecision {
     TrueNoOp,
     QuantitySyncOnly { new_quantity: u32, keep_price: u32 },
     NeedsReview,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ListingKey {
-    pub(crate) item_id: String,
-    pub(crate) rank: Option<u8>,
 }
 
 pub(crate) struct CandidateContext<'a> {

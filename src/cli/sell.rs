@@ -3,9 +3,8 @@ use crate::services::ListingSyncService;
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    BuildParentMap, BuildRequirements, MappedItem, SessionReport, WfcdItem, WfmItem,
-    print_header, print_info, print_upgrade_suggestions, process_candidates, tsprintln,
-    write_session_report,
+    BuildParentMap, BuildRequirements, MappedItem, SessionReport, WfcdItem, WfmItem, print_header,
+    print_info, print_upgrade_suggestions, process_candidates, tsprintln, write_session_report,
 };
 
 /// Runs the interactive CLI loop.

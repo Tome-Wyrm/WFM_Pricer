@@ -12,29 +12,26 @@
 //! What *can* be pulled out cleanly is everything that runs unconditionally before that
 //! loop starts, which is what this service is.
 //!
-//! Note: unlike `InventoryImportService` and `SetAnalysisService`, this one doesn't
-//! reach presentation-free domain code — `fetch_user_listings` and
-//! `build_priced_candidates` already print their own progress (`tsprintln!`/`print_info`
-//! calls baked into those functions, same as before this service existed). This service
-//! doesn't add any *new* printing, it just stops duplicating the call sequence; fully
-//! silencing those two is a separate, larger change if it's ever wanted.
+//! Note: `fetch_user_listings` and `build_priced_candidates` still print their own
+//! progress (`tsprintln!` calls baked into those functions). This service doesn't add
+//! any *new* printing, it just stops duplicating the call sequence; fully silencing
+//! those two is a separate, larger change if it's ever wanted.
 //!
-//! Bigger wrinkle worth being upfront about: `fetch_user_listings`, `build_priced_candidates`,
-//! `sort_candidates`, `load_blacklist`/`load_keeplist`, and `load_credentials` all physically
-//! live under `cli/` (`cli::helpers`, `cli::pricing`, `cli::config_io`) even though none of
-//! them are presentation logic — they just historically landed there. That means this service
-//! calls back into `cli::*`, which inverts the "services depend on domain modules, cli depends
-//! on services" layering this module's doc comment describes. It compiles fine (Rust doesn't
-//! forbid circular item references within one crate), but it's a smell: the honest fix is
-//! relocating those five functions out of `cli/` into `mapping`/`pricing`/a new home, not
-//! routing around it here. Flagging it rather than quietly accepting it.
+//! Previously this service had to call back into `cli::*` for `fetch_user_listings`,
+//! `build_priced_candidates`, `sort_candidates`, `load_blacklist`/`load_keeplist`, and
+//! `load_credentials`, even though none of them are presentation logic — they'd just
+//! historically landed under `cli/`. That's been fixed (Architecture Evolution Plan
+//! Phase 1.5): `load_credentials`/`fetch_user_listings`/`ListingKey` moved to
+//! `wfm_client`, `LiveStatsSource`/`build_priced_candidates`/`sort_candidates` moved to
+//! top-level `pricing`, and `load_blacklist`/`load_keeplist` moved to a new top-level
+//! `config_io` module. This service now depends only on domain modules, not `cli`.
 
 use std::collections::HashMap;
 
 use crate::mapping::{BuildParentMap, BuildRequirements};
 use crate::models::{BlacklistConfig, KeepConfig, MappedItem, WfcdItem, WfmItem};
-use crate::wfm_client::{Credentials, Order as OwnedOrder, WfmClient};
-use crate::{AppResult, cli, cli::ListingKey, pricing};
+use crate::wfm_client::{Credentials, ListingKey, Order as OwnedOrder, WfmClient};
+use crate::{AppResult, config_io, pricing};
 
 /// Everything ready for `process_candidates` to start its interactive loop: an
 /// authenticated client, the account's current listings, and priced/sorted/filtered
@@ -71,12 +68,13 @@ impl ListingSyncService {
         wfm_by_name: &HashMap<String, WfmItem>,
         min_price: Option<f64>,
     ) -> AppResult<ListingSync> {
-        let (email, password) = cli::load_credentials()?;
+        let (email, password) = crate::wfm_client::load_credentials()?;
         let creds = Credentials::new(&email, &password, Credentials::generate_device_id());
         let wfm_client = WfmClient::from_credentials(creds).await?;
         let username = wfm_client.get_username().await?;
 
-        let (user_listings, existing_listings_map) = cli::fetch_user_listings(&wfm_client).await?;
+        let (user_listings, existing_listings_map) =
+            crate::wfm_client::fetch_user_listings(&wfm_client).await?;
         let active_slots_count = user_listings.len();
 
         let candidates = pricing::filter_candidates(mapped_items, parent_map);
@@ -84,18 +82,18 @@ impl ListingSyncService {
 
         let endo_rate = pricing::derive_endo_to_plat_from_mods().await;
 
-        let (priced_candidates, upgrade_suggestions) = cli::build_priced_candidates(
+        let (priced_candidates, upgrade_suggestions) = pricing::build_priced_candidates(
             candidates,
             endo_rate,
             parent_map,
             requirements,
             wfcd_by_ref,
             wfm_by_name,
-            &cli::LiveStatsSource,
+            &pricing::LiveStatsSource,
         )
         .await;
 
-        let priced_candidates = cli::sort_candidates(priced_candidates, &existing_listings_map);
+        let priced_candidates = pricing::sort_candidates(priced_candidates, &existing_listings_map);
         let priced_candidates: Vec<_> = if let Some(min) = min_price {
             priced_candidates
                 .into_iter()
@@ -105,8 +103,8 @@ impl ListingSyncService {
             priced_candidates
         };
 
-        let blacklist_set = cli::load_blacklist()?;
-        let keeplist = cli::load_keeplist()?;
+        let blacklist_set = config_io::load_blacklist()?;
+        let keeplist = config_io::load_keeplist()?;
 
         Ok(ListingSync {
             username,
