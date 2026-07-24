@@ -9,18 +9,19 @@ use crate::AppResult;
 use reqwest::header::USER_AGENT;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::SystemTime;
 use tokio::time::{Duration, sleep};
 
 use crate::config::MIN_DAILY_VOLUME;
 use crate::mapping::{BuildParentMap, BuildRequirements, resolve_set_item};
 use crate::models::{MappedItem, WfcdItem, WfmItem, WfmStatsItem, WfmStatsResponse};
-use crate::repository::{StatisticsRepository, StatisticsRepositoryJson};
+use crate::repository::{StatisticsRepository, StatisticsRepositorySqlite};
 use crate::wfm_client::{ListingKey, Order as OwnedOrder};
 use crate::{tseprintln, tsprintln};
 
+/// Retained for compatibility: `fetch_statistics` no longer reads/writes
+/// this directory (see `StatisticsRepositorySqlite` / `market.db`), but the
+/// path is kept in case anything else in the crate still references it.
 pub const STATS_CACHE_DIR: &str = "cache/statistics";
 
 /// Number of attempts (including the first) made per slug before giving up.
@@ -58,24 +59,15 @@ fn stats_http_client() -> &'static reqwest::Client {
 /// Returns an error if file operations fail, JSON parsing fails, or all retry attempts
 /// are exhausted without a successful response.
 pub async fn fetch_statistics(slug: &str) -> AppResult<WfmStatsResponse> {
-    fs::create_dir_all(STATS_CACHE_DIR)?;
-    let cache_path = PathBuf::from(STATS_CACHE_DIR).join(format!("{slug}.json"));
-
-    // Phase 2 cleanup: the TTL check still needs the file's own mtime directly
-    // (not part of the StatisticsRepository trait), but the actual cached-value
-    // read now goes through StatisticsRepositoryJson instead of a second
-    // hand-rolled read_to_string + from_str here.
-    if cache_path.exists()
-        && let Ok(metadata) = fs::metadata(&cache_path)
-        && let Ok(modified) = metadata.modified()
-        && let Ok(duration) = SystemTime::now().duration_since(modified)
-        && duration < Duration::from_secs(24 * 60 * 60)
+    // Phase 3: the 24h TTL check and the cached-value read both go through
+    // StatisticsRepositorySqlite (`market.db`) now, replacing the old
+    // per-file JSON cache and its file-mtime TTL check.
+    let stats_repo: StatisticsRepositorySqlite<WfmStatsResponse> =
+        StatisticsRepositorySqlite::open_default()?;
+    if stats_repo.is_fresh(slug)?
+        && let Ok(stats) = stats_repo.get(&slug.to_string())
     {
-        let stats_repo: StatisticsRepositoryJson<WfmStatsResponse> =
-            StatisticsRepositoryJson::open_default();
-        if let Ok(stats) = stats_repo.get(&slug.to_string()) {
-            return Ok(stats);
-        }
+        return Ok(stats);
     }
 
     sleep(Duration::from_millis(400)).await;
@@ -96,11 +88,13 @@ pub async fn fetch_statistics(slug: &str) -> AppResult<WfmStatsResponse> {
         match send_result {
             Ok(response) if response.status().is_success() => {
                 let stats: WfmStatsResponse = response.json().await?;
-                let mut stats_repo: StatisticsRepositoryJson<WfmStatsResponse> =
-                    StatisticsRepositoryJson::open_default();
-                // Same as before: caching is best-effort, a write failure
-                // doesn't fail the fetch itself.
-                let _ = stats_repo.upsert_ref(slug, &stats);
+                if let Ok(mut stats_repo) =
+                    StatisticsRepositorySqlite::<WfmStatsResponse>::open_default()
+                {
+                    // Same as before: caching is best-effort, a write
+                    // failure doesn't fail the fetch itself.
+                    let _ = stats_repo.upsert_ref(slug, &stats);
+                }
                 return Ok(stats);
             }
             Ok(response) => {

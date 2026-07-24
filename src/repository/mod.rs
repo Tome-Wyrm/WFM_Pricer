@@ -32,6 +32,7 @@ mod inventory_repository;
 mod market_repository;
 mod reference_repository;
 mod settings_repository;
+mod sqlite_statistics_repository;
 mod statistics_repository;
 mod vendor_repository;
 
@@ -39,5 +40,6 @@ pub use inventory_repository::InventoryRepositoryJson;
 pub use market_repository::{MarketRepositoryJson, REFRESH_HISTORY_KEY};
 pub use reference_repository::ReferenceRepositoryJson;
 pub use settings_repository::SettingsRepositoryToml;
+pub use sqlite_statistics_repository::{MARKET_DB_PATH, StatisticsRepositorySqlite};
 pub use statistics_repository::StatisticsRepositoryJson;
 pub use vendor_repository::VendorRepositoryToml;

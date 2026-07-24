@@ -253,7 +253,7 @@ The two named-but-unbuilt services from the plan — `PriceInventoryService` and
 
 ---
 
-# Phase 2 — Repository Layer
+# Phase 2 — Repository Layer ✅
 
 ## Goal
 
