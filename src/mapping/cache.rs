@@ -16,7 +16,7 @@ use crate::config::{
     CACHE_DIR, FULL_ITEMS_CACHE_FILE, RELICS_CACHE_FILE, WFCD_CACHE_FILE, WFM_CACHE_FILE,
 };
 use crate::models::WfmItem;
-use crate::repository::{MarketRepository, MarketRepositoryJson, REFRESH_HISTORY_KEY};
+use crate::repository::{MarketRepository, MarketRepositorySqlite, REFRESH_HISTORY_KEY};
 use crate::vendor;
 use crate::wfm_client::wfm_error_for_status;
 use crate::{tseprintln, tsprintln};
@@ -58,11 +58,11 @@ pub async fn update_caches() -> AppResult<()> {
 
     tsprintln!("Latest WFCD Commit SHA: {latest_sha}");
 
-    // Phase 2 cleanup: read the last-known refresh record through the repository
-    // layer instead of hand-rolling the METADATA_FILE read/parse here. Behavior is
-    // unchanged (same file, same struct) — this just routes it through
-    // MarketRepositoryJson so the repository is actually exercised, not dead code.
-    let market_repo = MarketRepositoryJson;
+    // Phase 3: refresh record now lives in market.db (`refresh_history` table)
+    // instead of METADATA_FILE — same CacheMetadata struct, same fixed key,
+    // just SQLite-backed per the architecture plan. See MarketRepositorySqlite.
+    let market_repo: MarketRepositorySqlite<CacheMetadata> =
+        MarketRepositorySqlite::open_default()?;
     let mut cache_invalidated = true;
     if Path::new(WFCD_CACHE_FILE).exists()
         && Path::new(WFM_CACHE_FILE).exists()
@@ -111,14 +111,15 @@ pub async fn update_caches() -> AppResult<()> {
         fs::write(WFM_CACHE_FILE, wfm_bytes)?;
         tsprintln!("WFM items list cached successfully.");
 
-        // Phase 2 cleanup: write the refresh record through the repository layer
-        // instead of a direct fs::write here. Same file (METADATA_FILE), same
-        // struct — MarketRepositoryJson::upsert does the serialize + write.
+        // Phase 3: write the refresh record through MarketRepositorySqlite
+        // (market.db) instead of METADATA_FILE. Same struct, same fixed key —
+        // just a transactional SQLite upsert instead of fs::write.
         let metadata = CacheMetadata {
             wfcd_commit_hash: latest_sha,
             last_updated: format!("{:?}", std::time::SystemTime::now()),
         };
-        let mut market_repo = MarketRepositoryJson;
+        let mut market_repo: MarketRepositorySqlite<CacheMetadata> =
+            MarketRepositorySqlite::open_default()?;
         market_repo.upsert(REFRESH_HISTORY_KEY.to_string(), metadata)?;
         tsprintln!("Cache metadata updated.");
     }

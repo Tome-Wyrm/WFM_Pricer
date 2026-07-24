@@ -20,6 +20,7 @@
 //! traits above:
 //!
 //! - `StatisticsRepositorySqlite` → `market.db`
+//! - `MarketRepositorySqlite` → `market.db` (`refresh_history` table)
 //! - `ReferenceRepositorySqlite` → `reference.db` (`vendors_raw` table)
 //! - `VendorRepositorySqlite` → `reference.db` (`vendor_overlay` table)
 //!
@@ -44,6 +45,7 @@ mod inventory_repository;
 mod market_repository;
 mod reference_repository;
 mod settings_repository;
+mod sqlite_market_repository;
 mod sqlite_reference_repository;
 mod sqlite_statistics_repository;
 mod sqlite_vendor_repository;
@@ -54,6 +56,7 @@ pub use inventory_repository::InventoryRepositoryJson;
 pub use market_repository::{MarketRepositoryJson, REFRESH_HISTORY_KEY};
 pub use reference_repository::ReferenceRepositoryJson;
 pub use settings_repository::SettingsRepositoryToml;
+pub use sqlite_market_repository::MarketRepositorySqlite;
 pub use sqlite_reference_repository::{REFERENCE_DB_PATH, ReferenceRepositorySqlite};
 pub use sqlite_statistics_repository::{MARKET_DB_PATH, StatisticsRepositorySqlite};
 pub use sqlite_vendor_repository::VendorRepositorySqlite;
