@@ -1,588 +1,198 @@
-# WFM Pricer — Architecture Evolution Plan (v0.3)
+# WFM Pricer — Architecture & Evolution Plan (v1.2)
 
-## Purpose
+## Purpose & Primary Goals
 
-WFM Pricer is evolving from a command-line pricing utility into a modular, local-first desktop application.
+WFM Pricer is evolving from a CLI utility into a modular, local-first desktop
+application.
 
-The project's long-term goals are:
+The **two primary goals** of the project are:
 
-* Accurate market analysis
-* Historical price analytics
-* Automated pricing recommendations
-* Vendor profitability analysis
-* Inventory valuation
-* Future graphical interface
-* Clean, maintainable architecture
+1. **Desktop GUI Application**: A modern, interactive desktop GUI built on a
+   shared, presentation-agnostic application service core.
+2. **SQLite Persistence & Curated Market Data**: Structured database
+   persistence for market history, canonical reference data, and application
+   state (`market.db`, `reference.db`, `profile.db`).
 
-The CLI remains a supported interface but should become one presentation layer over a reusable application core.
-
----
-
-# Current Architecture Status
-
-## Completed
-
-* Modular CLI architecture
-* Application orchestration (`app.rs`)
-* HTTP abstraction
-* WFM client abstraction
-* Pricing engine
-* Mapping subsystem
-* Vendor subsystem
-* Logging subsystem
-* Configuration system
-* Phase 1 architecture cleanup
-* **Phase 1.5 — Application Services (all six services implemented)**:
-  * `InventoryImportService`
-  * `ListingSyncService`
-  * `SetAnalysisService`
-  * `VendorAnalysisService`
-  * `RelicSellService`
-  * `PrimedModPriceService`
-* CLI modules are now thin orchestration layers (`header → call service → print`)
-* Domain logic extracted from CLI into services
-* `mapping::` and `wfm_client::` exports cleaned up (no `self`)
-* **Phase 2 — Repository Layer (JSON/TOML-backed initial implementations)**:
-  * `StatisticsRepository` / `MarketRepository` / `ReferenceRepository` / `VendorRepository` — wired to existing on-disk sources (`cache/statistics/`, `cache/metadata_cache.json`, `cache/vendors_raw_cache.json`, `config/vendors.toml`) and called from real code paths (`pricing::fetch_statistics`, `mapping::cache::update_caches`, `VendorAnalysisService::load_vendors`)
-  * `InventoryRepository` / `SettingsRepository` — trait + struct scaffolding only; both return `RepositoryError::Backend` rather than being wired up, pending `ingestion.rs`'s inventory type and a settings file that doesn't exist yet
-
-## In Progress
-
-* Vendor reference data
-* Database design
-* Application service planning
-
-## Planned
-
-* SQLite persistence (repositories currently JSON/TOML-backed — see Phase 2 status)
-* Historical market database
-* GUI
-* Interactive analytics
+The CLI remains supported as a secondary interface invoking the exact same
+Application Services as the GUI.
 
 ---
 
-# Guiding Principles
+## Key Architectural Directives
 
-## Separation of Concerns
+1. **Spreadsheet Ingestion Pipeline for Reference Data**:
+   - `reference.db` is user-curated game knowledge.
+   - To allow easy entry and maintenance of new vendors, offerings,
+     multi-currency costs (`AnyOf`/`AllOf`), and standing systems, the
+     application includes a **Spreadsheet Ingestion Pipeline** (e.g. CSV/TSV or
+     Excel format).
+   - Spreadsheet Source Data $\rightarrow$ Validation $\rightarrow$ Importer
+     $\rightarrow$ `reference.db`.
 
-The application should clearly separate:
+2. **External Data Sources & File Support (JSON/TOML)**:
+   - External inputs (such as user-supplied `inventory.json`, `AlecaFrame`
+     exports, or local user configuration files like `keeplist.toml` /
+     `blacklist.toml`) remain supported as external files.
+   - Internal app caches (e.g. WFCD item snapshots, WFM market statistics,
+     historical price snapshots) transition to SQLite.
 
-Presentation
+3. **Core Vendor Arbitrage Engine**:
+   - Curating vendor offering data, multi-currency costs (`AnyOf`/`AllOf`), and
+     standing/currency arbitrage ("what is the best item to buy with my
+     rep/ducats/tokens to make plat?") is **first-class core functionality**.
+   - Raw community data contains noise and discrepancies; `reference.db` serves
+     as the authoritative, curated reference store for vendor items,
+     currencies, and standing rates.
 
-* CLI
-* Future GUI
+4. **Repository Abstraction Layer**:
+   - `InventoryRepository` ingests external inventory files (`inventory.json` /
+     AlecaFrame data) and caches mapped results into `profile.db` for fast GUI
+     operations.
+   - `SettingsRepository` supports both local config file sync and DB-backed
+     settings state.
 
-Application
-
-* User-facing workflows
-* Cross-domain coordination
-
-Domain
-
-* Pricing
-* Mapping
-* Vendors
-* Inventory
-* Market analysis
-
-Persistence
-
-* Repositories
-* Validation
-* Data migration
-
-Storage
-
-* SQLite databases
-
----
-
-## Domain Ownership
-
-Each subsystem owns its own rules.
-
-Pricing determines value.
-
-Mapping determines identity.
-
-Vendor handles vendor-specific mechanics.
-
-Repositories handle persistence.
-
-Presentation formats results.
-
-No layer should depend on implementation details of another.
+5. **GUI & CLI Presentation Decoupling**:
+   - Interactive prompt loops (`candidate.rs` and `vendor::interactive`) are
+     abstracted into event handlers / command callbacks so both GUI dialogs and
+     CLI commands invoke identical core services.
 
 ---
 
-## Temporary Systems Are Acceptable
-
-Temporary implementations are encouraged when they provide immediate value and have a clear migration path.
-
-Examples:
-
-JSON statistics cache
-
-↓
-
-Market database
-
-CLI-only workflow
-
-↓
-
-CLI + GUI
-
-Hardcoded/configured vendor watchlists
-
-↓
-
-Reference database
-
-The project should prefer incremental migration over large rewrites.
-
----
-
-## Local-First
-
-The application is designed to function primarily from locally stored data.
-
-Network services update local databases.
-
-Analytics operate against local data.
-
----
-
-# Target Architecture
+## Target Architecture
 
 ```text
-          GUI          CLI
-           │            │
-           └──────┬─────┘
-                  │
-                  ▼
-        Application Services
-                  │
-      ┌───────────┼───────────┐
-      │           │           │
-  Pricing     Vendor      Mapping
-   Engine      Engine       Engine
-      │           │           │
-      └───────────┼───────────┘
-                  │
-            Repositories
-                  │
-      ┌───────────┼───────────┐
-      │           │           │
-   market.db  reference.db profile.db
+       ┌────────────────────────┐      ┌────────────────────────┐
+       │   Desktop GUI (Iced)   │      │        CLI App         │
+       └───────────┬────────────┘      └───────────┬────────────┘
+                   │                               │
+                   └───────────────┬───────────────┘
+                                   │
+                                   ▼
+                       Application Services Core
+        (InventoryImport, Pricing, ListingSync, VendorAnalysis)
+                                   │
+                                   ▼
+                      Repository Abstraction Layer
+            (MarketRepo, ReferenceRepo, ProfileRepo, InventoryRepo)
+                                   │
+       ┌───────────────────────────┼───────────────────────────┐
+       ▼                           ▼                           ▼
+   market.db                  reference.db                 profile.db
+(Price History,           (Canonical Vendor Data,       (User State, Mapped
+ API Statistics)          Currencies, Items, Relics)     Inventory, Settings)
+       ▲                           ▲                           ▲
+       │ (API Updates)             │                           │ (Ingests inventory.json
+       │                           │                           │  & user config files)
+       │              ┌────────────┴────────────┐
+       │              │  Spreadsheet Importer   │
+       │              │ (CSV/TSV/Excel Curated) │
+       │              └─────────────────────────┘
 ```
 
-Presentation layers (CLI and GUI) should contain minimal business logic and both invoke the same Application Services directly.
+---
+
+## Execution Roadmap
+
+### Phase 1 — Core Consolidation & Async Handlers
+
+- [x] Application Services layer (`InventoryImportService`, `ListingSyncService`,
+  `SetAnalysisService`, `VendorAnalysisService`, `RelicSellService`,
+  `PrimedModPriceService`).
+- [x] Audit `candidate.rs` and `vendor::interactive` for prompt coupling.
+- [x] Design async event/callback pattern (`CandidatePromptHandler`,
+  `VendorPromptHandler`).
+- [ ] Refactor interactive CLI prompt loops to consume event-driven handlers.
 
 ---
 
-# Phase 1 — Clarify Module Boundaries ✅
+### Phase 2 — SQLite Persistence & Reference Ingestion Pipeline
 
-## Goal
+Migrate internal caches to SQLite and build the user-facing reference data
+spreadsheet importer.
 
-Separate presentation from decision logic.
+#### 1. Spreadsheet Ingestion Pipeline (`reference.db`)
 
-### Completed
+- [x] **Format**: CSV/TSV or Excel spreadsheet format for human editing.
+- [x] **Validation**: Checks for unknown items, invalid currency keys, duplicate
+  entries, and missing fields before importing (`validate_spreadsheet_offerings`).
+- [ ] **Tables**: `items`, `relics`, `vendors`, `vendor_offerings` (with
+  `AnyOf`/`AllOf` multi-currency parsing).
 
-* Extracted pure decision logic from interactive CLI workflows.
-* Relocated misplaced aggregation logic into the pricing domain.
-* Removed magic constants.
-* Increased unit-test coverage.
-* Moved temporary Primed Mods data toward configuration.
-* Added module documentation.
-* Established clearer ownership boundaries.
-* Migrated decision logic out of `candidate.rs`.
-* Relocated CLI-homed domain code out of `cli/` into services.
+#### 2. `market.db` (Market & Statistics Knowledge)
 
-## Ongoing Rule
+- [x] **Audit**: Statistics & Market SQLite repositories implemented.
+- [ ] **Tables**: `statistics_cache`, `price_history`, `refresh_history`.
+- [ ] **Repositories**: `StatisticsRepositorySqlite`, `MarketRepositorySqlite`.
 
-CLI modules should primarily:
+#### 3. `profile.db` (User Data & Inventory Cache)
 
-* Parse arguments
-* Collect user input
-* Display output
-* Invoke application services
+- [x] **Repositories**: `InventoryRepositorySqlite`, `SettingsRepositorySqlite`.
+- [ ] **Tables**: `inventory_cache`, `mastery_status`, `user_settings`,
+  `saved_filters`.
 
-Business decisions belong elsewhere.
+#### 4. Repository Cleanup
 
----
-
-# Phase 1.5 — Introduce Application Services ✅
-
-## Goal
-
-Create presentation-independent workflows shared by CLI and future GUI.
-
-These services coordinate multiple domains without containing presentation logic.
-
-### Implemented Services
-
-All six services from the plan are now implemented and exported:
-
-* `InventoryImportService` — imports inventory data
-* `ListingSyncService` — synchronizes listings
-* `SetAnalysisService` — analyzes item sets
-* `VendorAnalysisService` — analyzes vendor inventories
-* `RelicSellService` — relic sell recommendations
-* `PrimedModPriceService` — Primed Mod pricing
-
-### Status
-
-* **CLI becomes thin orchestration** — ✓. `sell.rs`, `pricing.rs`, `check_sets.rs`, `sell_relics.rs`, `primed_mods.rs` are all now `header → call service → print`.
-* **GUI can invoke services directly** — ✓. Six services now exist with clean public APIs.
-* **Cross-domain workflows have a single implementation** — ✓ for everything previously duplicated.
-* **Services return structured models, not formatted text** — ✓ across all six.
-
-### Notes on Deliberate Exceptions
-
-Two CLI modules remain as-is because they don't have a GUI-shaped equivalent yet:
-
-* `cli/candidate.rs` — needs synchronous per-item stdin prompts mid-workflow.
-* `vendor::interactive` (location picker) — same pattern; `vendor_analysis.rs` doc comment already calls this out.
-
-`src/debug_mastery.rs` mixes checklist logic with `tsprintln!` calls directly, but it's a single-domain, single-call-site diagnostic report — extracting it would not remove any duplication.
-
-The two named-but-unbuilt services from the plan — `PriceInventoryService` and `MarketRefreshService` — don't have an existing CLI workflow to extract *from* yet; building them now would mean designing new behavior rather than refactoring.
-
-**Phase 1.5 is complete.**
+- [x] Remove legacy stubs and update `src/repository/mod.rs` exports.
 
 ---
 
-# Phase 2 — Repository Layer ✅
+### Phase 3 — Desktop GUI Architecture & Implementation
 
-## Goal
+Build a modern native desktop UI in Rust (framework: **Iced** or
+**eframe/egui**) consuming the shared Application Services and SQLite
+Repositories.
 
-Introduce persistence abstractions before changing storage.
+#### UI Screens & Modules
 
-Repositories define the application's persistence API.
+1. **Dashboard & Portfolio Valuation**
+   - Total inventory estimated platinum value.
+   - High-value sell recommendations.
+   - WFM connection status and quick market update button.
 
-Examples:
+2. **Inventory Manager & Pricing Matrix**
+   - Filterable/sortable grid of mapped player inventory items from
+     `inventory.json` / `profile.db`.
+   - Quick price check vs. live buy-order book.
+   - One-click list creation for Warframe.Market.
 
-* StatisticsRepository
-* MarketRepository
-* ReferenceRepository
-* InventoryRepository
-* VendorRepository
-* SettingsRepository
+3. **Vendor Profitability & Arbitrage Dashboard** (Core Feature)
+   - Ranked tables of syndicate & vendor rewards by Platinum per
+     Standing/Currency.
+   - Multi-currency cost calculator (`AllOf` / `AnyOf`).
+   - One-click "Reload Reference Spreadsheet" button to update `reference.db`.
 
-Initially repositories may wrap existing JSON or in-memory implementations.
+4. **Incomplete Set & Relic Selling Advisor**
+   - Visual breakdown of owned set components vs. missing components.
+   - Calculated flip margins (buying missing pieces to sell complete set).
+   - Relic sell calculator with copyable WFM whisper commands.
 
-Later they become SQLite-backed without affecting domain logic.
-
-### Acceptance Criteria
-
-* Business logic does not execute SQL directly.
-* Storage implementation becomes replaceable.
-* Validation occurs at repository boundaries.
-
-### Status
-
-* **Business logic does not execute SQL directly** — N/A yet; no SQL exists until Phase 3. What's true today: `StatisticsRepository`/`MarketRepository`/`ReferenceRepository`/`VendorRepository` callers (`pricing::fetch_statistics`, `mapping::cache::update_caches`, `VendorAnalysisService::load_vendors`) go through the trait rather than calling `fs`/`serde_json`/`toml` directly at the call site.
-* **Storage implementation becomes replaceable** — ✓ for the four wired repositories. Each is JSON- or TOML-backed today (`JsonDirStore`, direct file I/O, or existing `vendor::raw`/`vendor::metadata` functions) behind the same trait Phase 3 will re-implement over SQLite.
-* **Validation occurs at repository boundaries** — ✓ where meaningful today: `JsonDirStore` rejects path-unsafe keys; `MarketRepositoryJson` rejects any key other than its one fixed record. Deeper validation (duplicate detection, broken references — see Phase 4) is out of scope until there's curated data to validate against.
-* **Repository traits have unit tests** — partial. `JsonDirStore` (the statistics backing store) and `MarketRepositoryJson`'s key-validation branches are covered. `ReferenceRepositoryJson`/`VendorRepositoryToml` aren't yet — their logic is currently coupled to real hardcoded file paths (`cache/vendors_raw_cache.json`, `config/vendors.toml`) rather than an injectable path, so testing them without touching real cache files would mean extracting the dedup/upsert logic first.
-
-### Notes on Deliberate Exceptions
-
-Same six repositories named in the plan were all scaffolded, but only four are wired to a real source:
-
-* `StatisticsRepository` → `cache/statistics/` (`StatisticsRepositoryJson<WfmStatsResponse>`), used by `pricing::fetch_statistics`.
-* `MarketRepository` → `cache/metadata_cache.json` (`MarketRepositoryJson`), used by `mapping::cache::update_caches`.
-* `ReferenceRepository` → `cache/vendors_raw_cache.json` via `vendor::raw` (`ReferenceRepositoryJson`), used by `VendorAnalysisService::load_vendors`.
-* `VendorRepository` → `config/vendors.toml` via `vendor::metadata` (`VendorRepositoryToml`), used by `VendorAnalysisService::load_vendors`.
-* `InventoryRepository` / `SettingsRepository` — trait + struct only, both fail safely with `RepositoryError::Backend` rather than panicking. `InventoryRepository`'s real source (`ingestion.rs`'s `inventory.json` handling) wasn't part of this pass; `SettingsRepository` has no real source to wrap yet — no `config/settings.toml` (or equivalent) exists in the current tree.
-
-**Phase 2 (JSON/TOML-backed) is functionally complete for the four sources that exist today.** The SQLite migration (Phase 3) and the two unwired repositories remain.
+5. **Settings & Data Management**
+   - WFM API key configuration.
+   - Reference spreadsheet file location & import status.
+   - External file config paths (`keeplist.toml`, `blacklist.toml`,
+     `inventory.json`).
+   - SQLite DB maintenance (backup, force refresh reference/market data).
 
 ---
 
-# Phase 3 — SQLite Persistence
+### Phase 4 — Analytics & Automated Workflows
 
-## Goal
-
-Replace file-based caches with structured storage.
-
-Three SQLite databases will be used.
-
----
-
-## market.db
-
-Purpose:
-
-Market knowledge.
-
-Stores:
-
-* Market statistics
-* Historical snapshots
-* Volatility
-* Shock detection
-* Price models
-* API refresh history
-* Market metadata
-
-Characteristics:
-
-* Frequently updated
-* Fully regenerable
-* Analytics-focused
+- Historical price charts in GUI (drawing from `market.db` price history).
+- Background market refresh and notification triggers for arbitrage
+  opportunities.
+- Multi-profile support in `profile.db`.
 
 ---
 
-## reference.db
-
-Purpose:
-
-Canonical game knowledge.
-
-Stores:
-
-* Vendors
-* Vendor inventories
-* Item metadata
-* Blueprint relationships
-* Mastery requirements
-* Standing systems
-* Alias tables
-* Other curated reference data
-
-Characteristics:
-
-* Slowly changing
-* Curated
-* Version-controlled
-
----
-
-## profile.db
-
-Purpose:
-
-User-specific information.
-
-Stores:
-
-* Inventory
-* Mastery
-* Settings
-* Authentication
-* Listing history
-* Watchlists
-* Saved filters
-
-Characteristics:
-
-* Unique per user
-* Highest backup priority
-* Never regenerated
-
----
-
-### Acceptance Criteria
-
-* Transactions replace file writes.
-* Historical data is queryable.
-* Corruption from partial writes is eliminated.
-* Business logic remains storage-agnostic.
-
----
-
-# Phase 4 — Reference Data System
-
-## Goal
-
-Build a curated authoritative reference database.
-
-The application should not rely on community sources being perfectly accurate.
-
-Community data becomes an input.
-
-The reference database becomes the authority.
-
----
-
-## Initial Modules
-
-* Vendors
-* Vendor inventories
-* Standing currencies
-* Blueprint relationships
-* Item aliases
-* Item metadata
-
----
-
-## Import Pipeline
-
-Reference spreadsheets
-
-↓
-
-Validation
-
-↓
-
-Importer
-
-↓
-
-reference.db
-
-Validation should detect:
-
-* Duplicate entries
-* Unknown items
-* Invalid currencies
-* Broken references
-* Missing required fields
-
----
-
-## Future Reference Modules
-
-* Crafting recipes
-* Drop tables
-* Prime Vault history
-* Mission rewards
-* Syndicates
-* Resources
-* Event schedules
-
----
-
-### Acceptance Criteria
-
-* New vendors can be added through curated data.
-* External sources become optional.
-* Data quality is deterministic and reproducible.
-
----
-
-# Phase 5 — Market Knowledge
-
-## Goal
-
-Treat market information as historical knowledge instead of cached downloads.
-
-Examples:
-
-* Price history
-* Rolling averages
-* Volatility
-* Seasonal behavior
-* Recovery detection
-* Market shocks
-
-Future analytics should operate from stored history rather than downloaded snapshots.
-
-### Acceptance Criteria
-
-* Historical analysis becomes first-class.
-* Missing data is detectable.
-* Confidence metrics become available.
-
----
-
-# Phase 6 — GUI
-
-## Goal
-
-Create a desktop application using the existing architecture.
-
-Potential sections:
-
-Dashboard
-
-* Portfolio value
-* Market changes
-* Alerts
-
-Inventory
-
-* Owned items
-* Missing components
-* Sell recommendations
-
-Market
-
-* Historical charts
-* Volatility
-* Trend analysis
-
-Vendors
-
-* Current inventories
-* Profit opportunities
-
-Listings
-
-* Active orders
-* Synchronization
-* Recommendations
-
-Settings
-
-* Profiles
-* Databases
-* Refresh scheduling
-
-### Acceptance Criteria
-
-* GUI contains minimal business logic.
-* Existing CLI functionality remains.
-* Both interfaces use identical application services.
-
----
-
-# Future Features
-
-Once the architecture is complete, the project can support:
-
-* Historical market graphs
-* Better price prediction
-* Automatic listing recommendations
-* Portfolio tracking
-* Vendor arbitrage
-* Set profitability analysis
-* Build profitability
-* Multi-profile support
-* Background synchronization
-* Data export/import
-* Advanced search
-* Saved reports
-* Interactive dashboards
-
----
-
-# Development Philosophy
-
-When implementing new features:
-
-1. Prefer small, behavior-preserving refactors.
-2. Move logic closer to its owning domain.
-3. Keep presentation separate from decisions.
-4. Build repositories before changing storage.
-5. Treat spreadsheets as source data and SQLite as generated state where appropriate.
-6. Keep temporary implementations replaceable.
-7. Add tests whenever logic becomes pure.
-8. Favor incremental migration over architectural rewrites.
-
----
-
-# Definition of Success
-
-A completed architecture should satisfy the following:
-
-* Business logic is independent of presentation.
-* Business logic is independent of storage.
-* The CLI and GUI invoke the same application services.
-* Market analysis operates on structured historical data.
-* Reference data is curated, validated, and reproducible.
-* User data is isolated from downloaded data.
-* New analytical features can be added without restructuring the application.
+## Success Criteria
+
+1. User-friendly spreadsheet import pipeline populating and updating
+   `reference.db`.
+2. Ingest external `inventory.json` and user TOML configs smoothly into
+   SQLite repository layers.
+3. Complete SQLite backing for Market, Reference, and User Profile data.
+4. First-class Vendor Arbitrage engine providing accurate plat-per-standing
+   calculations.
+5. Clean presentation separation where GUI and CLI execute identical logic
+   through Application Services.
+6. Fully functional, responsive Desktop GUI.
