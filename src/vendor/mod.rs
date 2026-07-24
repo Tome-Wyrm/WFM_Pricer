@@ -19,6 +19,7 @@ pub mod metadata;
 mod network;
 pub mod raw;
 mod scoring;
+pub mod spreadsheet;
 
 pub use interactive::run_vendor_cli;
 pub use lua::{LuaKey, LuaValue, RankList, Token, parse, tokenize};

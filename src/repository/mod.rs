@@ -41,24 +41,20 @@ pub use traits::{
     SettingsRepository, StatisticsRepository, VendorRepository,
 };
 
-mod inventory_repository;
 mod market_repository;
 mod reference_repository;
-mod settings_repository;
+mod sqlite_inventory_repository;
 mod sqlite_market_repository;
 mod sqlite_reference_repository;
+mod sqlite_settings_repository;
 mod sqlite_statistics_repository;
 mod sqlite_vendor_repository;
 mod statistics_repository;
 mod vendor_repository;
 
-pub use inventory_repository::InventoryRepositoryJson;
-pub use market_repository::{MarketRepositoryJson, REFRESH_HISTORY_KEY};
-pub use reference_repository::ReferenceRepositoryJson;
-pub use settings_repository::SettingsRepositoryToml;
+pub use sqlite_inventory_repository::{InventoryRepositorySqlite, PROFILE_DB_PATH};
 pub use sqlite_market_repository::MarketRepositorySqlite;
 pub use sqlite_reference_repository::{REFERENCE_DB_PATH, ReferenceRepositorySqlite};
+pub use sqlite_settings_repository::{DEFAULT_SETTINGS_KEY, SettingsRepositorySqlite};
 pub use sqlite_statistics_repository::{MARKET_DB_PATH, StatisticsRepositorySqlite};
 pub use sqlite_vendor_repository::VendorRepositorySqlite;
-pub use statistics_repository::StatisticsRepositoryJson;
-pub use vendor_repository::VendorRepositoryToml;

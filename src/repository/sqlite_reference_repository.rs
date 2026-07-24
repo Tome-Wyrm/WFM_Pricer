@@ -60,6 +60,22 @@ where
                 key        TEXT PRIMARY KEY,
                 value_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             );
+             CREATE TABLE IF NOT EXISTS curated_vendor_offerings (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                vendor_key   TEXT NOT NULL,
+                vendor_name  TEXT NOT NULL,
+                location     TEXT,
+                vendor_group TEXT,
+                offering_name TEXT NOT NULL,
+                category     TEXT NOT NULL,
+                currency     TEXT NOT NULL,
+                cost_amount  REAL NOT NULL,
+                cost_mode    TEXT NOT NULL,
+                wfm_slug     TEXT,
+                target_rank  INTEGER,
+                notes        TEXT,
+                updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
              );",
         )
         .map_err(|e| RepositoryError::Backend(e.to_string()))?;
@@ -67,6 +83,59 @@ where
             conn: Mutex::new(conn),
             _marker: PhantomData,
         })
+    }
+
+    /// Bulk imports validated spreadsheet rows into the `curated_vendor_offerings` table.
+    ///
+    /// # Errors
+    /// Returns an error if database operations fail.
+    pub fn import_spreadsheet_rows(
+        &mut self,
+        rows: &[crate::vendor::spreadsheet::VendorSpreadsheetRow],
+    ) -> Result<usize, RepositoryError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| RepositoryError::Backend("reference db lock poisoned".into()))?;
+        let tx = conn.transaction().map_err(|e| RepositoryError::Backend(e.to_string()))?;
+
+        // Clear previous imported rows
+        tx.execute("DELETE FROM curated_vendor_offerings", [])
+            .map_err(|e| RepositoryError::Backend(e.to_string()))?;
+
+        let mut count = 0;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO curated_vendor_offerings (
+                        vendor_key, vendor_name, location, vendor_group, offering_name,
+                        category, currency, cost_amount, cost_mode, wfm_slug, target_rank, notes
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                )
+                .map_err(|e| RepositoryError::Backend(e.to_string()))?;
+
+            for row in rows {
+                stmt.execute(params![
+                    row.vendor_key,
+                    row.vendor_name,
+                    row.location,
+                    row.group,
+                    row.offering_name,
+                    row.category,
+                    row.currency,
+                    row.cost_amount,
+                    row.cost_mode,
+                    row.wfm_slug,
+                    row.target_rank,
+                    row.notes,
+                ])
+                .map_err(|e| RepositoryError::Backend(e.to_string()))?;
+                count += 1;
+            }
+        }
+
+        tx.commit().map_err(|e| RepositoryError::Backend(e.to_string()))?;
+        Ok(count)
     }
 }
 

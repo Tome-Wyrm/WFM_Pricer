@@ -20,6 +20,7 @@ mod listing_sync;
 mod primed_mod_prices;
 mod relic_sell;
 mod set_analysis;
+pub mod spreadsheet_ingestion;
 mod vendor_analysis;
 
 pub use inventory_import::{ImportedInventory, InventoryImportService};

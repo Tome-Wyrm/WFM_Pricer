@@ -15,6 +15,7 @@ mod check_sets;
 mod helpers;
 mod pricing;
 mod primed_mods;
+pub mod prompt_handler;
 mod report;
 mod sell;
 mod sell_relics;
