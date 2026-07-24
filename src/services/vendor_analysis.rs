@@ -10,8 +10,10 @@
 //! of being called directly from `vendor::interactive::run_vendor_cli`.
 
 use crate::repository::{
-    ReferenceRepository, ReferenceRepositoryJson, VendorRepository, VendorRepositoryToml,
+    ReferenceRepository, ReferenceRepositorySqlite, VendorRepository, VendorRepositorySqlite,
 };
+use crate::vendor::metadata::VendorMeta;
+use crate::vendor::raw::RawVendor;
 use crate::vendor::{MappedVendor, RankedOffering};
 use crate::{AppResult, http, tseprintln, tsprintln, vendor};
 
@@ -29,29 +31,45 @@ impl VendorAnalysisService {
         vendor::fetch_and_cache_vendors(http::shared_client()).await?;
         let mapped = vendor::build_and_write_vendor_cache()?;
 
-        // Phase 2 cleanup: read the cache this fetch just wrote back through
-        // ReferenceRepository/VendorRepository, so those repositories are
-        // exercised on every real vendor load instead of sitting unused.
-        // build_and_write_vendor_cache's own read/parse of these same files
-        // stays untouched — this is a read-only summary alongside it, not a
-        // replacement, until matching.rs itself is migrated onto the
-        // repository layer.
-        let reference_repo = ReferenceRepositoryJson;
-        let vendor_repo = VendorRepositoryToml;
-        match (reference_repo.list_keys(), vendor_repo.list_keys()) {
-            (Ok(raw_keys), Ok(overlay_keys)) => {
+        // Phase 3: mirror what this fetch just wrote (cache/vendors_raw_cache.json,
+        // config/vendors.toml) into reference.db via ReferenceRepository/
+        // VendorRepository, so those repositories hold real data on every vendor
+        // load instead of sitting unused. vendor::raw / vendor::metadata's own
+        // JSON/TOML files stay the source of truth for the fetch pipeline itself
+        // (fetch_and_cache_vendors / build_and_write_vendor_cache aren't touched)
+        // — this keeps reference.db in sync alongside them, same incremental
+        // migration approach Phase 3 used for market.db.
+        match Self::sync_reference_db() {
+            Ok((raw_count, overlay_count)) => {
                 tsprintln!(
-                    "Vendor repositories: {} raw vendor(s) cached, {} triaged in vendors.toml.",
-                    raw_keys.len(),
-                    overlay_keys.len()
+                    "Vendor repositories: {raw_count} raw vendor(s) cached, {overlay_count} triaged in vendors.toml."
                 );
             }
-            (Err(e), _) | (_, Err(e)) => {
-                tseprintln!("Warning: could not read vendor repositories for summary: {e}");
+            Err(e) => {
+                tseprintln!("Warning: could not sync vendor repositories (reference.db): {e}");
             }
         }
 
         Ok(mapped)
+    }
+
+    /// Mirrors the raw vendor cache and the `vendors.toml` overlay into
+    /// `reference.db`. Returns the number of raw vendors and overlay entries
+    /// written, for the summary line in [`Self::load_vendors`].
+    fn sync_reference_db() -> AppResult<(usize, usize)> {
+        let raw_vendors = vendor::raw::load_vendor_data()?;
+        let mut reference_repo = ReferenceRepositorySqlite::<RawVendor>::open_default()?;
+        for v in &raw_vendors {
+            reference_repo.upsert(v.key.clone(), v.clone())?;
+        }
+
+        let overlay = vendor::metadata::load_vendor_metadata()?;
+        let mut vendor_repo = VendorRepositorySqlite::<VendorMeta>::open_default()?;
+        for (key, meta) in &overlay {
+            vendor_repo.upsert(key.clone(), meta.clone())?;
+        }
+
+        Ok((raw_vendors.len(), overlay.len()))
     }
 
     /// Ranks `vendors`' offerings by cost-efficiency score, applying the demand-floor and
