@@ -120,11 +120,8 @@ where
             .conn
             .lock()
             .map_err(|_| RepositoryError::Backend("profile db lock poisoned".into()))?;
-        conn.execute(
-            "DELETE FROM inventory_cache WHERE key = ?1",
-            params![key],
-        )
-        .map_err(|e| RepositoryError::Backend(e.to_string()))?;
+        conn.execute("DELETE FROM inventory_cache WHERE key = ?1", params![key])
+            .map_err(|e| RepositoryError::Backend(e.to_string()))?;
         Ok(())
     }
 }

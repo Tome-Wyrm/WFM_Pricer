@@ -97,11 +97,27 @@ Application Services as the GUI.
 
 - [x] Application Services layer (`InventoryImportService`, `ListingSyncService`,
   `SetAnalysisService`, `VendorAnalysisService`, `RelicSellService`,
-  `PrimedModPriceService`).
+  `PrimedModPriceService`). *(Audit note, resolved: `relic_sell.rs` now returns
+  `RelicSellResult.warnings: Vec<String>` instead of calling `tseprintln!` directly;
+  `vendor_analysis.rs`'s `load_vendors` now returns a `LoadedVendors` struct
+  (`vendors` + `reference_sync: Result<(usize, usize), String>`) instead of printing
+  the reference.db sync line itself — `cli::sell_relics`/`vendor::interactive` print
+  both. `vendor::interactive` still imports `VendorAnalysisService` directly by
+  design: it's documented in-file as the presentation-layer entry point for vendor
+  mode, analogous to `cli::sell::run_cli`, not a domain module — the "domain never
+  depends on services" rule was never meant to cover it.)*
 - [x] Audit `candidate.rs` and `vendor::interactive` for prompt coupling.
+  *(Findings, resolved: the ayatan cyan/amber star-count prompts in
+  `handle_list_or_update` now go through `CandidatePromptHandler::prompt_ayatan_stars`
+  instead of raw `io::stdin`. The commented-out subtype-selection prompt was
+  intentionally left untouched — confirmed with Jacob it's a deliberate, currently-disabled
+  debug/manual-override block for diagnosing subtype-mapping issues, not live
+  coupling to fix.)*
 - [x] Design async event/callback pattern (`CandidatePromptHandler`,
-  `VendorPromptHandler`).
-- [ ] Refactor interactive CLI prompt loops to consume event-driven handlers.
+  `VendorPromptHandler`). *(`CandidatePromptHandler` now also covers ayatan star
+  counts via `prompt_ayatan_stars`, closing the gap noted after the last audit pass.
+  `TerminalPromptHandler` implements it for the CLI.)*
+- [x] Refactor interactive CLI prompt loops to consume event-driven handlers.
 
 ---
 
@@ -113,26 +129,52 @@ spreadsheet importer.
 #### 1. Spreadsheet Ingestion Pipeline (`reference.db`)
 
 - [x] **Format**: CSV/TSV or Excel spreadsheet format for human editing.
+  *(CSV/TSV only, via `vendor::spreadsheet::parse_vendor_csv` — no Excel support,
+  matches the plan's "e.g. CSV/TSV" wording.)*
 - [x] **Validation**: Checks for unknown items, invalid currency keys, duplicate
   entries, and missing fields before importing (`validate_spreadsheet_offerings`).
+  *(Partial — audit finding: `vendor::spreadsheet::validate_spreadsheet_rows` checks
+  missing fields and duplicates, but not "unknown items" against a known-item list or
+  "invalid currency keys" against a known-currency list. There's also a second,
+  unused, less-complete implementation of this same parse/validate pair in
+  `services/spreadsheet_ingestion.rs` — dead code, never called from anywhere, not
+  wired to any repository. Left unchecked pending a decision on which one to keep.)*
 - [ ] **Tables**: `items`, `relics`, `vendors`, `vendor_offerings` (with
   `AnyOf`/`AllOf` multi-currency parsing).
+  *(Audit finding: `reference.db` actually has `vendors_raw` and
+  `curated_vendor_offerings` — no `items`, `relics`, or `vendors` tables, and no
+  `vendor_offerings` table under that name. `curated_vendor_offerings.cost_mode` can
+  hold `"AnyOf"`/`"AllOf"` as a string, but each row is still one currency/amount —
+  there's no structured multi-currency-option modeling behind that string. Bigger gap:
+  `ReferenceRepositorySqlite::import_spreadsheet_rows` exists and works, but no CLI
+  command calls it — there's no way to actually run the import today.)*
 
 #### 2. `market.db` (Market & Statistics Knowledge)
 
 - [x] **Audit**: Statistics & Market SQLite repositories implemented.
 - [ ] **Tables**: `statistics_cache`, `price_history`, `refresh_history`.
-- [ ] **Repositories**: `StatisticsRepositorySqlite`, `MarketRepositorySqlite`.
+  *(Audit finding: actual tables are `statistics` (not `statistics_cache`) and
+  `refresh_history` ✓. No `price_history` table exists anywhere in the codebase —
+  historical price snapshots aren't being persisted yet, only current statistics
+  and refresh timestamps.)*
+- [x] **Repositories**: `StatisticsRepositorySqlite`, `MarketRepositorySqlite`.
 
 #### 3. `profile.db` (User Data & Inventory Cache)
 
 - [x] **Repositories**: `InventoryRepositorySqlite`, `SettingsRepositorySqlite`.
 - [ ] **Tables**: `inventory_cache`, `mastery_status`, `user_settings`,
   `saved_filters`.
+  *(Audit finding: `inventory_cache` ✓ and `user_settings` ✓ exist. No
+  `mastery_status` or `saved_filters` table exists anywhere in the codebase yet.)*
 
 #### 4. Repository Cleanup
 
 - [x] Remove legacy stubs and update `src/repository/mod.rs` exports.
+  *(Removed `StatisticsRepositoryJson`, `MarketRepositoryJson`, `ReferenceRepositoryJson`,
+  `VendorRepositoryToml`, the `json_backend::JsonDirStore` they shared, and the
+  never-wired-up `SettingsRepositoryToml` stub file. Confirmed dead first — none were
+  referenced outside their own file's tests. `mod.rs` now only declares/exports the
+  six `Sqlite` implementations.)*
 
 ---
 

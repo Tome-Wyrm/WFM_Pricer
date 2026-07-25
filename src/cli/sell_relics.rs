@@ -1,7 +1,7 @@
 use crate::AppResult;
 use crate::services::RelicSellService;
 
-use super::{capitalize_tier, print_header, tsprintln};
+use super::{capitalize_tier, print_header, tseprintln, tsprintln};
 
 /// `sell-relics`: matches owned relics (by refinement/tier) against the live public buy-order
 /// book and prints a whisper message for the best-paying, fulfillable buy order on each one,
@@ -32,6 +32,10 @@ pub async fn run_sell_relics_cli(min_price: Option<u32>) -> AppResult<()> {
         "Refreshing caches, mapping inventory, and checking live buy orders for every owned relic (respects WFM's 3 req/s limit, so this may take a bit)..."
     );
     let result = RelicSellService::sync(min_price).await?;
+
+    for warning in &result.warnings {
+        tseprintln!("{warning}");
+    }
 
     print_header(&format!("Whisper Messages ({})", result.messages.len()));
     if result.messages.is_empty() {

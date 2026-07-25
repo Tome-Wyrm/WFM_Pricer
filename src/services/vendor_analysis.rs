@@ -15,19 +15,33 @@ use crate::repository::{
 use crate::vendor::metadata::VendorMeta;
 use crate::vendor::raw::RawVendor;
 use crate::vendor::{MappedVendor, RankedOffering};
-use crate::{AppResult, http, tseprintln, tsprintln, vendor};
+use crate::{AppResult, http, vendor};
 
 pub(crate) struct VendorAnalysisService;
 
+/// Structured outcome of [`VendorAnalysisService::load_vendors`]: the mapped vendors
+/// (always present on `Ok`), plus how the incidental `reference.db` mirror sync went.
+/// Kept separate from the `Result` returned by `load_vendors` itself, since a failed
+/// reference-db sync is a warning, not a reason to fail the whole vendor load. Printing
+/// the sync outcome is a presentation concern and stays in `vendor::interactive`.
+/// (Architecture Evolution Plan, Phase 1 gap cleanup: services must not print directly.)
+pub(crate) struct LoadedVendors {
+    pub(crate) vendors: Vec<MappedVendor>,
+    /// `Ok((raw_count, overlay_count))` on a successful reference.db mirror sync, or the
+    /// stringified error if the sync itself failed (fetch/cache succeeded regardless).
+    pub(crate) reference_sync: Result<(usize, usize), String>,
+}
+
 impl VendorAnalysisService {
     /// Refreshes the cached vendor data from the wiki (if stale) and returns every
-    /// mapped vendor. Prints nothing — `fetch_and_cache_vendors`/`build_and_write_vendor_cache`
-    /// already do their own progress reporting (revid-cache hit/miss, parse counts), same as
-    /// before this service existed.
+    /// mapped vendor, plus the `reference.db` mirror sync outcome. Prints nothing —
+    /// `fetch_and_cache_vendors`/`build_and_write_vendor_cache` already do their own
+    /// progress reporting (revid-cache hit/miss, parse counts), same as before this
+    /// service existed; `reference_sync`'s summary line is now the caller's job too.
     ///
     /// # Errors
     /// Returns an error if the wiki fetch, Lua parse, or vendor-cache write fails.
-    pub(crate) async fn load_vendors() -> AppResult<Vec<MappedVendor>> {
+    pub(crate) async fn load_vendors() -> AppResult<LoadedVendors> {
         vendor::fetch_and_cache_vendors(http::shared_client()).await?;
         let mapped = vendor::build_and_write_vendor_cache()?;
 
@@ -39,18 +53,12 @@ impl VendorAnalysisService {
         // (fetch_and_cache_vendors / build_and_write_vendor_cache aren't touched)
         // — this keeps reference.db in sync alongside them, same incremental
         // migration approach Phase 3 used for market.db.
-        match Self::sync_reference_db() {
-            Ok((raw_count, overlay_count)) => {
-                tsprintln!(
-                    "Vendor repositories: {raw_count} raw vendor(s) cached, {overlay_count} triaged in vendors.toml."
-                );
-            }
-            Err(e) => {
-                tseprintln!("Warning: could not sync vendor repositories (reference.db): {e}");
-            }
-        }
+        let reference_sync = Self::sync_reference_db().map_err(|e| e.to_string());
 
-        Ok(mapped)
+        Ok(LoadedVendors {
+            vendors: mapped,
+            reference_sync,
+        })
     }
 
     /// Mirrors the raw vendor cache and the `vendors.toml` overlay into

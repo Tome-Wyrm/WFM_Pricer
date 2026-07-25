@@ -35,7 +35,9 @@ impl ValidationResult {
 }
 
 /// Parses a CSV/TSV spreadsheet file into raw records.
-pub fn parse_spreadsheet_file<P: AsRef<Path>>(path: P) -> AppResult<Vec<SpreadsheetVendorOffering>> {
+pub fn parse_spreadsheet_file<P: AsRef<Path>>(
+    path: P,
+) -> AppResult<Vec<SpreadsheetVendorOffering>> {
     let path = path.as_ref();
     let content = fs::read_to_string(path)?;
     let delimiter = if path.extension().and_then(|e| e.to_str()) == Some("tsv") {
@@ -52,7 +54,8 @@ pub fn parse_spreadsheet_file<P: AsRef<Path>>(path: P) -> AppResult<Vec<Spreadsh
 
     let mut offerings = Vec::new();
     for result in rdr.deserialize() {
-        let record: SpreadsheetVendorOffering = result.map_err(|e| format!("CSV Parse Error: {e}"))?;
+        let record: SpreadsheetVendorOffering =
+            result.map_err(|e| format!("CSV Parse Error: {e}"))?;
         offerings.push(record);
     }
 
@@ -60,9 +63,7 @@ pub fn parse_spreadsheet_file<P: AsRef<Path>>(path: P) -> AppResult<Vec<Spreadsh
 }
 
 /// Validates parsed spreadsheet records against rules (no empty item names, duplicate check, invalid cost types).
-pub fn validate_spreadsheet_offerings(
-    offerings: &[SpreadsheetVendorOffering],
-) -> ValidationResult {
+pub fn validate_spreadsheet_offerings(offerings: &[SpreadsheetVendorOffering]) -> ValidationResult {
     let mut validation = ValidationResult::default();
     let mut seen_keys = HashSet::new();
 
@@ -70,13 +71,19 @@ pub fn validate_spreadsheet_offerings(
         let line_num = idx + 2; // account for header line
 
         if offering.vendor_name.trim().is_empty() {
-            validation.errors.push(format!("Line {line_num}: Empty vendor_name"));
+            validation
+                .errors
+                .push(format!("Line {line_num}: Empty vendor_name"));
         }
         if offering.item_name.trim().is_empty() {
-            validation.errors.push(format!("Line {line_num}: Empty item_name"));
+            validation
+                .errors
+                .push(format!("Line {line_num}: Empty item_name"));
         }
         if offering.item_slug.trim().is_empty() {
-            validation.errors.push(format!("Line {line_num}: Empty item_slug"));
+            validation
+                .errors
+                .push(format!("Line {line_num}: Empty item_slug"));
         }
 
         let cost_type = offering.cost_type.to_uppercase();

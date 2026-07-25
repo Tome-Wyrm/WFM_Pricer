@@ -19,6 +19,13 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Mutex;
 
+/// The single fixed key this crate uses with `MarketRepository` — tracking WFCD API
+/// refresh history. Carried over from the removed `MarketRepositoryJson` (Phase 1 gap
+/// cleanup deleted the struct but this constant is still a live dependency of
+/// `mapping::cache`); the SQLite-backed repository below is a generic key-value store
+/// and doesn't enforce it itself, same as before.
+pub const REFRESH_HISTORY_KEY: &str = "wfcd_refresh";
+
 pub struct MarketRepositorySqlite<V> {
     conn: Mutex<Connection>,
     _marker: PhantomData<V>,

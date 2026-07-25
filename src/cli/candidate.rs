@@ -1,4 +1,5 @@
 use crate::AppResult;
+use crate::cli::prompt_handler::CandidateAction;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use tokio::time::{Duration, sleep};
@@ -9,8 +10,8 @@ use super::{
     add_to_keeplist, apply_keep_reservation, ayatan_max_stars, clamp_ayatan_stars,
     compute_available_quantity, decide_no_op, find_same_price_order, get_auto_keep,
     get_ayatan_endo_yield, get_keep_quantity, is_worth_listing_over_endo, print_warning,
-    quantity_default, resolve_action_choice, resolve_keep_copies, save_blacklist,
-    slot_budget_exceeded, tseprintln, tsprint, tsprintln,
+    quantity_default, resolve_keep_copies, save_blacklist, slot_budget_exceeded, tseprintln,
+    tsprint, tsprintln,
 };
 
 // This function is a single linear decision pipeline (keep/blacklist checks, price-vs-Endo
@@ -187,51 +188,56 @@ pub(crate) async fn handle_single_candidate(
         "\x1B[1;35m  Action? [Enter/Y] List/Update | [N] Skip | [K] Add to Keep List | [B] Blacklist | [X] Save & Exit: \x1B[0m"
     );
     let _ = ctx.stdout.flush();
-    let mut choice = String::new();
-    io::stdin().read_line(&mut choice)?;
-    let choice = resolve_action_choice(&choice);
-
-    if choice == "X" {
-        return Err("EXIT_REQUESTED".into());
-    }
-
-    if choice == "B" {
-        tsprintln!("Blacklisting {} permanently...", item.name);
-        ctx.blacklist_set.slugs.insert(item.slug.clone());
-        save_blacklist(ctx.blacklist_set)?;
-        return Ok(None);
-    }
-
-    if choice == "K" {
-        tsprint!(
-            "\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m",
-            item.name,
-            item.rank.unwrap_or(0)
-        );
-        let _ = ctx.stdout.flush();
-        let mut keep_str = String::new();
-        io::stdin().read_line(&mut keep_str)?;
-        if let Ok(keep_qty) = keep_str.trim().parse::<u32>() {
-            add_to_keeplist(ctx.keeplist, &item.slug, item.rank, keep_qty)?;
-            tsprintln!("Saved to keeplist.json!");
-        }
-        return Ok(None);
-    }
-
-    if choice == "Y" {
-        return handle_list_or_update(
-            &item,
-            wa_price,
+    let action = ctx
+        .handler
+        .prompt_candidate_action(
+            &item.name,
+            &item.slug,
             available_qty,
-            listed_qty,
+            wa_price,
             is_already_listed,
-            &listing_key,
-            ctx,
         )
-        .await;
-    }
+        .await?;
 
-    Ok(None)
+    match action {
+        CandidateAction::ExitRequested => Err("EXIT_REQUESTED".into()),
+        CandidateAction::Blacklist => {
+            tsprintln!("Blacklisting {} permanently...", item.name);
+            ctx.blacklist_set.slugs.insert(item.slug.clone());
+            save_blacklist(ctx.blacklist_set)?;
+            Ok(None)
+        }
+        CandidateAction::AddToKeeplist => {
+            tsprint!(
+                "\x1B[1;34m  How many copies of {} (rank {}) do you want to keep? \x1B[0m",
+                item.name,
+                item.rank.unwrap_or(0)
+            );
+            let _ = ctx.stdout.flush();
+            if let Some(keep_qty) = ctx
+                .handler
+                .prompt_keep_quantity(&item.name, item.rank.map(u32::from))
+                .await?
+            {
+                add_to_keeplist(ctx.keeplist, &item.slug, item.rank, keep_qty)?;
+                tsprintln!("Saved to keeplist.json!");
+            }
+            Ok(None)
+        }
+        CandidateAction::Skip => Ok(None),
+        CandidateAction::ListOrUpdate => {
+            handle_list_or_update(
+                &item,
+                wa_price,
+                available_qty,
+                listed_qty,
+                is_already_listed,
+                &listing_key,
+                ctx,
+            )
+            .await
+        }
+    }
 }
 
 // Same rationale as handle_single_candidate above: this is a single interactive prompt-then-act
@@ -248,21 +254,20 @@ pub(crate) async fn handle_list_or_update(
     ctx: &mut CandidateContext<'_>,
 ) -> AppResult<Option<SessionReportItem>> {
     // Price prompt
-    tsprint!("  Price to list (default {wa_price:.1}): ");
-    let _ = ctx.stdout.flush();
-    let mut price_str = String::new();
-    io::stdin().read_line(&mut price_str)?;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let default_price = wa_price.round() as u32;
-    let price: u32 = price_str.trim().parse::<u32>().unwrap_or(default_price);
+    tsprint!("  Price to list (default {default_price}): ");
+    let _ = ctx.stdout.flush();
 
     // Quantity prompt
     let quantity_default = quantity_default(is_already_listed, listed_qty, available_qty);
     tsprint!("  Quantity to list (default {quantity_default}): ");
     let _ = ctx.stdout.flush();
-    let mut qty_str = String::new();
-    io::stdin().read_line(&mut qty_str)?;
-    let quantity: u32 = qty_str.trim().parse::<u32>().unwrap_or(quantity_default);
+
+    let (price, quantity) = ctx
+        .handler
+        .prompt_list_details(default_price, quantity_default)
+        .await?;
 
     let mut cyan_stars: Option<u8> = None;
     let mut amber_stars: Option<u8> = None;
@@ -316,15 +321,12 @@ pub(crate) async fn handle_list_or_update(
         let (max_cyan, max_amber) = ayatan_max_stars(&item.slug);
         tsprint!("  Cyan Stars installed (default {max_cyan}): ");
         let _ = ctx.stdout.flush();
-        let mut c_str = String::new();
-        io::stdin().read_line(&mut c_str)?;
-        cyan_stars = Some(c_str.trim().parse::<u8>().unwrap_or(max_cyan));
-
         tsprint!("  Amber Stars installed (default {max_amber}): ");
         let _ = ctx.stdout.flush();
-        let mut a_str = String::new();
-        io::stdin().read_line(&mut a_str)?;
-        amber_stars = Some(a_str.trim().parse::<u8>().unwrap_or(max_amber));
+
+        let (cyan, amber) = ctx.handler.prompt_ayatan_stars(max_cyan, max_amber).await?;
+        cyan_stars = Some(cyan);
+        amber_stars = Some(amber);
     }
 
     // ── Handle update or create ──────────────────────────────────────────────
@@ -471,6 +473,7 @@ pub(crate) async fn process_candidates(
     parent_map: &BuildParentMap,
     mastered_set: &HashSet<String>,
     owned_built_set: &HashSet<String>,
+    handler: &dyn crate::cli::prompt_handler::CandidatePromptHandler,
 ) -> AppResult<Vec<SessionReportItem>> {
     let mut session_items = Vec::new();
     let mut stdout = io::stdout();
@@ -485,6 +488,7 @@ pub(crate) async fn process_candidates(
         parent_map,
         mastered_set,
         owned_built_set,
+        handler,
     };
 
     for (item, wa_price, saturation, vol_30d, _score) in priced_candidates {

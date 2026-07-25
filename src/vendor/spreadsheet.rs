@@ -71,16 +71,33 @@ pub fn parse_vendor_csv(csv_content: &str) -> AppResult<Vec<VendorSpreadsheetRow
         let row = VendorSpreadsheetRow {
             vendor_key: parts[0].to_string(),
             vendor_name: parts[1].to_string(),
-            location: if parts.len() > 2 && !parts[2].is_empty() { Some(parts[2].to_string()) } else { None },
-            group: if parts.len() > 3 && !parts[3].is_empty() { Some(parts[3].to_string()) } else { None },
+            location: if parts.len() > 2 && !parts[2].is_empty() {
+                Some(parts[2].to_string())
+            } else {
+                None
+            },
+            group: if parts.len() > 3 && !parts[3].is_empty() {
+                Some(parts[3].to_string())
+            } else {
+                None
+            },
             offering_name: parts[4].to_string(),
             category: parts[5].to_string(),
             currency: parts[6].to_string(),
-            cost_amount: parts.get(7).and_then(|s| s.parse::<f64>().ok()).unwrap_or(1.0),
+            cost_amount: parts
+                .get(7)
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(1.0),
             cost_mode: parts.get(8).unwrap_or(&"Single").to_string(),
-            wfm_slug: parts.get(9).filter(|s| !s.is_empty()).map(|s| (*s).to_string()),
+            wfm_slug: parts
+                .get(9)
+                .filter(|s| !s.is_empty())
+                .map(|s| (*s).to_string()),
             target_rank: parts.get(10).and_then(|s| s.parse::<u32>().ok()),
-            notes: parts.get(11).filter(|s| !s.is_empty()).map(|s| (*s).to_string()),
+            notes: parts
+                .get(11)
+                .filter(|s| !s.is_empty())
+                .map(|s| (*s).to_string()),
         };
 
         rows.push(row);
@@ -104,16 +121,25 @@ pub fn validate_spreadsheet_rows(
             errors.push((idx, SpreadsheetRowValidationError::EmptyOfferingName));
         }
         if row.cost_amount <= 0.0 {
-            errors.push((idx, SpreadsheetRowValidationError::InvalidCostAmount(row.cost_amount)));
+            errors.push((
+                idx,
+                SpreadsheetRowValidationError::InvalidCostAmount(row.cost_amount),
+            ));
         }
         if !["Single", "AnyOf", "AllOf"].contains(&row.cost_mode.as_str()) {
-            errors.push((idx, SpreadsheetRowValidationError::InvalidCostMode(row.cost_mode.clone())));
+            errors.push((
+                idx,
+                SpreadsheetRowValidationError::InvalidCostMode(row.cost_mode.clone()),
+            ));
         }
         if let Some(slug) = &row.wfm_slug
             && let Some(slug_map) = wfm_slugs
             && !slug_map.contains_key(slug)
         {
-            errors.push((idx, SpreadsheetRowValidationError::UnknownWfmSlug(slug.clone())));
+            errors.push((
+                idx,
+                SpreadsheetRowValidationError::UnknownWfmSlug(slug.clone()),
+            ));
         }
     }
 

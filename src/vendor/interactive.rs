@@ -1,9 +1,17 @@
 // src/vendor/interactive.rs
 //! CLI entry point for vendor mode: the location picker, ranked-table printing, and
 //! `run_vendor_cli` orchestration (Phase G2/G3).
+//!
+//! Architecture note (Phase 1 gap cleanup): this file lives under `vendor/` alongside
+//! true domain modules (`matching.rs`, `scoring.rs`, `raw.rs`, ...), but it is itself
+//! presentation, not domain — it's the vendor-mode analogue of `cli::sell::run_cli`.
+//! That's why it's the one file here allowed to call into `services::VendorAnalysisService`
+//! directly: the services layer's "domain modules never depend on services" rule is about
+//! the domain modules it sits beside, not about this one.
 use super::matching::{MappedVendor, print_match_report};
 use super::scoring::RankedOffering;
 use crate::AppResult;
+use crate::cli::prompt_handler::{TerminalPromptHandler, VendorPromptHandler};
 use crate::services::VendorAnalysisService;
 use crate::{tsprint, tsprintln};
 use std::fs;
@@ -67,9 +75,10 @@ fn vendors_for_entry<'a>(name: &str, vendors: &'a [MappedVendor]) -> Vec<&'a Map
 /// Walks the interactive nested menu starting at `node`, returning the set of
 /// resolved vendors the user picked (either one entry, or "0" for everything under
 /// the current node).
-fn interactive_picker<'a>(
+async fn interactive_picker<'a>(
     root: &LocTree,
     vendors: &'a [MappedVendor],
+    handler: &dyn VendorPromptHandler,
 ) -> AppResult<Vec<&'a MappedVendor>> {
     let mut node = root;
     loop {
@@ -79,20 +88,23 @@ fn interactive_picker<'a>(
 
         tsprintln!("\n0. Print all");
         let mut idx = 1;
+        let mut options: Vec<String> = Vec::with_capacity(child_names.len() + leaf_names.len());
         for name in &child_names {
             tsprintln!("{idx}. {name}/");
+            options.push(format!("{name}/"));
             idx += 1;
         }
         for name in &leaf_names {
             tsprintln!("{idx}. {name}");
+            options.push((*name).clone());
             idx += 1;
         }
 
         tsprint!("\nSelect an option: ");
         std::io::stdout().flush()?;
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        let choice: usize = input.trim().parse().map_err(|_| "Invalid number")?;
+        let choice = handler
+            .prompt_option_choice("Select an option", &options)
+            .await?;
 
         if choice == 0 {
             let mut names = std::collections::BTreeSet::new();
@@ -229,8 +241,21 @@ pub async fn run_vendor_cli(
     write_json: bool,
     max_saturation: Option<f64>,
 ) -> AppResult<()> {
-    let vendors = VendorAnalysisService::load_vendors().await?;
+    let loaded = VendorAnalysisService::load_vendors().await?;
+    let vendors = loaded.vendors;
     tsprintln!("Loaded {} vendors.", vendors.len());
+    match loaded.reference_sync {
+        Ok((raw_count, overlay_count)) => {
+            tsprintln!(
+                "Vendor repositories: {raw_count} raw vendor(s) cached, {overlay_count} triaged in vendors.toml."
+            );
+        }
+        Err(e) => {
+            crate::cli::print_warning(&format!(
+                "Could not sync vendor repositories (reference.db): {e}"
+            ));
+        }
+    }
 
     if match_report {
         print_match_report(&vendors);
@@ -240,7 +265,7 @@ pub async fn run_vendor_cli(
     let tree = build_location_tree(&vendors);
     let selected: Vec<&MappedVendor> = match path {
         Some(p) => resolve_path(&tree, p, &vendors)?,
-        None => interactive_picker(&tree, &vendors)?,
+        None => interactive_picker(&tree, &vendors, &TerminalPromptHandler).await?,
     };
 
     if selected.is_empty() {

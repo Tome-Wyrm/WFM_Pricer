@@ -97,7 +97,9 @@ where
             .conn
             .lock()
             .map_err(|_| RepositoryError::Backend("reference db lock poisoned".into()))?;
-        let tx = conn.transaction().map_err(|e| RepositoryError::Backend(e.to_string()))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| RepositoryError::Backend(e.to_string()))?;
 
         // Clear previous imported rows
         tx.execute("DELETE FROM curated_vendor_offerings", [])
@@ -134,7 +136,8 @@ where
             }
         }
 
-        tx.commit().map_err(|e| RepositoryError::Backend(e.to_string()))?;
+        tx.commit()
+            .map_err(|e| RepositoryError::Backend(e.to_string()))?;
         Ok(count)
     }
 }

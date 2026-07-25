@@ -1,6 +1,7 @@
 //! CLI entry points and shared types.
 
 // ── Imports used by every submodule ───────────────────────────────────
+use crate::cli::prompt_handler::CandidatePromptHandler;
 use crate::mapping::{BuildParentMap, BuildRequirements, BuildStatus, get_build_status};
 use crate::models::{BlacklistConfig, KeepConfig, MappedItem, WfcdItem, WfmItem};
 use crate::pricing::get_ayatan_endo_yield;
@@ -62,4 +63,5 @@ pub(crate) struct CandidateContext<'a> {
     pub(crate) parent_map: &'a BuildParentMap,
     pub(crate) mastered_set: &'a HashSet<String>,
     pub(crate) owned_built_set: &'a HashSet<String>,
+    pub(crate) handler: &'a dyn CandidatePromptHandler,
 }

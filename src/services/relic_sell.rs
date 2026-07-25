@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use tokio::time::{Duration, sleep};
 
 use crate::wfm_client::PublicOrder;
-use crate::{AppResult, http, ingestion, mapping, tseprintln, wfm_client};
+use crate::{AppResult, http, ingestion, mapping, wfm_client};
 
 /// One ready-to-send whisper, already matched against a live buy order this account can
 /// actually fulfill (enough owned copies of that exact relic/tier to cover the order's lot
@@ -59,6 +59,12 @@ pub(crate) struct RelicSellResult {
     pub(crate) messages: Vec<RelicSellMessage>,
     pub(crate) no_buy_orders: u32,
     pub(crate) no_fulfillable_order: u32,
+    /// Non-fatal issues surfaced during the sync (missing refinement tags, per-item
+    /// order-fetch failures, buy orders with no attached trader). Structured as plain
+    /// strings rather than printed here — services return data, `cli::sell_relics`
+    /// decides how (and whether) to display it. (Architecture Evolution Plan, Phase 1
+    /// gap cleanup: services must not print directly.)
+    pub(crate) warnings: Vec<String>,
 }
 
 /// Finds the best-paying, fulfillable buy order for one relic/tier. "Fulfillable" means the
@@ -115,6 +121,8 @@ impl RelicSellService {
     pub(crate) async fn sync(min_price: Option<u32>) -> AppResult<RelicSellResult> {
         mapping::update_caches().await?;
 
+        let mut warnings: Vec<String> = Vec::new();
+
         let inventory_path = crate::app::resolve_inventory_path(None)?;
         let inventory = ingestion::ingest_inventory(&inventory_path)?;
 
@@ -134,11 +142,10 @@ impl RelicSellService {
             .filter(|i| i.category() == "relic" && i.quantity > 0)
         {
             let Some(tier) = &item.owned_subtype else {
-                tseprintln!(
+                warnings.push(format!(
                     "[WARNING] '{}' ({}) matched the relic category but has no recorded refinement — skipping.",
-                    item.name,
-                    item.slug
-                );
+                    item.name, item.slug
+                ));
                 continue;
             };
             *relic_qty
@@ -154,6 +161,7 @@ impl RelicSellService {
                 messages: Vec::new(),
                 no_buy_orders: 0,
                 no_fulfillable_order: 0,
+                warnings,
             });
         }
 
@@ -185,7 +193,7 @@ impl RelicSellService {
             let orders = match wfm_client::fetch_item_orders(client, slug).await {
                 Ok(o) => o,
                 Err(e) => {
-                    tseprintln!("Failed to fetch orders for {display_name}: {e}");
+                    warnings.push(format!("Failed to fetch orders for {display_name}: {e}"));
                     continue;
                 }
             };
@@ -215,10 +223,10 @@ impl RelicSellService {
                 };
 
                 let Some(user) = &best.user else {
-                    tseprintln!(
+                    warnings.push(format!(
                         "[WARNING] Best buy order for {display_name} - {tier} at {}p has no attached trader info — skipping.",
                         best.platinum
-                    );
+                    ));
                     continue;
                 };
 
@@ -245,6 +253,7 @@ impl RelicSellService {
             messages,
             no_buy_orders,
             no_fulfillable_order,
+            warnings,
         })
     }
 }

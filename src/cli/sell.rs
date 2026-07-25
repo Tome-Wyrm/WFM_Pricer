@@ -1,4 +1,5 @@
 use crate::AppResult;
+use crate::cli::prompt_handler::TerminalPromptHandler;
 use crate::services::ListingSyncService;
 use std::collections::{HashMap, HashSet};
 
@@ -71,6 +72,7 @@ pub async fn run_cli(
         parent_map,
         mastered_set,
         owned_built_set,
+        &TerminalPromptHandler,
     )
     .await?;
 
